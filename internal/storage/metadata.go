@@ -280,6 +280,31 @@ func (s *Store) GetSymbolByName(ctx context.Context, name string) ([]types.Symbo
 	return scanSymbols(rows)
 }
 
+// GetSymbolByID returns a single symbol by its ID.
+func (s *Store) GetSymbolByID(ctx context.Context, id int64) (*types.SymbolRecord, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, chunk_id, file_id, name, qualified_name, kind,
+		       line, signature, visibility, is_exported
+		FROM symbols WHERE id = ?`, id)
+
+	var sym types.SymbolRecord
+	var qualName, signature, visibility sql.NullString
+	var exported int
+	err := row.Scan(&sym.ID, &sym.ChunkID, &sym.FileID, &sym.Name, &qualName, &sym.Kind,
+		&sym.Line, &signature, &visibility, &exported)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get symbol %d: %w", id, err)
+	}
+	sym.QualifiedName = qualName.String
+	sym.Signature = signature.String
+	sym.Visibility = visibility.String
+	sym.IsExported = exported != 0
+	return &sym, nil
+}
+
 // DeleteSymbolsByFile removes all symbols for a file.
 func (s *Store) DeleteSymbolsByFile(ctx context.Context, fileID int64) error {
 	return s.db.WithWriteTx(func(tx *sql.Tx) error {

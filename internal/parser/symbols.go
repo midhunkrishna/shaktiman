@@ -1,108 +1,116 @@
 package parser
 
 import (
+	"unicode"
+	"unicode/utf8"
+
 	sitter "github.com/smacker/go-tree-sitter"
 
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
-// symbolKindMap maps tree-sitter node types to symbol kinds.
-var symbolKindMap = map[string]string{
-	"function_declaration":       "function",
-	"class_declaration":          "class",
-	"abstract_class_declaration": "class",
-	"method_definition":          "method",
-	"interface_declaration":      "interface",
-	"type_alias_declaration":     "type",
-	"enum_declaration":           "type",
-	"lexical_declaration":        "variable",
-	"variable_declaration":       "variable",
-}
-
 // extractSymbols walks the tree and extracts symbols, associating each
 // with its containing chunk based on line ranges.
-func (p *Parser) extractSymbols(root *sitter.Node, source []byte, chunks []types.ChunkRecord) []types.SymbolRecord {
+func (p *Parser) extractSymbols(root *sitter.Node, source []byte, chunks []types.ChunkRecord, cfg *LanguageConfig) []types.SymbolRecord {
 	var symbols []types.SymbolRecord
-
-	p.walkForSymbols(root, source, false, chunks, &symbols)
+	p.walkForSymbols(root, source, false, chunks, &symbols, cfg)
 	return symbols
 }
 
-func (p *Parser) walkForSymbols(node *sitter.Node, source []byte, exported bool, chunks []types.ChunkRecord, symbols *[]types.SymbolRecord) {
+func (p *Parser) walkForSymbols(node *sitter.Node, source []byte, exported bool, chunks []types.ChunkRecord, symbols *[]types.SymbolRecord, cfg *LanguageConfig) {
 	nodeType := node.Type()
 
-	// Track export context
-	if nodeType == "export_statement" {
-		exported = true
-		// Walk children with export context
+	// Track export context (TypeScript)
+	if cfg.ExportType != "" && nodeType == cfg.ExportType {
 		for i := 0; i < int(node.NamedChildCount()); i++ {
-			p.walkForSymbols(node.NamedChild(i), source, true, chunks, symbols)
+			p.walkForSymbols(node.NamedChild(i), source, true, chunks, symbols, cfg)
 		}
 		return
 	}
 
-	kind, isSymbol := symbolKindMap[nodeType]
+	// Python decorated_definition — recurse into the definition child
+	if nodeType == "decorated_definition" {
+		for i := 0; i < int(node.NamedChildCount()); i++ {
+			child := node.NamedChild(i)
+			if child.Type() != "decorator" {
+				p.walkForSymbols(child, source, exported, chunks, symbols, cfg)
+			}
+		}
+		return
+	}
+
+	kind, isSymbol := cfg.SymbolKindMap[nodeType]
 	if isSymbol {
 		name := extractName(node, source)
 		if name == "" {
-			// Lexical declarations may have multiple declarators
+			// TypeScript variable declarations may have multiple declarators
 			if nodeType == "lexical_declaration" || nodeType == "variable_declaration" {
 				p.extractVariableSymbols(node, source, exported, chunks, symbols)
+				return
+			}
+			// Go var/const declarations have spec children
+			if nodeType == "var_declaration" || nodeType == "const_declaration" {
+				p.extractGoVarSymbols(node, source, chunks, symbols, cfg)
+				return
+			}
+			// Go type_declaration may have multiple type_spec children
+			if nodeType == "type_declaration" {
+				p.extractGoTypeSymbols(node, source, chunks, symbols, cfg)
 				return
 			}
 		}
 
 		if name != "" {
 			line := int(node.StartPoint().Row) + 1
+			isExp := exported || isGoExported(name, cfg)
 			sym := types.SymbolRecord{
 				Name:       name,
 				Kind:       kind,
 				Line:       line,
 				Signature:  extractSignature(node, source),
-				IsExported: exported,
+				IsExported: isExp,
 			}
-			if exported {
+			if isExp {
 				sym.Visibility = "exported"
 			} else {
 				sym.Visibility = "internal"
 			}
-
-			// Associate with containing chunk
 			sym.ChunkID = findContainingChunk(line, chunks)
-
 			*symbols = append(*symbols, sym)
 		}
 	}
 
 	// Recurse into class bodies for methods
-	if nodeType == "class_body" {
+	if cfg.ClassBodyType != "" && nodeType == cfg.ClassBodyType {
 		for i := 0; i < int(node.NamedChildCount()); i++ {
 			child := node.NamedChild(i)
-			if child.Type() == "method_definition" || child.Type() == "public_field_definition" {
-				p.walkForSymbols(child, source, exported, chunks, symbols)
+			if cfg.ClassBodyTypes[child.Type()] {
+				p.walkForSymbols(child, source, exported, chunks, symbols, cfg)
 			}
 		}
 		return
 	}
 
-	// For class/interface declarations, recurse into their body
-	if nodeType == "class_declaration" || nodeType == "abstract_class_declaration" {
-		body := findChildByType(node, "class_body")
-		if body != nil {
-			p.walkForSymbols(body, source, exported, chunks, symbols)
+	// For class declarations, recurse into their body
+	if cfg.ClassTypes[nodeType] {
+		if cfg.ClassBodyType != "" {
+			body := findChildByType(node, cfg.ClassBodyType)
+			if body != nil {
+				p.walkForSymbols(body, source, exported, chunks, symbols, cfg)
+			}
 		}
 		return
 	}
 
-	// For container nodes (e.g. program), recurse into named children
+	// For container nodes, recurse into named children
 	if !isSymbol {
 		for i := 0; i < int(node.NamedChildCount()); i++ {
-			p.walkForSymbols(node.NamedChild(i), source, exported, chunks, symbols)
+			p.walkForSymbols(node.NamedChild(i), source, exported, chunks, symbols, cfg)
 		}
 	}
 }
 
-// extractVariableSymbols handles const/let/var declarations with multiple declarators.
+// extractVariableSymbols handles TS const/let/var declarations with multiple declarators.
 func (p *Parser) extractVariableSymbols(node *sitter.Node, source []byte, exported bool, chunks []types.ChunkRecord, symbols *[]types.SymbolRecord) {
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		child := node.NamedChild(i)
@@ -111,15 +119,11 @@ func (p *Parser) extractVariableSymbols(node *sitter.Node, source []byte, export
 			if name == "" {
 				continue
 			}
-
 			line := int(child.StartPoint().Row) + 1
 			kind := "variable"
-
-			// Check if it's a const with a literal value → constant
 			if isConstDeclaration(node) {
 				kind = "constant"
 			}
-
 			sym := types.SymbolRecord{
 				Name:       name,
 				Kind:       kind,
@@ -131,25 +135,92 @@ func (p *Parser) extractVariableSymbols(node *sitter.Node, source []byte, export
 			} else {
 				sym.Visibility = "internal"
 			}
-
 			sym.ChunkID = findContainingChunk(line, chunks)
 			*symbols = append(*symbols, sym)
 		}
 	}
 }
 
-// findContainingChunk returns the ChunkID placeholder (index-based, resolved later)
-// for the chunk whose line range contains the given line.
-// Returns 0 if no chunk contains the line (should not happen).
+// extractGoVarSymbols handles Go var/const declarations with var_spec/const_spec children.
+func (p *Parser) extractGoVarSymbols(node *sitter.Node, source []byte, chunks []types.ChunkRecord, symbols *[]types.SymbolRecord, cfg *LanguageConfig) {
+	specType := "var_spec"
+	kind := "variable"
+	if node.Type() == "const_declaration" {
+		specType = "const_spec"
+		kind = "constant"
+	}
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if child.Type() == specType {
+			name := extractName(child, source)
+			if name == "" {
+				continue
+			}
+			line := int(child.StartPoint().Row) + 1
+			isExp := isGoExported(name, cfg)
+			sym := types.SymbolRecord{
+				Name:       name,
+				Kind:       kind,
+				Line:       line,
+				IsExported: isExp,
+			}
+			if isExp {
+				sym.Visibility = "exported"
+			} else {
+				sym.Visibility = "internal"
+			}
+			sym.ChunkID = findContainingChunk(line, chunks)
+			*symbols = append(*symbols, sym)
+		}
+	}
+}
+
+// extractGoTypeSymbols handles Go type declarations with type_spec children.
+func (p *Parser) extractGoTypeSymbols(node *sitter.Node, source []byte, chunks []types.ChunkRecord, symbols *[]types.SymbolRecord, cfg *LanguageConfig) {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if child.Type() == "type_spec" {
+			name := extractName(child, source)
+			if name == "" {
+				continue
+			}
+			line := int(child.StartPoint().Row) + 1
+			isExp := isGoExported(name, cfg)
+			sym := types.SymbolRecord{
+				Name:       name,
+				Kind:       "type",
+				Line:       line,
+				IsExported: isExp,
+			}
+			if isExp {
+				sym.Visibility = "exported"
+			} else {
+				sym.Visibility = "internal"
+			}
+			sym.ChunkID = findContainingChunk(line, chunks)
+			*symbols = append(*symbols, sym)
+		}
+	}
+}
+
+// findContainingChunk returns the chunk index for the chunk whose line range contains the given line.
+// Returns 0 if no chunk contains the line.
 func findContainingChunk(line int, chunks []types.ChunkRecord) int64 {
 	for i := range chunks {
 		if line >= chunks[i].StartLine && line <= chunks[i].EndLine {
-			// Return the chunk index as a temporary ID — will be resolved
-			// to actual DB ID during enrichment pipeline.
 			return int64(i)
 		}
 	}
 	return 0
+}
+
+// isGoExported returns true if the name starts with an uppercase letter (Go export rule).
+func isGoExported(name string, cfg *LanguageConfig) bool {
+	if cfg.Name != "go" {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(name)
+	return unicode.IsUpper(r)
 }
 
 // isConstDeclaration checks if a lexical_declaration uses "const".

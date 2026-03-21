@@ -44,10 +44,11 @@ var skipDirs = map[string]bool{
 }
 
 // languageExtensions maps file extensions to language names.
-// Phase 1: TypeScript only.
 var languageExtensions = map[string]string{
 	".ts":  "typescript",
 	".tsx": "typescript",
+	".py":  "python",
+	".go":  "go",
 }
 
 // ScanRepo walks the project tree and returns all indexable source files.

@@ -14,27 +14,8 @@ const maxChunkTokens = 1024
 // minChunkTokens is the threshold below which a chunk is merged with the previous.
 const minChunkTokens = 20
 
-// chunkableTypes are tree-sitter node types that become top-level chunks.
-var chunkableTypes = map[string]string{
-	"function_declaration":       "function",
-	"class_declaration":          "class",
-	"interface_declaration":      "interface",
-	"type_alias_declaration":     "type",
-	"enum_declaration":           "type",
-	"export_statement":           "", // resolved based on child
-	"lexical_declaration":        "block",
-	"variable_declaration":       "block",
-	"abstract_class_declaration": "class",
-}
-
-// classBodyMethodTypes are node types within a class body that become method chunks.
-var classBodyMethodTypes = map[string]bool{
-	"method_definition":  true,
-	"public_field_definition": true,
-}
-
-// chunkFile splits a parsed tree into semantic chunks.
-func (p *Parser) chunkFile(root *sitter.Node, source []byte) []types.ChunkRecord {
+// chunkFile splits a parsed tree into semantic chunks using language-specific config.
+func (p *Parser) chunkFile(root *sitter.Node, source []byte, cfg *LanguageConfig) []types.ChunkRecord {
 	var chunks []types.ChunkRecord
 	var headerParts []headerFragment
 
@@ -43,8 +24,8 @@ func (p *Parser) chunkFile(root *sitter.Node, source []byte) []types.ChunkRecord
 		child := root.NamedChild(i)
 		nodeType := child.Type()
 
-		// Collect imports and non-chunkable top-level nodes for header
-		if nodeType == "import_statement" || nodeType == "comment" {
+		// Collect imports and comments for header
+		if cfg.ImportTypes[nodeType] || nodeType == "comment" {
 			headerParts = append(headerParts, headerFragment{
 				content:   child.Content(source),
 				startLine: int(child.StartPoint().Row) + 1,
@@ -53,7 +34,17 @@ func (p *Parser) chunkFile(root *sitter.Node, source []byte) []types.ChunkRecord
 			continue
 		}
 
-		kind, ok := chunkableTypes[nodeType]
+		// Go: package_clause goes to header
+		if nodeType == "package_clause" {
+			headerParts = append(headerParts, headerFragment{
+				content:   child.Content(source),
+				startLine: int(child.StartPoint().Row) + 1,
+				endLine:   int(child.EndPoint().Row) + 1,
+			})
+			continue
+		}
+
+		kind, ok := cfg.ChunkableTypes[nodeType]
 		if !ok {
 			// Non-chunkable top-level node → include in header
 			headerParts = append(headerParts, headerFragment{
@@ -64,15 +55,37 @@ func (p *Parser) chunkFile(root *sitter.Node, source []byte) []types.ChunkRecord
 			continue
 		}
 
-		// Handle export_statement: look at the child declaration
-		if nodeType == "export_statement" {
-			chunks = append(chunks, p.chunkExportStatement(child, source, len(chunks))...)
+		// Handle export wrapper (TypeScript)
+		if cfg.ExportType != "" && nodeType == cfg.ExportType {
+			chunks = append(chunks, p.chunkExportStatement(child, source, len(chunks), cfg)...)
 			continue
 		}
 
-		// Handle class: create class chunk + method chunks
-		if kind == "class" {
-			chunks = append(chunks, p.chunkClass(child, source, len(chunks))...)
+		// Handle decorated definition (Python)
+		if nodeType == "decorated_definition" {
+			chunks = append(chunks, p.chunkDecoratedDef(child, source, len(chunks), cfg)...)
+			continue
+		}
+
+		// Handle class
+		if cfg.ClassTypes[nodeType] {
+			chunks = append(chunks, p.chunkClass(child, source, len(chunks), cfg)...)
+			continue
+		}
+
+		// Go type_declaration: extract type name from type_spec child
+		if nodeType == "type_declaration" {
+			name := extractGoTypeName(child, source)
+			content := child.Content(source)
+			chunks = append(chunks, types.ChunkRecord{
+				ChunkIndex: len(chunks),
+				SymbolName: name,
+				Kind:       kind,
+				StartLine:  int(child.StartPoint().Row) + 1,
+				EndLine:    int(child.EndPoint().Row) + 1,
+				Content:    content,
+				TokenCount: p.tokens.Count(content),
+			})
 			continue
 		}
 
@@ -96,7 +109,6 @@ func (p *Parser) chunkFile(root *sitter.Node, source []byte) []types.ChunkRecord
 	// Build header chunk from collected parts
 	if len(headerParts) > 0 {
 		header := buildHeaderChunk(headerParts, p.tokens)
-		// Prepend header as chunk index 0
 		header.ChunkIndex = 0
 		for i := range chunks {
 			chunks[i].ChunkIndex = i + 1
@@ -117,16 +129,13 @@ func (p *Parser) chunkFile(root *sitter.Node, source []byte) []types.ChunkRecord
 	return chunks
 }
 
-// chunkExportStatement handles `export function/class/interface/type/const`.
-func (p *Parser) chunkExportStatement(node *sitter.Node, source []byte, baseIndex int) []types.ChunkRecord {
-	// The exported declaration is usually the first named child after "export"
+// chunkExportStatement handles `export function/class/interface/type/const` (TypeScript).
+func (p *Parser) chunkExportStatement(node *sitter.Node, source []byte, baseIndex int, cfg *LanguageConfig) []types.ChunkRecord {
 	declChild := findDeclarationChild(node)
 	if declChild == nil {
-		// Export without recognizable declaration (e.g., `export { x }`)
 		content := node.Content(source)
 		return []types.ChunkRecord{{
 			ChunkIndex: baseIndex,
-			SymbolName: "",
 			Kind:       "block",
 			StartLine:  int(node.StartPoint().Row) + 1,
 			EndLine:    int(node.EndPoint().Row) + 1,
@@ -136,13 +145,13 @@ func (p *Parser) chunkExportStatement(node *sitter.Node, source []byte, baseInde
 	}
 
 	declType := declChild.Type()
-	kind, ok := chunkableTypes[declType]
+	kind, ok := cfg.ChunkableTypes[declType]
 	if !ok {
 		kind = "block"
 	}
 
-	if kind == "class" {
-		return p.chunkClass(node, source, baseIndex)
+	if cfg.ClassTypes[declType] {
+		return p.chunkClass(node, source, baseIndex, cfg)
 	}
 
 	name := extractName(declChild, source)
@@ -159,15 +168,57 @@ func (p *Parser) chunkExportStatement(node *sitter.Node, source []byte, baseInde
 	}}
 }
 
+// chunkDecoratedDef handles Python `@decorator\ndef/class` nodes.
+func (p *Parser) chunkDecoratedDef(node *sitter.Node, source []byte, baseIndex int, cfg *LanguageConfig) []types.ChunkRecord {
+	// Find the actual definition inside the decorated_definition
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if cfg.ClassTypes[child.Type()] {
+			// Include the decorator in the class content
+			chunks := p.chunkClass(child, source, baseIndex, cfg)
+			if len(chunks) > 0 {
+				chunks[0].Content = node.Content(source)
+				chunks[0].TokenCount = p.tokens.Count(chunks[0].Content)
+				chunks[0].StartLine = int(node.StartPoint().Row) + 1
+			}
+			return chunks
+		}
+		if child.Type() == "function_definition" {
+			name := extractName(child, source)
+			content := node.Content(source)
+			return []types.ChunkRecord{{
+				ChunkIndex: baseIndex,
+				SymbolName: name,
+				Kind:       "function",
+				StartLine:  int(node.StartPoint().Row) + 1,
+				EndLine:    int(node.EndPoint().Row) + 1,
+				Content:    content,
+				TokenCount: p.tokens.Count(content),
+				Signature:  extractSignature(child, source),
+			}}
+		}
+	}
+
+	// Fallback: treat whole node as a block
+	content := node.Content(source)
+	return []types.ChunkRecord{{
+		ChunkIndex: baseIndex,
+		Kind:       "block",
+		StartLine:  int(node.StartPoint().Row) + 1,
+		EndLine:    int(node.EndPoint().Row) + 1,
+		Content:    content,
+		TokenCount: p.tokens.Count(content),
+	}}
+}
+
 // chunkClass creates a class chunk and child method chunks.
 // node may be a class_declaration or an export_statement wrapping one.
-func (p *Parser) chunkClass(node *sitter.Node, source []byte, baseIndex int) []types.ChunkRecord {
+func (p *Parser) chunkClass(node *sitter.Node, source []byte, baseIndex int, cfg *LanguageConfig) []types.ChunkRecord {
 	var chunks []types.ChunkRecord
 
-	// If node is an export_statement, find the inner class_declaration
-	// for tree walking, but use the outer node for content.
+	// If node is an export wrapper, find the inner class for tree walking
 	classNode := node
-	if node.Type() == "export_statement" {
+	if cfg.ExportType != "" && node.Type() == cfg.ExportType {
 		if inner := findDeclarationChild(node); inner != nil {
 			classNode = inner
 		}
@@ -190,34 +241,35 @@ func (p *Parser) chunkClass(node *sitter.Node, source []byte, baseIndex int) []t
 
 	// Find class body and extract methods
 	var methodChunks []types.ChunkRecord
-	classBody := findChildByType(classNode, "class_body")
-	if classBody != nil {
-		bodyChildCount := int(classBody.NamedChildCount())
-		for i := 0; i < bodyChildCount; i++ {
-			member := classBody.NamedChild(i)
-			if classBodyMethodTypes[member.Type()] {
-				methodName := extractName(member, source)
-				methodContent := member.Content(source)
-				pi := parentIdx
-				methodChunks = append(methodChunks, types.ChunkRecord{
-					ChunkIndex:  baseIndex + 1 + len(methodChunks),
-					SymbolName:  methodName,
-					Kind:        "method",
-					StartLine:   int(member.StartPoint().Row) + 1,
-					EndLine:     int(member.EndPoint().Row) + 1,
-					Content:     methodContent,
-					TokenCount:  p.tokens.Count(methodContent),
-					Signature:   extractSignature(member, source),
-					ParentIndex: &pi,
-				})
+	if cfg.ClassBodyType != "" {
+		classBody := findChildByType(classNode, cfg.ClassBodyType)
+		if classBody != nil {
+			bodyChildCount := int(classBody.NamedChildCount())
+			for i := 0; i < bodyChildCount; i++ {
+				member := classBody.NamedChild(i)
+				if cfg.ClassBodyTypes[member.Type()] {
+					methodName := extractName(member, source)
+					methodContent := member.Content(source)
+					pi := parentIdx
+					methodChunks = append(methodChunks, types.ChunkRecord{
+						ChunkIndex:  baseIndex + 1 + len(methodChunks),
+						SymbolName:  methodName,
+						Kind:        "method",
+						StartLine:   int(member.StartPoint().Row) + 1,
+						EndLine:     int(member.EndPoint().Row) + 1,
+						Content:     methodContent,
+						TokenCount:  p.tokens.Count(methodContent),
+						Signature:   extractSignature(member, source),
+						ParentIndex: &pi,
+					})
+				}
 			}
 		}
 	}
 
 	// If class has methods, use class signature as the class chunk content
-	// instead of the full body (methods are separate chunks)
 	if len(methodChunks) > 0 {
-		sigContent := buildClassSignature(classNode, source, className)
+		sigContent := buildClassSignatureWithConfig(classNode, source, className, cfg)
 		classChunk.Content = sigContent
 		classChunk.TokenCount = p.tokens.Count(sigContent)
 	}
@@ -256,11 +308,9 @@ func (p *Parser) splitLargeChunks(chunks []types.ChunkRecord) []types.ChunkRecor
 			continue
 		}
 
-		// Split by lines at roughly equal token points
 		lines := strings.Split(c.Content, "\n")
 		var current strings.Builder
 		currentStart := c.StartLine
-		partIndex := 0
 
 		for i, line := range lines {
 			current.WriteString(line)
@@ -282,13 +332,11 @@ func (p *Parser) splitLargeChunks(chunks []types.ChunkRecord) []types.ChunkRecor
 					Signature:   c.Signature,
 					ParentIndex: c.ParentIndex,
 				})
-				partIndex++
 				current.Reset()
 				currentStart = c.StartLine + i + 1
 			}
 		}
 
-		// Remaining content
 		if current.Len() > 0 {
 			part := current.String()
 			result = append(result, types.ChunkRecord{
@@ -342,8 +390,10 @@ func extractName(node *sitter.Node, source []byte) string {
 	// Try common field names
 	for _, field := range []string{"name", "property"} {
 		if child := node.ChildByFieldName(field); child != nil {
-			if child.Type() == "identifier" || child.Type() == "type_identifier" ||
-				child.Type() == "property_identifier" {
+			t := child.Type()
+			if t == "identifier" || t == "type_identifier" ||
+				t == "property_identifier" || t == "package_identifier" ||
+				t == "field_identifier" {
 				return child.Content(source)
 			}
 		}
@@ -352,11 +402,11 @@ func extractName(node *sitter.Node, source []byte) string {
 	// Walk named children for an identifier
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		child := node.NamedChild(i)
-		if child.Type() == "identifier" || child.Type() == "type_identifier" {
+		t := child.Type()
+		if t == "identifier" || t == "type_identifier" || t == "field_identifier" {
 			return child.Content(source)
 		}
-		// For export_statement, look at the declaration child
-		if child.Type() != "comment" {
+		if t != "comment" && t != "decorator" {
 			name := extractName(child, source)
 			if name != "" {
 				return name
@@ -382,6 +432,17 @@ func extractSignature(node *sitter.Node, source []byte) string {
 	return sig
 }
 
+// extractGoTypeName extracts the type name from a Go type_declaration via type_spec.
+func extractGoTypeName(node *sitter.Node, source []byte) string {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(i)
+		if child.Type() == "type_spec" {
+			return extractName(child, source)
+		}
+	}
+	return extractName(node, source)
+}
+
 // findChildByType finds the first named child with the given type.
 func findChildByType(node *sitter.Node, nodeType string) *sitter.Node {
 	for i := 0; i < int(node.NamedChildCount()); i++ {
@@ -404,6 +465,9 @@ func findDeclarationChild(node *sitter.Node) *sitter.Node {
 		"enum_declaration":           true,
 		"lexical_declaration":        true,
 		"variable_declaration":       true,
+		// Python
+		"function_definition": true,
+		"class_definition":    true,
 	}
 
 	if decl := node.ChildByFieldName("declaration"); decl != nil {
@@ -419,31 +483,49 @@ func findDeclarationChild(node *sitter.Node) *sitter.Node {
 	return nil
 }
 
-// buildClassSignature creates a summary of a class (name + method signatures)
-// used as the class chunk content when methods are split into their own chunks.
-func buildClassSignature(node *sitter.Node, source []byte, className string) string {
+// buildClassSignatureWithConfig creates a summary of a class using language config.
+func buildClassSignatureWithConfig(node *sitter.Node, source []byte, className string, cfg *LanguageConfig) string {
 	var sb strings.Builder
 
-	// Get the class header line(s) — everything before the class body
-	classBody := findChildByType(node, "class_body")
+	if cfg.ClassBodyType == "" {
+		sb.WriteString("class ")
+		sb.WriteString(className)
+		sb.WriteString(" { ... }")
+		return sb.String()
+	}
+
+	classBody := findChildByType(node, cfg.ClassBodyType)
 	if classBody != nil {
 		headerEnd := classBody.StartByte()
-		sb.Write(source[node.StartByte():headerEnd])
-		sb.WriteString("{\n")
+		if headerEnd > node.StartByte() {
+			sb.Write(source[node.StartByte():headerEnd])
+		}
+		// Use language-appropriate delimiters
+		if cfg.Name == "python" {
+			sb.WriteString("\n")
+		} else {
+			sb.WriteString("{\n")
+		}
 
 		bodyChildCount := int(classBody.NamedChildCount())
 		for i := 0; i < bodyChildCount; i++ {
 			member := classBody.NamedChild(i)
-			if classBodyMethodTypes[member.Type()] {
+			if cfg.ClassBodyTypes[member.Type()] {
 				name := extractName(member, source)
 				sig := extractSignature(member, source)
 				sb.WriteString("  ")
 				sb.WriteString(name)
 				sb.WriteString(sig)
-				sb.WriteString(" { ... }\n")
+				if cfg.Name == "python" {
+					sb.WriteString(": ...\n")
+				} else {
+					sb.WriteString(" { ... }\n")
+				}
 			}
 		}
-		sb.WriteString("}")
+		if cfg.Name != "python" {
+			sb.WriteString("}")
+		}
 	} else {
 		sb.WriteString("class ")
 		sb.WriteString(className)

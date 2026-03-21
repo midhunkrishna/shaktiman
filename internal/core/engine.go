@@ -60,6 +60,12 @@ func (e *QueryEngine) Search(ctx context.Context, input SearchInput) ([]types.Sc
 			}
 			return pkg.Chunks, nil
 		}
+		// Apply hybrid ranking
+		results = HybridRank(ctx, HybridRankInput{
+			Candidates: results,
+			Store:      e.store,
+			Weights:    DefaultRankWeights(),
+		})
 		return results, nil
 
 	case LevelFilesystem:
@@ -93,9 +99,18 @@ func (e *QueryEngine) Context(ctx context.Context, input ContextInput) (*types.C
 			return FilesystemFallback(ctx, e.projectRoot, input.Query, input.BudgetTokens)
 		}
 
+		// Apply hybrid ranking before assembly
+		results = HybridRank(ctx, HybridRankInput{
+			Candidates: results,
+			Store:      e.store,
+			Weights:    DefaultRankWeights(),
+		})
+
 		pkg := Assemble(AssemblerInput{
 			Candidates:   results,
 			BudgetTokens: input.BudgetTokens,
+			Store:        e.store,
+			Ctx:          ctx,
 		})
 		return pkg, nil
 

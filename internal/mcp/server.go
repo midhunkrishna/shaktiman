@@ -19,6 +19,9 @@ func NewServer(engine *core.QueryEngine, store *storage.Store) *server.MCPServer
 	// Register tools
 	s.AddTool(searchToolDef(), searchHandler(engine))
 	s.AddTool(contextToolDef(), contextHandler(engine))
+	s.AddTool(symbolsToolDef(), symbolsHandler(store))
+	s.AddTool(dependenciesToolDef(), dependenciesHandler(store))
+	s.AddTool(diffToolDef(), diffHandler(store))
 
 	// Register resources
 	s.AddResource(workspaceSummaryDef(), workspaceSummaryHandler(store))

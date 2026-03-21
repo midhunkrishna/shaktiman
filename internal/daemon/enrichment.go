@@ -2,9 +2,11 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -189,6 +191,7 @@ func (ep *EnrichmentPipeline) enrichFile(ctx context.Context, p *parser.Parser, 
 		},
 		Chunks:      result.Chunks,
 		Symbols:     result.Symbols,
+		Edges:       result.Edges,
 		ContentHash: file.ContentHash,
 		Timestamp:   time.Now(),
 	}
@@ -210,6 +213,99 @@ func (ep *EnrichmentPipeline) filterChanged(ctx context.Context, files []Scanned
 		}
 	}
 	return changed, nil
+}
+
+// EnrichFile re-parses a single file and submits a write job.
+// Used for incremental indexing from watcher events.
+func (ep *EnrichmentPipeline) EnrichFile(ctx context.Context, event FileChangeEvent) error {
+	if event.ChangeType == "delete" {
+		ep.writer.Submit(types.WriteJob{
+			Type:     types.WriteJobFileDelete,
+			FilePath: event.Path,
+		})
+		return nil
+	}
+
+	content, err := readFileContent(event.AbsPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", event.Path, err)
+	}
+
+	ext := filepath.Ext(event.Path)
+	lang, ok := languageForExt(ext)
+	if !ok {
+		return nil // unsupported file type
+	}
+
+	hash := contentHash(content)
+
+	// Check if already indexed with same hash
+	existing, err := ep.store.GetFileByPath(ctx, event.Path)
+	if err != nil {
+		return fmt.Errorf("check file %s: %w", event.Path, err)
+	}
+	if existing != nil && existing.ContentHash == hash {
+		return nil // no change
+	}
+
+	p, err := parser.NewParser()
+	if err != nil {
+		return fmt.Errorf("create parser: %w", err)
+	}
+	defer p.Close()
+
+	result, err := p.Parse(ctx, parser.ParseInput{
+		FilePath: event.Path,
+		Content:  content,
+		Language: lang,
+	})
+	if err != nil {
+		return fmt.Errorf("parse %s: %w", event.Path, err)
+	}
+
+	info, err := os.Stat(event.AbsPath)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", event.Path, err)
+	}
+
+	ep.writer.Submit(types.WriteJob{
+		Type:     types.WriteJobEnrichment,
+		FilePath: event.Path,
+		File: &types.FileRecord{
+			Path:            event.Path,
+			ContentHash:     hash,
+			Mtime:           float64(info.ModTime().UnixMilli()) / 1000.0,
+			Size:            info.Size(),
+			Language:        lang,
+			EmbeddingStatus: "pending",
+			ParseQuality:    "full",
+		},
+		Chunks:      result.Chunks,
+		Symbols:     result.Symbols,
+		Edges:       result.Edges,
+		ContentHash: hash,
+		Timestamp:   time.Now(),
+	})
+	return nil
+}
+
+// languageForExt returns the language for a file extension.
+func languageForExt(ext string) (string, bool) {
+	lang, ok := languageExtensionsMap[ext]
+	return lang, ok
+}
+
+// languageExtensionsMap mirrors scanner's languageExtensions for import-cycle-free use.
+var languageExtensionsMap = map[string]string{
+	".ts":  "typescript",
+	".tsx": "typescript",
+	".py":  "python",
+	".go":  "go",
+}
+
+// contentHash returns the SHA-256 hex hash of content.
+func contentHash(content []byte) string {
+	return fmt.Sprintf("%x", sha256.Sum256(content))
 }
 
 func readFileContent(path string) ([]byte, error) {

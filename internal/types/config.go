@@ -12,6 +12,8 @@ type Config struct {
 	WriterChannelSize int
 	EnrichmentWorkers int
 	Tokenizer         string
+	WatcherEnabled    bool
+	WatcherDebounceMs int
 }
 
 // DefaultConfig returns a Config with sane defaults for the given project root.
@@ -24,5 +26,7 @@ func DefaultConfig(projectRoot string) Config {
 		WriterChannelSize: 500,
 		EnrichmentWorkers: 4,
 		Tokenizer:         "cl100k_base",
+		WatcherEnabled:    true,
+		WatcherDebounceMs: 200,
 	}
 }

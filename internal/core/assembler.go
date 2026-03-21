@@ -1,9 +1,11 @@
 package core
 
 import (
+	"context"
 	"sort"
 	"strings"
 
+	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
@@ -11,6 +13,8 @@ import (
 type AssemblerInput struct {
 	Candidates   []types.ScoredResult
 	BudgetTokens int
+	Store        *storage.Store  // optional, enables structural expansion
+	Ctx          context.Context // optional, required with Store
 }
 
 // Assemble performs budget-fitted greedy packing of ranked chunks.
@@ -52,16 +56,94 @@ func Assemble(input AssemblerInput) *types.ContextPackage {
 		// Otherwise skip oversized chunk
 	}
 
+	// Structural expansion: allocate 30% of remaining budget for BFS neighbors
+	if input.Store != nil && input.Ctx != nil && remaining > 0 {
+		expansionBudget := remaining * 30 / 100
+		if expansionBudget > 0 {
+			expanded := structuralExpand(input.Ctx, input.Store, selected, candidates, expansionBudget)
+			selected = append(selected, expanded...)
+		}
+	}
+
 	totalTokens := 0
 	for _, s := range selected {
 		totalTokens += s.TokenCount
 	}
 
+	strategy := "keyword_l2"
+	if input.Store != nil {
+		strategy = "hybrid_l0"
+	}
+
 	return &types.ContextPackage{
 		Chunks:      selected,
 		TotalTokens: totalTokens,
-		Strategy:    "keyword_l2",
+		Strategy:    strategy,
 	}
+}
+
+// structuralExpand finds BFS neighbor chunks of selected chunks
+// and adds those that fit within the expansion budget.
+func structuralExpand(ctx context.Context, store *storage.Store,
+	selected []types.ScoredResult, allCandidates []types.ScoredResult, budget int) []types.ScoredResult {
+
+	// Build set of already-selected chunk IDs
+	selectedSet := make(map[int64]bool, len(selected))
+	for _, s := range selected {
+		selectedSet[s.ChunkID] = true
+	}
+
+	// Build map of all candidates for quick lookup
+	candidateMap := make(map[int64]types.ScoredResult, len(allCandidates))
+	for _, c := range allCandidates {
+		candidateMap[c.ChunkID] = c
+	}
+
+	// Find BFS neighbor chunks for each selected chunk
+	var neighborCandidates []types.ScoredResult
+	for _, s := range selected {
+		symbolID := lookupSymbolForChunk(ctx, store, s.ChunkID)
+		if symbolID == 0 {
+			continue
+		}
+
+		neighborSymIDs, err := store.Neighbors(ctx, symbolID, 1, "both")
+		if err != nil {
+			continue
+		}
+
+		for _, nsID := range neighborSymIDs {
+			sym, err := store.GetSymbolByID(ctx, nsID)
+			if err != nil || sym == nil {
+				continue
+			}
+
+			// Check if this neighbor's chunk is a candidate but not yet selected
+			if c, ok := candidateMap[sym.ChunkID]; ok && !selectedSet[sym.ChunkID] {
+				neighborCandidates = append(neighborCandidates, c)
+				selectedSet[sym.ChunkID] = true // prevent duplicates
+			}
+		}
+	}
+
+	// Sort neighbors by score and pack within budget
+	sort.Slice(neighborCandidates, func(i, j int) bool {
+		return neighborCandidates[i].Score > neighborCandidates[j].Score
+	})
+
+	var expanded []types.ScoredResult
+	remaining := budget
+	for _, nc := range neighborCandidates {
+		if remaining <= 0 {
+			break
+		}
+		if nc.TokenCount <= remaining {
+			expanded = append(expanded, nc)
+			remaining -= nc.TokenCount
+		}
+	}
+
+	return expanded
 }
 
 // hasLineOverlap checks if a candidate has >50% line overlap with any selected chunk.

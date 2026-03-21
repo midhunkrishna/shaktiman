@@ -120,6 +120,35 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 		return fmt.Errorf("enrichment job for %s has nil file", job.FilePath)
 	}
 
+	// Content hash guard (CA-3): skip if already indexed with same hash
+	if job.ContentHash != "" {
+		var currentHash string
+		var indexedAt sql.NullString
+		err := tx.QueryRowContext(ctx, "SELECT content_hash, indexed_at FROM files WHERE path = ?",
+			job.FilePath).Scan(&currentHash, &indexedAt)
+		if err == nil && currentHash == job.ContentHash {
+			// Already indexed with same content — skip
+			return nil
+		}
+		// Stale check: if DB was updated after job was created
+		if err == nil && indexedAt.Valid {
+			dbTime, tErr := time.Parse(time.RFC3339Nano, indexedAt.String)
+			if tErr == nil && dbTime.After(job.Timestamp) {
+				return nil // stale job
+			}
+		}
+	}
+
+	// Fetch old file record and symbols for diff computation
+	var oldHash string
+	var oldFileID int64
+	var oldSymbols map[string]oldSymbolInfo
+	_ = tx.QueryRowContext(ctx, "SELECT id, content_hash FROM files WHERE path = ?",
+		job.FilePath).Scan(&oldFileID, &oldHash)
+	if oldFileID != 0 {
+		oldSymbols = fetchOldSymbols(ctx, tx, oldFileID)
+	}
+
 	// Upsert file
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO files (path, content_hash, mtime, size, language, indexed_at, embedding_status, parse_quality)
@@ -181,7 +210,9 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 		}
 	}
 
-	// Insert symbols with resolved chunk IDs
+	// Insert symbols with resolved chunk IDs, track name→ID mapping for edges
+	symbolIDs := make(map[string]int64, len(job.Symbols))
+	var newSymbolNames []string
 	for _, sym := range job.Symbols {
 		chunkID := int64(0)
 		// sym.ChunkID is the chunk index (temporary), resolve to actual ID
@@ -193,17 +224,184 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 		if sym.IsExported {
 			exported = 1
 		}
-		if _, err := tx.ExecContext(ctx, `
+		res, err := tx.ExecContext(ctx, `
 			INSERT INTO symbols (chunk_id, file_id, name, qualified_name, kind,
 			                     line, signature, visibility, is_exported)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			chunkID, fileID, sym.Name, sym.QualifiedName, sym.Kind,
-			sym.Line, sym.Signature, sym.Visibility, exported); err != nil {
+			sym.Line, sym.Signature, sym.Visibility, exported)
+		if err != nil {
 			return fmt.Errorf("insert symbol %s: %w", sym.Name, err)
 		}
+		symID, _ := res.LastInsertId()
+		symbolIDs[sym.Name] = symID
+		newSymbolNames = append(newSymbolNames, sym.Name)
+	}
+
+	// Compute and record diff if this is a re-index (oldHash != "")
+	if oldHash != "" && oldHash != job.ContentHash {
+		computeAndRecordDiff(ctx, tx, store, fileID, oldHash, job, oldSymbols, symbolIDs)
+	} else if oldHash == "" {
+		// New file — record as "add"
+		totalLines := 0
+		for _, c := range job.Chunks {
+			totalLines += c.EndLine - c.StartLine + 1
+		}
+		recordAddDiff(ctx, tx, store, fileID, job.ContentHash, totalLines, job.Symbols, symbolIDs)
+	}
+
+	// Delete old edges for this file, then insert new edges (CA-1)
+	if err := store.DeleteEdgesByFile(ctx, tx, fileID); err != nil {
+		return fmt.Errorf("delete old edges for %s: %w", job.FilePath, err)
+	}
+	if err := store.InsertEdges(ctx, tx, fileID, job.Edges, symbolIDs); err != nil {
+		return fmt.Errorf("insert edges for %s: %w", job.FilePath, err)
+	}
+
+	// Attempt to resolve pending edges for newly inserted symbol names
+	if err := store.ResolvePendingEdges(ctx, tx, newSymbolNames); err != nil {
+		return fmt.Errorf("resolve pending edges for %s: %w", job.FilePath, err)
 	}
 
 	return nil
+}
+
+// oldSymbolInfo holds symbol data from the previous version for diff comparison.
+type oldSymbolInfo struct {
+	name      string
+	kind      string
+	signature string
+	startLine int
+}
+
+// fetchOldSymbols queries old symbols for a file before they're deleted.
+func fetchOldSymbols(ctx context.Context, tx *sql.Tx, fileID int64) map[string]oldSymbolInfo {
+	symbols := make(map[string]oldSymbolInfo)
+	rows, err := tx.QueryContext(ctx, `
+		SELECT name, kind, signature, line FROM symbols WHERE file_id = ?`, fileID)
+	if err != nil {
+		return symbols
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var s oldSymbolInfo
+		var sig sql.NullString
+		if err := rows.Scan(&s.name, &s.kind, &sig, &s.startLine); err != nil {
+			continue
+		}
+		s.signature = sig.String
+		symbols[s.name] = s
+	}
+	return symbols
+}
+
+// computeAndRecordDiff computes symbol-level diffs and records them.
+func computeAndRecordDiff(ctx context.Context, tx *sql.Tx, store *storage.Store,
+	fileID int64, oldHash string, job types.WriteJob,
+	oldSymbols map[string]oldSymbolInfo, newSymbolIDs map[string]int64) {
+
+	// Compute lines changed (approximate from chunk content)
+	var totalOldLines, totalNewLines int
+	for _, s := range oldSymbols {
+		totalOldLines += s.startLine // rough approximation
+	}
+	for _, c := range job.Chunks {
+		totalNewLines += c.EndLine - c.StartLine + 1
+	}
+	linesAdded := 0
+	linesRemoved := 0
+	if totalNewLines > totalOldLines {
+		linesAdded = totalNewLines - totalOldLines
+	} else {
+		linesRemoved = totalOldLines - totalNewLines
+	}
+
+	diffID, err := store.InsertDiffLog(ctx, tx, storage.DiffLogEntry{
+		FileID:       fileID,
+		ChangeType:   "modify",
+		LinesAdded:   linesAdded,
+		LinesRemoved: linesRemoved,
+		HashBefore:   oldHash,
+		HashAfter:    job.ContentHash,
+	})
+	if err != nil {
+		return // non-fatal
+	}
+
+	// Compare old vs new symbols
+	var diffSymbols []storage.DiffSymbolEntry
+	newSymbolSet := make(map[string]types.SymbolRecord)
+	for _, sym := range job.Symbols {
+		newSymbolSet[sym.Name] = sym
+	}
+
+	// Find modified and removed symbols
+	for name, oldSym := range oldSymbols {
+		if newSym, exists := newSymbolSet[name]; exists {
+			if oldSym.signature != newSym.Signature {
+				diffSymbols = append(diffSymbols, storage.DiffSymbolEntry{
+					SymbolName: name,
+					SymbolID:   newSymbolIDs[name],
+					ChangeType: "signature_changed",
+				})
+			} else if oldSym.startLine != newSym.Line {
+				diffSymbols = append(diffSymbols, storage.DiffSymbolEntry{
+					SymbolName: name,
+					SymbolID:   newSymbolIDs[name],
+					ChangeType: "modified",
+				})
+			}
+		} else {
+			diffSymbols = append(diffSymbols, storage.DiffSymbolEntry{
+				SymbolName: name,
+				ChangeType: "removed",
+			})
+		}
+	}
+
+	// Find added symbols
+	for name := range newSymbolSet {
+		if _, existed := oldSymbols[name]; !existed {
+			diffSymbols = append(diffSymbols, storage.DiffSymbolEntry{
+				SymbolName: name,
+				SymbolID:   newSymbolIDs[name],
+				ChangeType: "added",
+			})
+		}
+	}
+
+	if len(diffSymbols) > 0 {
+		_ = store.InsertDiffSymbols(ctx, tx, diffID, diffSymbols)
+	}
+}
+
+// recordAddDiff records a diff for a newly added file.
+func recordAddDiff(ctx context.Context, tx *sql.Tx, store *storage.Store,
+	fileID int64, hash string, totalLines int,
+	symbols []types.SymbolRecord, symbolIDs map[string]int64) {
+
+	diffID, err := store.InsertDiffLog(ctx, tx, storage.DiffLogEntry{
+		FileID:     fileID,
+		ChangeType: "add",
+		LinesAdded: totalLines,
+		HashAfter:  hash,
+	})
+	if err != nil {
+		return
+	}
+
+	var diffSymbols []storage.DiffSymbolEntry
+	for _, sym := range symbols {
+		diffSymbols = append(diffSymbols, storage.DiffSymbolEntry{
+			SymbolName: sym.Name,
+			SymbolID:   symbolIDs[sym.Name],
+			ChangeType: "added",
+		})
+	}
+	if len(diffSymbols) > 0 {
+		_ = store.InsertDiffSymbols(ctx, tx, diffID, diffSymbols)
+	}
 }
 
 func coalesce(val, fallback string) string {

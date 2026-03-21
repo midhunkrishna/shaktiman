@@ -57,7 +57,9 @@ func (d *Daemon) Start(ctx context.Context) error {
 	defer writerCancel()
 	go d.writer.Run(writerCtx)
 
-	// Run cold indexing in background
+	pipeline := NewEnrichmentPipeline(d.store, d.writer, d.cfg.EnrichmentWorkers)
+
+	// Run cold indexing in background, then start watcher
 	go func() {
 		d.logger.Info("starting cold index", "root", d.cfg.ProjectRoot)
 
@@ -67,7 +69,6 @@ func (d *Daemon) Start(ctx context.Context) error {
 			return
 		}
 
-		pipeline := NewEnrichmentPipeline(d.store, d.writer, d.cfg.EnrichmentWorkers)
 		if err := pipeline.IndexAll(ctx, IndexAllInput{
 			ProjectRoot: d.cfg.ProjectRoot,
 			Files:       scanResult.Files,
@@ -77,6 +78,11 @@ func (d *Daemon) Start(ctx context.Context) error {
 		}
 
 		d.logger.Info("cold index complete")
+
+		// Start file watcher after cold index
+		if d.cfg.WatcherEnabled {
+			d.startWatcher(ctx, pipeline)
+		}
 	}()
 
 	// Start MCP server (blocks on stdio)
@@ -114,6 +120,33 @@ func (d *Daemon) Engine() *core.QueryEngine {
 // Store returns the metadata store.
 func (d *Daemon) Store() *storage.Store {
 	return d.store
+}
+
+// startWatcher launches the file watcher and pipes events to incremental enrichment.
+func (d *Daemon) startWatcher(ctx context.Context, pipeline *EnrichmentPipeline) {
+	w, err := NewWatcher(d.cfg.ProjectRoot, d.cfg.WatcherDebounceMs)
+	if err != nil {
+		d.logger.Error("failed to start watcher", "err", err)
+		return
+	}
+
+	d.logger.Info("file watcher starting", "root", d.cfg.ProjectRoot)
+
+	// Process watcher events
+	go func() {
+		for event := range w.Events() {
+			if err := pipeline.EnrichFile(ctx, event); err != nil {
+				d.logger.Warn("incremental enrich failed",
+					"path", event.Path,
+					"err", err)
+			}
+		}
+	}()
+
+	// Start blocks until ctx is cancelled
+	if err := w.Start(ctx); err != nil {
+		d.logger.Error("watcher stopped", "err", err)
+	}
 }
 
 // IndexProject runs cold indexing synchronously. Used by CLI.
