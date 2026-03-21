@@ -22,6 +22,9 @@ func (s *Store) KeywordSearch(ctx context.Context, query string, limit int) ([]F
 
 	// Sanitize query for FTS5: escape double quotes, wrap terms
 	ftsQuery := sanitizeFTSQuery(query)
+	if ftsQuery == "" {
+		return nil, nil
+	}
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT rowid, rank
@@ -69,6 +72,19 @@ func (s *Store) EnableFTSTriggers(ctx context.Context) error {
 	})
 }
 
+// EnsureFTSTriggers unconditionally re-creates the three FTS triggers.
+// Idempotent — safe to call on startup for crash recovery.
+func (s *Store) EnsureFTSTriggers(ctx context.Context) error {
+	return s.db.WithWriteTx(func(tx *sql.Tx) error {
+		for _, stmt := range ftsTriggers {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // RebuildFTS rebuilds the FTS5 index from the chunks table.
 // Call after bulk insert with triggers disabled.
 func (s *Store) RebuildFTS(ctx context.Context) error {
@@ -99,7 +115,7 @@ func sanitizeFTSQuery(query string) string {
 		}
 	}
 	if len(terms) == 0 {
-		return query
+		return ""
 	}
 	return strings.Join(terms, " OR ")
 }

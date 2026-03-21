@@ -18,10 +18,13 @@ import (
 // EnrichmentPipeline orchestrates parsing and indexing of source files
 // using a pool of worker goroutines, each with its own parser (IP-2).
 type EnrichmentPipeline struct {
-	store   *storage.Store
-	writer  *WriterManager
-	workers int
-	logger  *slog.Logger
+	store          *storage.Store
+	writer         *WriterManager
+	workers        int
+	logger         *slog.Logger
+	incrParser     *parser.Parser
+	incrParserOnce sync.Once
+	incrParserMu   sync.Mutex // serialize incremental parses
 }
 
 // NewEnrichmentPipeline creates a pipeline with the given worker count.
@@ -122,7 +125,7 @@ func (ep *EnrichmentPipeline) IndexAll(ctx context.Context, input IndexAllInput)
 
 	// Wait for all writes to complete by submitting a sync job
 	done := make(chan error, 1)
-	ep.writer.Submit(types.WriteJob{
+	if err := ep.writer.Submit(types.WriteJob{
 		Type: types.WriteJobEnrichment,
 		File: &types.FileRecord{
 			Path:            "__sync_marker__",
@@ -133,15 +136,20 @@ func (ep *EnrichmentPipeline) IndexAll(ctx context.Context, input IndexAllInput)
 		FilePath:  "__sync_marker__",
 		Timestamp: time.Now(),
 		Done:      done,
-	})
-	<-done
+	}); err != nil {
+		ep.logger.Warn("submit sync marker failed", "err", err)
+	} else {
+		<-done
+	}
 
 	// Clean up sync marker
 	ep.writer.AddProducer()
-	ep.writer.Submit(types.WriteJob{
+	if err := ep.writer.Submit(types.WriteJob{
 		Type:     types.WriteJobFileDelete,
 		FilePath: "__sync_marker__",
-	})
+	}); err != nil {
+		ep.logger.Warn("submit sync marker cleanup failed", "err", err)
+	}
 	ep.writer.RemoveProducer()
 
 	// Rebuild FTS5 index (A11)
@@ -196,7 +204,9 @@ func (ep *EnrichmentPipeline) enrichFile(ctx context.Context, p *parser.Parser, 
 		Timestamp:   time.Now(),
 	}
 
-	ep.writer.Submit(job)
+	if err := ep.writer.Submit(job); err != nil {
+		return fmt.Errorf("submit write job for %s: %w", file.Path, err)
+	}
 	return nil
 }
 
@@ -219,10 +229,12 @@ func (ep *EnrichmentPipeline) filterChanged(ctx context.Context, files []Scanned
 // Used for incremental indexing from watcher events.
 func (ep *EnrichmentPipeline) EnrichFile(ctx context.Context, event FileChangeEvent) error {
 	if event.ChangeType == "delete" {
-		ep.writer.Submit(types.WriteJob{
+		if err := ep.writer.Submit(types.WriteJob{
 			Type:     types.WriteJobFileDelete,
 			FilePath: event.Path,
-		})
+		}); err != nil {
+			return fmt.Errorf("submit delete job for %s: %w", event.Path, err)
+		}
 		return nil
 	}
 
@@ -232,7 +244,7 @@ func (ep *EnrichmentPipeline) EnrichFile(ctx context.Context, event FileChangeEv
 	}
 
 	ext := filepath.Ext(event.Path)
-	lang, ok := languageForExt(ext)
+	lang, ok := LanguageForExt(ext)
 	if !ok {
 		return nil // unsupported file type
 	}
@@ -248,17 +260,20 @@ func (ep *EnrichmentPipeline) EnrichFile(ctx context.Context, event FileChangeEv
 		return nil // no change
 	}
 
-	p, err := parser.NewParser()
-	if err != nil {
-		return fmt.Errorf("create parser: %w", err)
+	ep.incrParserOnce.Do(func() {
+		ep.incrParser, err = parser.NewParser()
+	})
+	if ep.incrParser == nil {
+		return fmt.Errorf("create incremental parser: %w", err)
 	}
-	defer p.Close()
 
-	result, err := p.Parse(ctx, parser.ParseInput{
+	ep.incrParserMu.Lock()
+	result, err := ep.incrParser.Parse(ctx, parser.ParseInput{
 		FilePath: event.Path,
 		Content:  content,
 		Language: lang,
 	})
+	ep.incrParserMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("parse %s: %w", event.Path, err)
 	}
@@ -268,7 +283,7 @@ func (ep *EnrichmentPipeline) EnrichFile(ctx context.Context, event FileChangeEv
 		return fmt.Errorf("stat %s: %w", event.Path, err)
 	}
 
-	ep.writer.Submit(types.WriteJob{
+	if err := ep.writer.Submit(types.WriteJob{
 		Type:     types.WriteJobEnrichment,
 		FilePath: event.Path,
 		File: &types.FileRecord{
@@ -285,29 +300,27 @@ func (ep *EnrichmentPipeline) EnrichFile(ctx context.Context, event FileChangeEv
 		Edges:       result.Edges,
 		ContentHash: hash,
 		Timestamp:   time.Now(),
-	})
+	}); err != nil {
+		return fmt.Errorf("submit enrich job for %s: %w", event.Path, err)
+	}
 	return nil
 }
 
-// languageForExt returns the language for a file extension.
-func languageForExt(ext string) (string, bool) {
-	lang, ok := languageExtensionsMap[ext]
-	return lang, ok
-}
-
-// languageExtensionsMap mirrors scanner's languageExtensions for import-cycle-free use.
-var languageExtensionsMap = map[string]string{
-	".ts":  "typescript",
-	".tsx": "typescript",
-	".py":  "python",
-	".go":  "go",
-}
 
 // contentHash returns the SHA-256 hex hash of content.
 func contentHash(content []byte) string {
 	return fmt.Sprintf("%x", sha256.Sum256(content))
 }
 
+const maxFileSize = 10 * 1024 * 1024 // 10MB
+
 func readFileContent(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxFileSize {
+		return nil, fmt.Errorf("file too large: %d bytes (max %d)", info.Size(), maxFileSize)
+	}
 	return os.ReadFile(path)
 }

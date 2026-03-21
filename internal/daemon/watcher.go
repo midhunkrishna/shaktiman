@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -30,6 +31,7 @@ type Watcher struct {
 	pending    map[string]time.Time
 	mu         sync.Mutex
 	logger     *slog.Logger
+	dropCount  atomic.Int64
 }
 
 // NewWatcher creates a file watcher for the given project root.
@@ -102,13 +104,24 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 
 	// Only process source files
 	ext := strings.ToLower(filepath.Ext(path))
-	if _, supported := languageExtensions[ext]; !supported {
+	if _, supported := LanguageForExt(ext); !supported {
 		return
 	}
 
-	// Debounce: record/update the pending timestamp
+	// Resolve symlinks and verify inside project root (TOCTOU protection)
+	absPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return
+	}
+	absRoot, _ := filepath.EvalSymlinks(w.root)
+	if absPath != absRoot && !strings.HasPrefix(absPath, absRoot+string(filepath.Separator)) {
+		w.logger.Debug("symlink outside project, ignoring", "path", path)
+		return
+	}
+
+	// Debounce: record/update the pending timestamp using resolved path
 	w.mu.Lock()
-	w.pending[path] = time.Now()
+	w.pending[absPath] = time.Now()
 	w.mu.Unlock()
 }
 
@@ -159,8 +172,11 @@ func (w *Watcher) flushPending(debounce time.Duration) {
 			ChangeType: changeType,
 			Timestamp:  time.Now(),
 		}:
-		default:
-			w.logger.Warn("watcher event channel full, dropping", "path", relPath)
+		case <-time.After(time.Second):
+			w.dropCount.Add(1)
+			if w.dropCount.Load()%10 == 1 {
+				w.logger.Warn("watcher dropping events", "total_dropped", w.dropCount.Load())
+			}
 		}
 	}
 }

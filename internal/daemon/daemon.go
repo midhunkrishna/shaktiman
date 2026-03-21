@@ -59,6 +59,11 @@ func (d *Daemon) Start(ctx context.Context) error {
 
 	pipeline := NewEnrichmentPipeline(d.store, d.writer, d.cfg.EnrichmentWorkers)
 
+	// Recover FTS triggers in case of previous crash between disable/enable
+	if err := d.store.EnsureFTSTriggers(ctx); err != nil {
+		d.logger.Warn("FTS trigger recovery failed", "err", err)
+	}
+
 	// Run cold indexing in background, then start watcher
 	go func() {
 		d.logger.Info("starting cold index", "root", d.cfg.ProjectRoot)

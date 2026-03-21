@@ -4,14 +4,19 @@ package daemon
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
+
+// ErrWriterClosed is returned by Submit when the writer has been shut down.
+var ErrWriterClosed = errors.New("writer is closed")
 
 // WriterManager serializes all SQLite writes through a single goroutine (IP-4).
 // Producers register via AddProducer/RemoveProducer for ordered shutdown.
@@ -21,6 +26,8 @@ type WriterManager struct {
 	done      chan struct{}
 	store     *storage.Store
 	logger    *slog.Logger
+	closed    atomic.Bool
+	mu        sync.Mutex // protects close sequence
 }
 
 // NewWriterManager creates a writer with the given channel capacity (IP-5: 500).
@@ -53,7 +60,11 @@ func (wm *WriterManager) Run(ctx context.Context) {
 func (wm *WriterManager) drain() {
 	wm.logger.Info("writer draining: waiting for producers")
 	wm.producers.Wait()
+
+	wm.mu.Lock()
+	wm.closed.Store(true)
 	close(wm.ch)
+	wm.mu.Unlock()
 
 	deadline := time.After(10 * time.Second)
 	for job := range wm.ch {
@@ -70,8 +81,18 @@ func (wm *WriterManager) drain() {
 
 // Submit sends a write job to the writer goroutine.
 // Blocks if the channel is full (back-pressure).
-func (wm *WriterManager) Submit(job types.WriteJob) {
+// Returns ErrWriterClosed if the writer has been shut down.
+func (wm *WriterManager) Submit(job types.WriteJob) error {
+	if wm.closed.Load() {
+		return ErrWriterClosed
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	if wm.closed.Load() {
+		return ErrWriterClosed
+	}
 	wm.ch <- job
+	return nil
 }
 
 // AddProducer registers a producer goroutine for shutdown ordering.
@@ -272,13 +293,17 @@ type oldSymbolInfo struct {
 	kind      string
 	signature string
 	startLine int
+	endLine   int
 }
 
 // fetchOldSymbols queries old symbols for a file before they're deleted.
 func fetchOldSymbols(ctx context.Context, tx *sql.Tx, fileID int64) map[string]oldSymbolInfo {
 	symbols := make(map[string]oldSymbolInfo)
 	rows, err := tx.QueryContext(ctx, `
-		SELECT name, kind, signature, line FROM symbols WHERE file_id = ?`, fileID)
+		SELECT s.name, s.kind, s.signature, s.line,
+		       COALESCE(c.end_line, s.line) as end_line
+		FROM symbols s LEFT JOIN chunks c ON s.chunk_id = c.id
+		WHERE s.file_id = ?`, fileID)
 	if err != nil {
 		return symbols
 	}
@@ -287,7 +312,7 @@ func fetchOldSymbols(ctx context.Context, tx *sql.Tx, fileID int64) map[string]o
 	for rows.Next() {
 		var s oldSymbolInfo
 		var sig sql.NullString
-		if err := rows.Scan(&s.name, &s.kind, &sig, &s.startLine); err != nil {
+		if err := rows.Scan(&s.name, &s.kind, &sig, &s.startLine, &s.endLine); err != nil {
 			continue
 		}
 		s.signature = sig.String
@@ -304,7 +329,7 @@ func computeAndRecordDiff(ctx context.Context, tx *sql.Tx, store *storage.Store,
 	// Compute lines changed (approximate from chunk content)
 	var totalOldLines, totalNewLines int
 	for _, s := range oldSymbols {
-		totalOldLines += s.startLine // rough approximation
+		totalOldLines += s.endLine - s.startLine + 1
 	}
 	for _, c := range job.Chunks {
 		totalNewLines += c.EndLine - c.StartLine + 1

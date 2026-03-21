@@ -41,8 +41,8 @@ func (s *Store) InsertEdges(ctx context.Context, tx *sql.Tx, fileID int64, edges
 
 		dstID := symbolIDs[e.DstSymbolName]
 		if dstID == 0 {
-			// Global lookup via tx to see current transaction's symbols
-			dstID, _ = lookupSymbolIDTx(ctx, tx, e.DstSymbolName)
+			// Lookup via tx, preferring same-file symbols
+			dstID, _ = lookupSymbolIDTx(ctx, tx, e.DstSymbolName, fileID)
 		}
 
 		if dstID != 0 {
@@ -122,7 +122,7 @@ func (s *Store) ResolvePendingEdges(ctx context.Context, tx *sql.Tx, newSymbolNa
 	defer delStmt.Close()
 
 	for _, p := range toResolve {
-		dstID, err := lookupSymbolIDTx(ctx, tx, p.dstName)
+		dstID, err := lookupSymbolIDTx(ctx, tx, p.dstName, 0)
 		if err != nil || dstID == 0 {
 			continue
 		}
@@ -142,6 +142,13 @@ func (s *Store) ResolvePendingEdges(ctx context.Context, tx *sql.Tx, newSymbolNa
 // direction: "outgoing" (follow edges from src), "incoming" (follow edges to dst), "both".
 // Returns distinct symbol IDs reachable within maxDepth hops.
 func (s *Store) Neighbors(ctx context.Context, symbolID int64, maxDepth int, direction string) ([]int64, error) {
+	if maxDepth < 1 {
+		maxDepth = 1
+	}
+	if maxDepth > 10 {
+		maxDepth = 10
+	}
+
 	switch direction {
 	case "outgoing":
 		return s.neighborsCTE(ctx, symbolID, maxDepth, `
@@ -217,8 +224,19 @@ func (s *Store) DeleteEdgesByFile(ctx context.Context, tx *sql.Tx, fileID int64)
 
 // lookupSymbolIDTx looks up a symbol by name within a write transaction,
 // ensuring uncommitted symbols from the current transaction are visible.
-func lookupSymbolIDTx(ctx context.Context, tx *sql.Tx, name string) (int64, error) {
+// Prefers a same-file match (fileID) before falling back to global lookup.
+func lookupSymbolIDTx(ctx context.Context, tx *sql.Tx, name string, fileID int64) (int64, error) {
 	var id int64
+	// Try same-file first
+	if fileID > 0 {
+		err := tx.QueryRowContext(ctx,
+			"SELECT id FROM symbols WHERE name = ? AND file_id = ? LIMIT 1",
+			name, fileID).Scan(&id)
+		if err == nil {
+			return id, nil
+		}
+	}
+	// Fallback to global
 	err := tx.QueryRowContext(ctx, "SELECT id FROM symbols WHERE name = ? LIMIT 1", name).Scan(&id)
 	if err == sql.ErrNoRows {
 		return 0, nil

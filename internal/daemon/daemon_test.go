@@ -176,7 +176,7 @@ func TestWriterManager_ProcessJob(t *testing.T) {
 	// Submit a job with a Done channel to wait for completion
 	done := make(chan error, 1)
 	wm.AddProducer()
-	wm.Submit(types.WriteJob{
+	if err := wm.Submit(types.WriteJob{
 		Type:     types.WriteJobEnrichment,
 		FilePath: "test.ts",
 		File: &types.FileRecord{
@@ -191,7 +191,9 @@ func TestWriterManager_ProcessJob(t *testing.T) {
 				Content: "function hello() {}", TokenCount: 5},
 		},
 		Done: done,
-	})
+	}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
 	wm.RemoveProducer()
 
 	if err := <-done; err != nil {

@@ -51,6 +51,12 @@ var languageExtensions = map[string]string{
 	".go":  "go",
 }
 
+// LanguageForExt returns the language for a file extension (e.g. ".go" → "go").
+func LanguageForExt(ext string) (string, bool) {
+	lang, ok := languageExtensions[ext]
+	return lang, ok
+}
+
 // ScanRepo walks the project tree and returns all indexable source files.
 func ScanRepo(ctx context.Context, input ScanInput) (*ScanResult, error) {
 	root := input.ProjectRoot
