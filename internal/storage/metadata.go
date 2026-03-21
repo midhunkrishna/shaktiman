@@ -363,6 +363,108 @@ func (s *Store) GetIndexStats(ctx context.Context) (*types.IndexStats, error) {
 	return stats, rows.Err()
 }
 
+// ── Embedding helpers ──
+
+// VectorCounter can report how many vectors exist for given chunk IDs.
+type VectorCounter interface {
+	Count(ctx context.Context) (int, error)
+}
+
+// GetChunksNeedingEmbedding returns chunks whose parent file is not yet fully
+// embedded (embedding_status != 'complete'). The caller should additionally
+// filter by vector store contents for crash-recovery reconciliation.
+func (s *Store) GetChunksNeedingEmbedding(ctx context.Context, vs VectorCounter) ([]EmbedJobRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT c.id, c.content
+		FROM chunks c
+		JOIN files f ON c.file_id = f.id
+		WHERE f.embedding_status != 'complete'
+		ORDER BY c.id`)
+	if err != nil {
+		return nil, fmt.Errorf("query chunks for embedding: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []EmbedJobRecord
+	for rows.Next() {
+		var j EmbedJobRecord
+		if err := rows.Scan(&j.ChunkID, &j.Content); err != nil {
+			return nil, fmt.Errorf("scan embed chunk: %w", err)
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+// EmbedJobRecord carries chunk data needed for embedding.
+type EmbedJobRecord = struct {
+	ChunkID int64
+	Content string
+}
+
+// MarkChunksEmbedded updates files.embedding_status to 'complete' for files
+// where ALL chunks are now embedded (given the embedded chunk IDs).
+func (s *Store) MarkChunksEmbedded(ctx context.Context, chunkIDs []int64) error {
+	if len(chunkIDs) == 0 {
+		return nil
+	}
+	// Find distinct file IDs for the embedded chunks
+	fileIDs := make(map[int64]bool)
+	for _, cid := range chunkIDs {
+		var fid int64
+		err := s.db.QueryRowContext(ctx, "SELECT file_id FROM chunks WHERE id = ?", cid).Scan(&fid)
+		if err == nil {
+			fileIDs[fid] = true
+		}
+	}
+
+	return s.db.WithWriteTx(func(tx *sql.Tx) error {
+		for fid := range fileIDs {
+			// Check if all chunks for this file are in the embedded set
+			var totalChunks int
+			if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM chunks WHERE file_id = ?", fid).Scan(&totalChunks); err != nil {
+				continue
+			}
+			var embeddedCount int
+			rows, err := tx.QueryContext(ctx, "SELECT id FROM chunks WHERE file_id = ?", fid)
+			if err != nil {
+				continue
+			}
+			for rows.Next() {
+				var cid int64
+				if rows.Scan(&cid) == nil {
+					for _, ecid := range chunkIDs {
+						if cid == ecid {
+							embeddedCount++
+							break
+						}
+					}
+				}
+			}
+			rows.Close()
+
+			if embeddedCount >= totalChunks && totalChunks > 0 {
+				tx.ExecContext(ctx, "UPDATE files SET embedding_status = 'complete' WHERE id = ?", fid)
+			} else if embeddedCount > 0 {
+				tx.ExecContext(ctx, "UPDATE files SET embedding_status = 'partial' WHERE id = ?", fid)
+			}
+		}
+		return nil
+	})
+}
+
+// EmbeddingReadiness returns the fraction of chunks with embeddings [0.0, 1.0].
+func (s *Store) EmbeddingReadiness(ctx context.Context, vectorCount int) (float64, error) {
+	var totalChunks int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM chunks").Scan(&totalChunks); err != nil {
+		return 0, fmt.Errorf("count chunks: %w", err)
+	}
+	if totalChunks == 0 {
+		return 0, nil
+	}
+	return float64(vectorCount) / float64(totalChunks), nil
+}
+
 // ── Helpers ──
 
 func scanChunks(rows *sql.Rows) ([]types.ChunkRecord, error) {

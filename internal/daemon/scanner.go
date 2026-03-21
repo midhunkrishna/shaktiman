@@ -49,6 +49,7 @@ var languageExtensions = map[string]string{
 	".tsx": "typescript",
 	".py":  "python",
 	".go":  "go",
+	".rs":  "rust",
 }
 
 // LanguageForExt returns the language for a file extension (e.g. ".go" → "go").

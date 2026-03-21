@@ -4,6 +4,7 @@ package core
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"github.com/shaktimanai/shaktiman/internal/storage"
@@ -89,7 +90,7 @@ func TestHybridRank_PreservesOrder(t *testing.T) {
 	}
 
 	// With no edges or diffs in the store, structural and change scores are 0.
-	// Final score = 0.5*keyword + 0.3*0 + 0.2*0 = 0.5*keyword.
+	// Session and semantic are also 0 (unavailable), weight redistributed to keyword.
 	// Order should remain descending by original score.
 	for i := 1; i < len(got); i++ {
 		if got[i].Score > got[i-1].Score {
@@ -104,13 +105,140 @@ func TestDefaultRankWeights(t *testing.T) {
 
 	w := DefaultRankWeights()
 
-	if w.Keyword != 0.5 {
-		t.Errorf("Keyword: want 0.5, got %v", w.Keyword)
+	if w.Semantic != 0.40 {
+		t.Errorf("Semantic: want 0.40, got %v", w.Semantic)
 	}
-	if w.Structural != 0.3 {
-		t.Errorf("Structural: want 0.3, got %v", w.Structural)
+	if w.Structural != 0.20 {
+		t.Errorf("Structural: want 0.20, got %v", w.Structural)
 	}
-	if w.Change != 0.2 {
-		t.Errorf("Change: want 0.2, got %v", w.Change)
+	if w.Change != 0.15 {
+		t.Errorf("Change: want 0.15, got %v", w.Change)
+	}
+	if w.Session != 0.15 {
+		t.Errorf("Session: want 0.15, got %v", w.Session)
+	}
+	if w.Keyword != 0.10 {
+		t.Errorf("Keyword: want 0.10, got %v", w.Keyword)
+	}
+}
+
+func TestRedistributeWeights_SemanticUnavailable(t *testing.T) {
+	t.Parallel()
+
+	base := DefaultRankWeights()
+	w := redistributeWeights(base, false)
+
+	if w.Semantic != 0 {
+		t.Errorf("Semantic should be 0 when unavailable, got %v", w.Semantic)
+	}
+	if w.Session != 0 {
+		t.Errorf("Session should be 0 (Phase 4 not implemented), got %v", w.Session)
+	}
+
+	// Remaining signals: Keyword, Structural, Change
+	// Base remaining = 0.10 + 0.20 + 0.15 = 0.45
+	// Unavailable = 0.40 (semantic) + 0.15 (session) = 0.55
+	// Factor = (0.45 + 0.55) / 0.45 = 1.0/0.45 ~= 2.2222
+	sum := w.Keyword + w.Structural + w.Change + w.Semantic + w.Session
+	if math.Abs(sum-1.0) > 1e-9 {
+		t.Errorf("weights should sum to ~1.0, got %v", sum)
+	}
+
+	// Proportions among remaining signals should be preserved
+	// Structural was 2x Keyword, Change was 1.5x Keyword
+	if math.Abs(w.Structural/w.Keyword-2.0) > 1e-9 {
+		t.Errorf("Structural/Keyword ratio should be 2.0, got %v", w.Structural/w.Keyword)
+	}
+	if math.Abs(w.Change/w.Keyword-1.5) > 1e-9 {
+		t.Errorf("Change/Keyword ratio should be 1.5, got %v", w.Change/w.Keyword)
+	}
+}
+
+func TestRedistributeWeights_AllAvailable(t *testing.T) {
+	t.Parallel()
+
+	base := DefaultRankWeights()
+	w := redistributeWeights(base, true)
+
+	// Session is still unavailable (Phase 4), so its weight is redistributed
+	if w.Session != 0 {
+		t.Errorf("Session should be 0 (Phase 4), got %v", w.Session)
+	}
+
+	// Semantic should remain available and be scaled up
+	if w.Semantic == 0 {
+		t.Errorf("Semantic should be non-zero when semanticReady=true")
+	}
+
+	sum := w.Keyword + w.Structural + w.Change + w.Semantic + w.Session
+	if math.Abs(sum-1.0) > 1e-9 {
+		t.Errorf("weights should sum to ~1.0, got %v", sum)
+	}
+
+	// Base remaining = 0.40 + 0.20 + 0.15 + 0.10 = 0.85
+	// Unavailable = 0.15 (session)
+	// Factor = (0.85 + 0.15) / 0.85 = 1.0/0.85 ~= 1.17647
+	// Proportions among all 4 remaining should be preserved
+	if math.Abs(w.Semantic/w.Keyword-4.0) > 1e-9 {
+		t.Errorf("Semantic/Keyword ratio should be 4.0, got %v", w.Semantic/w.Keyword)
+	}
+}
+
+func TestHybridRank_WithSemanticScores(t *testing.T) {
+	t.Parallel()
+	store := setupTestStore(t)
+
+	candidates := []types.ScoredResult{
+		{ChunkID: 1, Score: 0.9, Path: "a.go", Kind: "function", Content: "func A()"},
+		{ChunkID: 2, Score: 0.3, Path: "b.go", Kind: "function", Content: "func B()"},
+		{ChunkID: 3, Score: 0.5, Path: "c.go", Kind: "function", Content: "func C()"},
+	}
+
+	// ChunkID 2 has a very high semantic score despite low keyword score
+	semanticScores := map[int64]float64{
+		1: 0.2,
+		2: 1.0,
+		3: 0.3,
+	}
+
+	got := HybridRank(context.Background(), HybridRankInput{
+		Candidates:     candidates,
+		Store:          store,
+		Weights:        DefaultRankWeights(),
+		SemanticScores: semanticScores,
+		SemanticReady:  true,
+	})
+
+	if len(got) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(got))
+	}
+
+	// ChunkID 2 should be boosted to first due to high semantic score
+	// (semantic weight is dominant after redistribution)
+	if got[0].ChunkID != 2 {
+		t.Errorf("expected ChunkID 2 first (high semantic), got ChunkID %d", got[0].ChunkID)
+	}
+}
+
+func TestNormalizeCosineSimilarity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   float64
+		want float64
+	}{
+		{"max similarity", 1.0, 1.0},
+		{"zero similarity", 0.0, 0.5},
+		{"min similarity", -1.0, 0.0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := NormalizeCosineSimilarity(tc.in)
+			if math.Abs(got-tc.want) > 1e-9 {
+				t.Errorf("NormalizeCosineSimilarity(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
 	}
 }

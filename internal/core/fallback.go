@@ -15,14 +15,40 @@ import (
 type FallbackLevel int
 
 const (
-	// LevelKeyword uses FTS5 keyword search.
+	// LevelHybrid uses all 5 signals (semantic + structural + change + session + keyword).
+	LevelHybrid FallbackLevel = 0
+	// LevelMixed uses semantic + structural + keyword (no session).
+	LevelMixed FallbackLevel = 1
+	// LevelKeyword uses FTS5 keyword search + structural + change.
 	LevelKeyword FallbackLevel = 2
 	// LevelFilesystem reads raw file content.
 	LevelFilesystem FallbackLevel = 3
 )
 
-// DetermineLevel decides which retrieval strategy to use.
-// If the index has chunks → L2 (keyword), otherwise → L3 (filesystem).
+// String returns a human-readable name for the fallback level.
+func (l FallbackLevel) String() string {
+	switch l {
+	case LevelHybrid:
+		return "hybrid_l0"
+	case LevelMixed:
+		return "mixed_l0.5"
+	case LevelKeyword:
+		return "keyword_l2"
+	case LevelFilesystem:
+		return "filesystem_l3"
+	default:
+		return fmt.Sprintf("unknown_%d", int(l))
+	}
+}
+
+// DetermineLevelInput configures fallback level determination.
+type DetermineLevelInput struct {
+	Store          *storage.Store
+	VectorCount    int // number of vectors in the store
+	EmbeddingReady bool
+}
+
+// DetermineLevel decides which retrieval strategy to use based on index state.
 func DetermineLevel(ctx context.Context, store *storage.Store) FallbackLevel {
 	stats, err := store.GetIndexStats(ctx)
 	if err != nil || stats.TotalChunks == 0 {
@@ -31,25 +57,59 @@ func DetermineLevel(ctx context.Context, store *storage.Store) FallbackLevel {
 	return LevelKeyword
 }
 
-// FilesystemFallback reads raw TypeScript files up to the token budget.
+// DetermineLevelFull decides the retrieval strategy considering embedding readiness.
+func DetermineLevelFull(ctx context.Context, input DetermineLevelInput) FallbackLevel {
+	stats, err := input.Store.GetIndexStats(ctx)
+	if err != nil || stats.TotalChunks == 0 {
+		return LevelFilesystem
+	}
+
+	if !input.EmbeddingReady || input.VectorCount == 0 {
+		return LevelKeyword
+	}
+
+	readiness := float64(input.VectorCount) / float64(stats.TotalChunks)
+	if readiness >= 0.8 {
+		return LevelHybrid
+	}
+	if readiness >= 0.2 {
+		return LevelMixed
+	}
+	return LevelKeyword
+}
+
+// FilesystemFallback reads raw source files up to the token budget.
 // Used when the index is empty or keyword search returns no results.
 func FilesystemFallback(ctx context.Context, projectRoot string, query string, budget int) (*types.ContextPackage, error) {
-	// Find TypeScript files
-	var tsFiles []string
-	err := filepath.WalkDir(projectRoot, func(path string, d os.DirEntry, err error) error {
+	absRoot, err := filepath.EvalSymlinks(projectRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve project root: %w", err)
+	}
+
+	var srcFiles []string
+	err = filepath.WalkDir(projectRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
 		if d.IsDir() {
 			name := d.Name()
-			if name == "node_modules" || name == ".git" || name == "dist" || name == "build" {
+			if name == "node_modules" || name == ".git" || name == "dist" || name == "build" || name == "vendor" {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(d.Name()))
-		if ext == ".ts" || ext == ".tsx" {
-			tsFiles = append(tsFiles, path)
+		switch ext {
+		case ".ts", ".tsx", ".py", ".go", ".rs":
+			// Resolve symlinks and verify path stays within project root
+			absPath, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return nil
+			}
+			if !strings.HasPrefix(absPath, absRoot+string(filepath.Separator)) && absPath != absRoot {
+				return nil
+			}
+			srcFiles = append(srcFiles, path)
 		}
 		return nil
 	})
@@ -57,18 +117,18 @@ func FilesystemFallback(ctx context.Context, projectRoot string, query string, b
 		return nil, fmt.Errorf("walk for fallback: %w", err)
 	}
 
-	// Read files up to budget
 	var chunks []types.ScoredResult
 	remaining := budget
 
-	for _, path := range tsFiles {
+fileLoop:
+	for _, path := range srcFiles {
 		if remaining <= 0 {
 			break
 		}
 
 		select {
 		case <-ctx.Done():
-			break
+			break fileLoop
 		default:
 		}
 
@@ -78,10 +138,9 @@ func FilesystemFallback(ctx context.Context, projectRoot string, query string, b
 		}
 
 		relPath, _ := filepath.Rel(projectRoot, path)
-		tokenCount := len(content) / 4 // rough estimate
+		tokenCount := len(content) / 4
 
 		if tokenCount > remaining {
-			// Truncate to fit
 			content = content[:remaining*4]
 			tokenCount = remaining
 		}
@@ -93,7 +152,7 @@ func FilesystemFallback(ctx context.Context, projectRoot string, query string, b
 			EndLine:    strings.Count(string(content), "\n") + 1,
 			Content:    string(content),
 			TokenCount: tokenCount,
-			Score:      0.1, // low score for filesystem fallback
+			Score:      0.1,
 		})
 
 		remaining -= tokenCount
@@ -107,6 +166,6 @@ func FilesystemFallback(ctx context.Context, projectRoot string, query string, b
 	return &types.ContextPackage{
 		Chunks:      chunks,
 		TotalTokens: totalTokens,
-		Strategy:    "filesystem_l3",
+		Strategy:    LevelFilesystem.String(),
 	}, nil
 }

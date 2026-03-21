@@ -10,6 +10,7 @@ import (
 
 	"github.com/shaktimanai/shaktiman/internal/core"
 	"github.com/shaktimanai/shaktiman/internal/storage"
+	"github.com/shaktimanai/shaktiman/internal/vector"
 )
 
 // searchToolDef defines the MCP search tool schema.
@@ -56,12 +57,12 @@ func searchHandler(engine *core.QueryEngine) handlerFunc {
 			Explain:    explain,
 		})
 		if err != nil {
-			return mcpsdk.NewToolResultError("search failed: " + err.Error()), nil
+			return mcpsdk.NewToolResultError(sanitizeError("search failed: ", err)), nil
 		}
 
 		data, err := json.Marshal(results)
 		if err != nil {
-			return mcpsdk.NewToolResultError("marshal results: " + err.Error()), nil
+			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
 		}
 
 		return mcpsdk.NewToolResultText(string(data)), nil
@@ -105,12 +106,12 @@ func contextHandler(engine *core.QueryEngine) handlerFunc {
 			BudgetTokens: budget,
 		})
 		if err != nil {
-			return mcpsdk.NewToolResultError("context assembly failed: " + err.Error()), nil
+			return mcpsdk.NewToolResultError(sanitizeError("context assembly failed: ", err)), nil
 		}
 
 		data, err := json.Marshal(pkg)
 		if err != nil {
-			return mcpsdk.NewToolResultError("marshal context: " + err.Error()), nil
+			return mcpsdk.NewToolResultError(sanitizeError("marshal context: ", err)), nil
 		}
 
 		return mcpsdk.NewToolResultText(string(data)), nil
@@ -142,7 +143,7 @@ func symbolsHandler(store *storage.Store) handlerFunc {
 
 		syms, err := store.GetSymbolByName(ctx, name)
 		if err != nil {
-			return mcpsdk.NewToolResultError("symbol lookup failed: " + err.Error()), nil
+			return mcpsdk.NewToolResultError(sanitizeError("symbol lookup failed: ", err)), nil
 		}
 
 		kindFilter := req.GetString("kind", "")
@@ -174,7 +175,7 @@ func symbolsHandler(store *storage.Store) handlerFunc {
 
 		data, err := json.Marshal(results)
 		if err != nil {
-			return mcpsdk.NewToolResultError("marshal results: " + err.Error()), nil
+			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
 		}
 		return mcpsdk.NewToolResultText(string(data)), nil
 	}
@@ -230,7 +231,7 @@ func dependenciesHandler(store *storage.Store) handlerFunc {
 		symbolID := syms[0].ID
 		neighborIDs, err := store.Neighbors(ctx, symbolID, depth, direction)
 		if err != nil {
-			return mcpsdk.NewToolResultError("graph query failed: " + err.Error()), nil
+			return mcpsdk.NewToolResultError(sanitizeError("graph query failed: ", err)), nil
 		}
 
 		type depResult struct {
@@ -257,7 +258,7 @@ func dependenciesHandler(store *storage.Store) handlerFunc {
 
 		data, err := json.Marshal(results)
 		if err != nil {
-			return mcpsdk.NewToolResultError("marshal results: " + err.Error()), nil
+			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
 		}
 		return mcpsdk.NewToolResultText(string(data)), nil
 	}
@@ -285,9 +286,12 @@ func diffHandler(store *storage.Store) handlerFunc {
 		if err != nil {
 			return mcpsdk.NewToolResultError("invalid duration: " + sinceStr), nil
 		}
+		if duration > 720*time.Hour {
+			duration = 720 * time.Hour
+		}
 
 		limit := req.GetInt("limit", 50)
-		if limit < 1 {
+		if limit < 1 || limit > 500 {
 			limit = 50
 		}
 
@@ -297,7 +301,7 @@ func diffHandler(store *storage.Store) handlerFunc {
 			Limit: limit,
 		})
 		if err != nil {
-			return mcpsdk.NewToolResultError("diff query failed: " + err.Error()), nil
+			return mcpsdk.NewToolResultError(sanitizeError("diff query failed: ", err)), nil
 		}
 
 		type diffResult struct {
@@ -332,7 +336,77 @@ func diffHandler(store *storage.Store) handlerFunc {
 
 		data, err := json.Marshal(results)
 		if err != nil {
-			return mcpsdk.NewToolResultError("marshal results: " + err.Error()), nil
+			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
+		}
+		return mcpsdk.NewToolResultText(string(data)), nil
+	}
+}
+
+// ── enrichment_status tool ──
+
+func enrichmentStatusToolDef() mcpsdk.Tool {
+	return mcpsdk.NewTool("enrichment_status",
+		mcpsdk.WithDescription("Show embedding and indexing progress."),
+		mcpsdk.WithReadOnlyHintAnnotation(true),
+	)
+}
+
+func enrichmentStatusHandler(store *storage.Store, vs *vector.BruteForceStore, ew *vector.EmbedWorker) handlerFunc {
+	return func(ctx context.Context, _ mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		stats, err := store.GetIndexStats(ctx)
+		if err != nil {
+			return mcpsdk.NewToolResultError(sanitizeError("stats query failed: ", err)), nil
+		}
+
+		vectorCount := 0
+		if vs != nil {
+			vectorCount, _ = vs.Count(ctx)
+		}
+
+		readiness := 0.0
+		if stats.TotalChunks > 0 {
+			readiness = float64(vectorCount) / float64(stats.TotalChunks)
+		}
+
+		cbState := "disabled"
+		pending := 0
+		if ew != nil {
+			pending = ew.Pending()
+			switch ew.CircuitBreaker().State() {
+			case vector.StateClosed:
+				cbState = "closed"
+			case vector.StateOpen:
+				cbState = "open"
+			case vector.StateHalfOpen:
+				cbState = "half_open"
+			case vector.StateDisabled:
+				cbState = "disabled"
+			}
+		}
+
+		type statusResult struct {
+			TotalChunks    int     `json:"total_chunks"`
+			EmbeddedChunks int     `json:"embedded_chunks"`
+			EmbeddingPct   float64 `json:"embedding_pct"`
+			PendingJobs    int     `json:"pending_jobs"`
+			CircuitState   string  `json:"circuit_state"`
+			TotalFiles     int     `json:"total_files"`
+			TotalSymbols   int     `json:"total_symbols"`
+		}
+
+		result := statusResult{
+			TotalChunks:    stats.TotalChunks,
+			EmbeddedChunks: vectorCount,
+			EmbeddingPct:   readiness * 100,
+			PendingJobs:    pending,
+			CircuitState:   cbState,
+			TotalFiles:     stats.TotalFiles,
+			TotalSymbols:   stats.TotalSymbols,
+		}
+
+		data, err := json.Marshal(result)
+		if err != nil {
+			return mcpsdk.NewToolResultError(sanitizeError("marshal status: ", err)), nil
 		}
 		return mcpsdk.NewToolResultText(string(data)), nil
 	}
@@ -340,3 +414,12 @@ func diffHandler(store *storage.Store) handlerFunc {
 
 // handlerFunc matches the MCP server.ToolHandlerFunc signature.
 type handlerFunc = func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error)
+
+// sanitizeError truncates error messages for MCP responses (defense in depth).
+func sanitizeError(prefix string, err error) string {
+	msg := err.Error()
+	if len(msg) > 200 {
+		msg = msg[:200] + "..."
+	}
+	return prefix + msg
+}

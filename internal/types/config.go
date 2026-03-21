@@ -14,6 +14,14 @@ type Config struct {
 	Tokenizer         string
 	WatcherEnabled    bool
 	WatcherDebounceMs int
+
+	// Embedding configuration (Phase 3)
+	OllamaURL      string // Ollama API base URL
+	EmbeddingModel string // model name (e.g. "nomic-embed-text")
+	EmbeddingDims  int    // vector dimensionality (e.g. 768)
+	EmbeddingsPath string // binary persistence file path
+	EmbedBatchSize int    // max texts per Ollama batch request
+	EmbedEnabled   bool   // whether to run the embedding worker
 }
 
 // DefaultConfig returns a Config with sane defaults for the given project root.
@@ -28,5 +36,11 @@ func DefaultConfig(projectRoot string) Config {
 		Tokenizer:         "cl100k_base",
 		WatcherEnabled:    true,
 		WatcherDebounceMs: 200,
+		OllamaURL:         "http://localhost:11434",
+		EmbeddingModel:    "nomic-embed-text",
+		EmbeddingDims:     768,
+		EmbeddingsPath:    filepath.Join(projectRoot, ".shaktiman", "embeddings.bin"),
+		EmbedBatchSize:    32,
+		EmbedEnabled:      true,
 	}
 }

@@ -6,6 +6,7 @@ import (
 	sitter "github.com/smacker/go-tree-sitter"
 	"github.com/smacker/go-tree-sitter/golang"
 	"github.com/smacker/go-tree-sitter/python"
+	"github.com/smacker/go-tree-sitter/rust"
 	"github.com/smacker/go-tree-sitter/typescript/typescript"
 )
 
@@ -31,6 +32,8 @@ func GetLanguageConfig(lang string) (*LanguageConfig, error) {
 		return pythonConfig(), nil
 	case "go":
 		return goConfig(), nil
+	case "rust":
+		return rustConfig(), nil
 	default:
 		return nil, fmt.Errorf("unsupported language: %s", lang)
 	}
@@ -39,7 +42,7 @@ func GetLanguageConfig(lang string) (*LanguageConfig, error) {
 // SupportedLanguage returns true if the language is supported.
 func SupportedLanguage(lang string) bool {
 	switch lang {
-	case "typescript", "python", "go":
+	case "typescript", "python", "go", "rust":
 		return true
 	default:
 		return false
@@ -144,5 +147,47 @@ func goConfig() *LanguageConfig {
 		ExportType:    "",
 		ClassBodyType: "",
 		ClassTypes:    map[string]bool{},
+	}
+}
+
+func rustConfig() *LanguageConfig {
+	return &LanguageConfig{
+		Name:    "rust",
+		Grammar: rust.GetLanguage(),
+		ChunkableTypes: map[string]string{
+			"function_item":    "function",
+			"struct_item":      "type",
+			"enum_item":        "type",
+			"trait_item":       "interface",
+			"impl_item":        "block",
+			"type_item":        "type",
+			"mod_item":         "block",
+			"use_declaration":  "",
+			"const_item":       "block",
+			"static_item":      "block",
+			"macro_definition": "function",
+		},
+		SymbolKindMap: map[string]string{
+			"function_item":    "function",
+			"struct_item":      "type",
+			"enum_item":        "type",
+			"trait_item":       "interface",
+			"impl_item":        "type",
+			"type_item":        "type",
+			"const_item":       "variable",
+			"static_item":      "variable",
+			"macro_definition": "function",
+		},
+		ClassBodyTypes: map[string]bool{
+			"function_item": true, // methods inside impl blocks
+		},
+		ImportTypes: map[string]bool{
+			"use_declaration": true,
+		},
+		ExportType:    "", // Rust uses pub visibility, not export wrappers
+		ClassBodyType: "declaration_list",
+		ClassTypes: map[string]bool{
+			"impl_item": true,
+		},
 	}
 }

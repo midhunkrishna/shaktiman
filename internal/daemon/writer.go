@@ -21,13 +21,20 @@ var ErrWriterClosed = errors.New("writer is closed")
 // WriterManager serializes all SQLite writes through a single goroutine (IP-4).
 // Producers register via AddProducer/RemoveProducer for ordered shutdown.
 type WriterManager struct {
-	ch        chan types.WriteJob
-	producers sync.WaitGroup
-	done      chan struct{}
-	store     *storage.Store
-	logger    *slog.Logger
-	closed    atomic.Bool
-	mu        sync.Mutex // protects close sequence
+	ch            chan types.WriteJob
+	producers     sync.WaitGroup
+	done          chan struct{}
+	store         *storage.Store
+	logger        *slog.Logger
+	closed        atomic.Bool
+	mu            sync.Mutex          // protects close sequence
+	vectorDeleter types.VectorDeleter // nil if embeddings disabled
+}
+
+// SetVectorDeleter attaches a vector deleter for cleaning up stale embeddings
+// when chunks are replaced or files are deleted.
+func (wm *WriterManager) SetVectorDeleter(vd types.VectorDeleter) {
+	wm.vectorDeleter = vd
 }
 
 // NewWriterManager creates a writer with the given channel capacity (IP-5: 500).
@@ -105,8 +112,11 @@ func (wm *WriterManager) RemoveProducer() { wm.producers.Done() }
 func (wm *WriterManager) Done() <-chan struct{} { return wm.done }
 
 func (wm *WriterManager) processJob(ctx context.Context, job types.WriteJob) {
+	var staleChunkIDs []int64
 	err := wm.store.DB().WithWriteTx(func(tx *sql.Tx) error {
-		return processWriteJob(ctx, tx, wm.store, job)
+		var txErr error
+		staleChunkIDs, txErr = processWriteJob(ctx, tx, wm.store, job)
+		return txErr
 	})
 	if err != nil {
 		wm.logger.Error("write job failed",
@@ -114,31 +124,58 @@ func (wm *WriterManager) processJob(ctx context.Context, job types.WriteJob) {
 			"file", job.FilePath,
 			"err", err)
 	}
+	// Clean up stale vectors after successful transaction
+	if err == nil && wm.vectorDeleter != nil && len(staleChunkIDs) > 0 {
+		if delErr := wm.vectorDeleter.Delete(ctx, staleChunkIDs); delErr != nil {
+			wm.logger.Warn("vector cleanup failed", "chunks", len(staleChunkIDs), "err", delErr)
+		}
+	}
 	if job.Done != nil {
 		job.Done <- err
 	}
 }
 
 // processWriteJob executes a single write job within a transaction.
-func processWriteJob(ctx context.Context, tx *sql.Tx, store *storage.Store, job types.WriteJob) error {
+// Returns IDs of chunks that were deleted (for vector store cleanup).
+func processWriteJob(ctx context.Context, tx *sql.Tx, store *storage.Store, job types.WriteJob) ([]int64, error) {
 	switch job.Type {
 	case types.WriteJobEnrichment:
 		return processEnrichmentJob(ctx, tx, store, job)
 	case types.WriteJobFileDelete:
+		stale := collectChunkIDsByPath(ctx, tx, job.FilePath)
 		_, err := tx.ExecContext(ctx, "DELETE FROM files WHERE path = ?", job.FilePath)
 		if err != nil {
-			return fmt.Errorf("delete file %s: %w", job.FilePath, err)
+			return nil, fmt.Errorf("delete file %s: %w", job.FilePath, err)
 		}
-		return nil
+		return stale, nil
 	default:
-		return fmt.Errorf("unknown write job type: %d", job.Type)
+		return nil, fmt.Errorf("unknown write job type: %d", job.Type)
 	}
 }
 
+// collectChunkIDsByPath returns all chunk IDs for a file path (before deletion).
+func collectChunkIDsByPath(ctx context.Context, tx *sql.Tx, path string) []int64 {
+	rows, err := tx.QueryContext(ctx,
+		"SELECT c.id FROM chunks c JOIN files f ON c.file_id = f.id WHERE f.path = ?", path)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // processEnrichmentJob handles an enrichment write: upsert file, replace chunks + symbols.
-func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store, job types.WriteJob) error {
+// Returns IDs of old chunks that were replaced (for vector store cleanup).
+func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store, job types.WriteJob) ([]int64, error) {
 	if job.File == nil {
-		return fmt.Errorf("enrichment job for %s has nil file", job.FilePath)
+		return nil, fmt.Errorf("enrichment job for %s has nil file", job.FilePath)
 	}
 
 	// Content hash guard (CA-3): skip if already indexed with same hash
@@ -149,13 +186,13 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 			job.FilePath).Scan(&currentHash, &indexedAt)
 		if err == nil && currentHash == job.ContentHash {
 			// Already indexed with same content — skip
-			return nil
+			return nil, nil
 		}
 		// Stale check: if DB was updated after job was created
 		if err == nil && indexedAt.Valid {
 			dbTime, tErr := time.Parse(time.RFC3339Nano, indexedAt.String)
 			if tErr == nil && dbTime.After(job.Timestamp) {
-				return nil // stale job
+				return nil, nil // stale job
 			}
 		}
 	}
@@ -170,7 +207,7 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 		oldSymbols = fetchOldSymbols(ctx, tx, oldFileID)
 	}
 
-	// Upsert file
+	// Upsert file — reset embedding_status to 'pending' since chunks are changing
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO files (path, content_hash, mtime, size, language, indexed_at, embedding_status, parse_quality)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -180,28 +217,44 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 			size = excluded.size,
 			language = excluded.language,
 			indexed_at = excluded.indexed_at,
+			embedding_status = 'pending',
 			parse_quality = excluded.parse_quality`,
 		job.File.Path, job.File.ContentHash, job.File.Mtime, job.File.Size,
 		job.File.Language, time.Now().UTC().Format(time.RFC3339Nano),
 		job.File.EmbeddingStatus, job.File.ParseQuality)
 	if err != nil {
-		return fmt.Errorf("upsert file %s: %w", job.FilePath, err)
+		return nil, fmt.Errorf("upsert file %s: %w", job.FilePath, err)
 	}
 
 	fileID, err := res.LastInsertId()
 	if err != nil {
-		return fmt.Errorf("get file id: %w", err)
+		return nil, fmt.Errorf("get file id: %w", err)
 	}
 	if fileID == 0 {
 		err = tx.QueryRowContext(ctx, "SELECT id FROM files WHERE path = ?", job.FilePath).Scan(&fileID)
 		if err != nil {
-			return fmt.Errorf("lookup file id %s: %w", job.FilePath, err)
+			return nil, fmt.Errorf("lookup file id %s: %w", job.FilePath, err)
+		}
+	}
+
+	// Collect old chunk IDs for vector store cleanup before deleting
+	var staleChunkIDs []int64
+	{
+		rows, qerr := tx.QueryContext(ctx, "SELECT id FROM chunks WHERE file_id = ?", fileID)
+		if qerr == nil {
+			for rows.Next() {
+				var cid int64
+				if rows.Scan(&cid) == nil {
+					staleChunkIDs = append(staleChunkIDs, cid)
+				}
+			}
+			rows.Close()
 		}
 	}
 
 	// Delete old chunks and symbols (cascade handles symbols via FK)
 	if _, err := tx.ExecContext(ctx, "DELETE FROM chunks WHERE file_id = ?", fileID); err != nil {
-		return fmt.Errorf("delete old chunks for %s: %w", job.FilePath, err)
+		return nil, fmt.Errorf("delete old chunks for %s: %w", job.FilePath, err)
 	}
 
 	// Insert new chunks
@@ -215,7 +268,7 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 			c.StartLine, c.EndLine, c.Content, c.TokenCount, c.Signature,
 			coalesce(c.ParseQuality, "full"))
 		if err != nil {
-			return fmt.Errorf("insert chunk %d for %s: %w", i, job.FilePath, err)
+			return nil, fmt.Errorf("insert chunk %d for %s: %w", i, job.FilePath, err)
 		}
 		chunkIDs[i], _ = res.LastInsertId()
 	}
@@ -226,7 +279,7 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 			parentID := chunkIDs[*c.ParentIndex]
 			if _, err := tx.ExecContext(ctx, "UPDATE chunks SET parent_chunk_id = ? WHERE id = ?",
 				parentID, chunkIDs[i]); err != nil {
-				return fmt.Errorf("set parent for chunk %d: %w", i, err)
+				return nil, fmt.Errorf("set parent for chunk %d: %w", i, err)
 			}
 		}
 	}
@@ -252,7 +305,7 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 			chunkID, fileID, sym.Name, sym.QualifiedName, sym.Kind,
 			sym.Line, sym.Signature, sym.Visibility, exported)
 		if err != nil {
-			return fmt.Errorf("insert symbol %s: %w", sym.Name, err)
+			return nil, fmt.Errorf("insert symbol %s: %w", sym.Name, err)
 		}
 		symID, _ := res.LastInsertId()
 		symbolIDs[sym.Name] = symID
@@ -273,18 +326,18 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 
 	// Delete old edges for this file, then insert new edges (CA-1)
 	if err := store.DeleteEdgesByFile(ctx, tx, fileID); err != nil {
-		return fmt.Errorf("delete old edges for %s: %w", job.FilePath, err)
+		return nil, fmt.Errorf("delete old edges for %s: %w", job.FilePath, err)
 	}
 	if err := store.InsertEdges(ctx, tx, fileID, job.Edges, symbolIDs); err != nil {
-		return fmt.Errorf("insert edges for %s: %w", job.FilePath, err)
+		return nil, fmt.Errorf("insert edges for %s: %w", job.FilePath, err)
 	}
 
 	// Attempt to resolve pending edges for newly inserted symbol names
 	if err := store.ResolvePendingEdges(ctx, tx, newSymbolNames); err != nil {
-		return fmt.Errorf("resolve pending edges for %s: %w", job.FilePath, err)
+		return nil, fmt.Errorf("resolve pending edges for %s: %w", job.FilePath, err)
 	}
 
-	return nil
+	return staleChunkIDs, nil
 }
 
 // oldSymbolInfo holds symbol data from the previous version for diff comparison.

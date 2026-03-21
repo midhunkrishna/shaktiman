@@ -1,0 +1,469 @@
+package vector
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"sync"
+	"time"
+)
+
+// Sentinel errors for embedding operations.
+var (
+	ErrOllamaUnreachable = errors.New("ollama is unreachable")
+	ErrCircuitOpen       = errors.New("circuit breaker is open")
+)
+
+// ── Ollama HTTP Client ──
+
+// OllamaClient calls the Ollama embedding API over HTTP.
+type OllamaClient struct {
+	baseURL string
+	model   string
+	client  *http.Client
+	logger  *slog.Logger
+}
+
+// OllamaClientInput configures an OllamaClient.
+type OllamaClientInput struct {
+	BaseURL string
+	Model   string
+	Timeout time.Duration
+}
+
+// NewOllamaClient creates an Ollama HTTP client.
+func NewOllamaClient(input OllamaClientInput) *OllamaClient {
+	timeout := input.Timeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+	return &OllamaClient{
+		baseURL: input.BaseURL,
+		model:   input.Model,
+		client:  &http.Client{Timeout: timeout},
+		logger:  slog.Default().With("component", "ollama"),
+	}
+}
+
+type ollamaEmbedRequest struct {
+	Model string `json:"model"`
+	Input any    `json:"input"` // string or []string
+}
+
+type ollamaEmbedResponse struct {
+	Embeddings [][]float32 `json:"embeddings"`
+}
+
+// Embed produces a single embedding vector for the given text.
+func (c *OllamaClient) Embed(ctx context.Context, text string) ([]float32, error) {
+	vecs, err := c.EmbedBatch(ctx, []string{text})
+	if err != nil {
+		return nil, err
+	}
+	if len(vecs) == 0 {
+		return nil, fmt.Errorf("ollama returned 0 embeddings for 1 input")
+	}
+	return vecs[0], nil
+}
+
+// EmbedBatch produces embedding vectors for multiple texts in one HTTP call.
+func (c *OllamaClient) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	body, err := json.Marshal(ollamaEmbedRequest{Model: c.model, Input: texts})
+	if err != nil {
+		return nil, fmt.Errorf("marshal embed request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/embed", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create embed request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("embed HTTP call: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("ollama embed returned %d: %s", resp.StatusCode, respBody)
+	}
+
+	const maxEmbedResponseSize = 50 * 1024 * 1024 // 50MB
+	var result ollamaEmbedResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxEmbedResponseSize)).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode embed response: %w", err)
+	}
+	if len(result.Embeddings) != len(texts) {
+		return nil, fmt.Errorf("ollama returned %d embeddings for %d inputs",
+			len(result.Embeddings), len(texts))
+	}
+	return result.Embeddings, nil
+}
+
+// Healthy returns true if the Ollama API is reachable.
+func (c *OllamaClient) Healthy(ctx context.Context) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// ── Circuit Breaker ──
+
+// CircuitState represents the state of the circuit breaker.
+type CircuitState int32
+
+const (
+	StateClosed   CircuitState = iota // normal operation
+	StateOpen                         // failing, reject requests with backoff
+	StateHalfOpen                     // probing single request
+	StateDisabled                     // kept for API compat; functionally same as StateOpen
+)
+
+// CircuitBreaker protects Ollama calls with a state machine (IP-15: mutex-based).
+// Uses exponential backoff instead of permanent disable: cooldown doubles on each
+// open cycle up to backoffMax, then keeps retrying at backoffMax intervals.
+type CircuitBreaker struct {
+	mu              sync.Mutex
+	state           CircuitState
+	consecutiveFail int
+	openCycles      int
+	lastOpenTime    time.Time
+	baseCooldown    time.Duration
+	currentCooldown time.Duration
+	backoffMax      time.Duration
+	failThreshold   int
+	halfOpenProbing bool // true when a probe request is in flight
+}
+
+// NewCircuitBreaker creates a circuit breaker with defaults.
+func NewCircuitBreaker() *CircuitBreaker {
+	return &CircuitBreaker{
+		state:           StateClosed,
+		baseCooldown:    5 * time.Minute,
+		currentCooldown: 5 * time.Minute,
+		backoffMax:      1 * time.Hour,
+		failThreshold:   3,
+	}
+}
+
+// Allow returns true if a request should proceed.
+func (cb *CircuitBreaker) Allow() bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	switch cb.state {
+	case StateClosed:
+		return true
+	case StateOpen:
+		if time.Since(cb.lastOpenTime) > cb.currentCooldown {
+			cb.state = StateHalfOpen
+			cb.halfOpenProbing = true
+			return true
+		}
+		return false
+	case StateHalfOpen:
+		if cb.halfOpenProbing {
+			return false // only one probe at a time
+		}
+		cb.halfOpenProbing = true
+		return true
+	default:
+		return false
+	}
+}
+
+// RecordSuccess records a successful call.
+func (cb *CircuitBreaker) RecordSuccess() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.consecutiveFail = 0
+	cb.openCycles = 0
+	cb.currentCooldown = cb.baseCooldown
+	cb.halfOpenProbing = false
+	cb.state = StateClosed
+}
+
+// RecordFailure records a failed call. Transitions to OPEN with exponential backoff.
+// In HalfOpen, a single failure immediately re-opens the circuit.
+func (cb *CircuitBreaker) RecordFailure() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.halfOpenProbing = false
+
+	// HalfOpen probe failed → immediately re-open with escalated backoff
+	if cb.state == StateHalfOpen {
+		cb.openCycles++
+		cb.state = StateOpen
+		cb.lastOpenTime = time.Now()
+		cb.currentCooldown = min(cb.currentCooldown*2, cb.backoffMax)
+		if cb.openCycles >= 3 {
+			slog.Warn("circuit breaker backoff escalated",
+				"cooldown", cb.currentCooldown, "cycles", cb.openCycles)
+		}
+		return
+	}
+
+	cb.consecutiveFail++
+	if cb.consecutiveFail >= cb.failThreshold {
+		cb.openCycles++
+		cb.state = StateOpen
+		cb.lastOpenTime = time.Now()
+		cb.consecutiveFail = 0
+		// Exponential backoff: 5m → 10m → 20m → 40m → 60m (capped)
+		cb.currentCooldown = min(cb.currentCooldown*2, cb.backoffMax)
+		if cb.openCycles >= 3 {
+			slog.Warn("circuit breaker backoff escalated",
+				"cooldown", cb.currentCooldown, "cycles", cb.openCycles)
+		}
+	}
+}
+
+// State returns the current circuit state.
+func (cb *CircuitBreaker) State() CircuitState {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	return cb.state
+}
+
+// Reset forces the circuit breaker back to CLOSED.
+func (cb *CircuitBreaker) Reset() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.state = StateClosed
+	cb.consecutiveFail = 0
+	cb.openCycles = 0
+	cb.currentCooldown = cb.baseCooldown
+	cb.halfOpenProbing = false
+}
+
+// ── Embed Worker ──
+
+// EmbedJob represents a single chunk to be embedded.
+type EmbedJob struct {
+	ChunkID int64
+	Content string
+}
+
+// EmbedWorkerInput configures the EmbedWorker.
+type EmbedWorkerInput struct {
+	Store       *BruteForceStore
+	Embedder    *OllamaClient
+	BatchSize   int
+	OnBatchDone func(chunkIDs []int64) // optional callback after successful upsert
+}
+
+// EmbedWorker processes embedding jobs in batches with circuit breaker protection.
+type EmbedWorker struct {
+	store       *BruteForceStore
+	embedder    *OllamaClient
+	cb          *CircuitBreaker
+	queue       chan EmbedJob
+	batchSz     int
+	logger      *slog.Logger
+	onBatchDone func(chunkIDs []int64)
+}
+
+// NewEmbedWorker creates an embedding worker.
+func NewEmbedWorker(input EmbedWorkerInput) *EmbedWorker {
+	batchSz := input.BatchSize
+	if batchSz <= 0 {
+		batchSz = 32
+	}
+	return &EmbedWorker{
+		store:       input.Store,
+		embedder:    input.Embedder,
+		cb:          NewCircuitBreaker(),
+		queue:       make(chan EmbedJob, 1000),
+		batchSz:     batchSz,
+		logger:      slog.Default().With("component", "embed-worker"),
+		onBatchDone: input.OnBatchDone,
+	}
+}
+
+// Submit enqueues an embedding job. Non-blocking; drops if queue is full.
+func (w *EmbedWorker) Submit(job EmbedJob) bool {
+	select {
+	case w.queue <- job:
+		return true
+	default:
+		return false
+	}
+}
+
+// SubmitBatch enqueues multiple embedding jobs.
+func (w *EmbedWorker) SubmitBatch(jobs []EmbedJob) int {
+	submitted := 0
+	for _, j := range jobs {
+		if w.Submit(j) {
+			submitted++
+		}
+	}
+	return submitted
+}
+
+// CircuitBreaker returns the worker's circuit breaker for status queries.
+func (w *EmbedWorker) CircuitBreaker() *CircuitBreaker {
+	return w.cb
+}
+
+// Pending returns the number of jobs waiting in the queue.
+func (w *EmbedWorker) Pending() int {
+	return len(w.queue)
+}
+
+// EmbedReady returns true if the circuit breaker allows embedding requests.
+func (w *EmbedWorker) EmbedReady() bool {
+	s := w.cb.State()
+	return s == StateClosed || s == StateHalfOpen
+}
+
+// Run processes embedding jobs until ctx is cancelled. Blocks.
+func (w *EmbedWorker) Run(ctx context.Context) {
+	batch := make([]EmbedJob, 0, w.batchSz)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case job, ok := <-w.queue:
+			if !ok {
+				if len(batch) > 0 {
+					w.processBatch(ctx, batch)
+				}
+				return
+			}
+			batch = append(batch, job)
+			if len(batch) >= w.batchSz {
+				w.processBatch(ctx, batch)
+				batch = batch[:0]
+			}
+		case <-ticker.C:
+			if len(batch) > 0 {
+				w.processBatch(ctx, batch)
+				batch = batch[:0]
+			}
+		case <-ctx.Done():
+			// Drain remaining batch with a short timeout
+			if len(batch) > 0 {
+				drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				w.processBatch(drainCtx, batch)
+				cancel()
+			}
+			return
+		}
+	}
+}
+
+func (w *EmbedWorker) processBatch(ctx context.Context, batch []EmbedJob) {
+	if !w.cb.Allow() {
+		w.logger.Debug("circuit breaker open, skipping batch", "size", len(batch))
+		return
+	}
+
+	texts := make([]string, len(batch))
+	for i, j := range batch {
+		texts[i] = j.Content
+	}
+
+	vectors, err := w.embedder.EmbedBatch(ctx, texts)
+	if err != nil {
+		w.cb.RecordFailure()
+		w.logger.Warn("embed batch failed", "size", len(batch), "err", err)
+		return
+	}
+	w.cb.RecordSuccess()
+
+	chunkIDs := make([]int64, len(batch))
+	for i, j := range batch {
+		chunkIDs[i] = j.ChunkID
+	}
+
+	if err := w.store.UpsertBatch(ctx, chunkIDs, vectors); err != nil {
+		w.logger.Error("upsert batch failed", "err", err)
+		return
+	}
+
+	if w.onBatchDone != nil {
+		w.onBatchDone(chunkIDs)
+	}
+}
+
+// ── Query Embedding Cache (LRU) ──
+
+// EmbedCache is an LRU cache for query embeddings.
+type EmbedCache struct {
+	mu      sync.Mutex
+	entries map[string][]float32
+	order   []string
+	maxSize int
+}
+
+// NewEmbedCache creates a cache with the given maximum entry count.
+func NewEmbedCache(maxSize int) *EmbedCache {
+	return &EmbedCache{
+		entries: make(map[string][]float32, maxSize),
+		maxSize: maxSize,
+	}
+}
+
+// Get returns a cached embedding if present. Returns a copy to prevent mutation.
+func (c *EmbedCache) Get(query string) ([]float32, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	vec, ok := c.entries[query]
+	if ok {
+		c.moveToEnd(query)
+		cp := make([]float32, len(vec))
+		copy(cp, vec)
+		return cp, true
+	}
+	return nil, false
+}
+
+// Put stores a copy of the query embedding in the cache, evicting the oldest if full.
+func (c *EmbedCache) Put(query string, vec []float32) {
+	cp := make([]float32, len(vec))
+	copy(cp, vec)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, exists := c.entries[query]; exists {
+		c.entries[query] = cp
+		c.moveToEnd(query)
+		return
+	}
+
+	if len(c.order) >= c.maxSize {
+		oldest := c.order[0]
+		c.order = c.order[1:]
+		delete(c.entries, oldest)
+	}
+
+	c.entries[query] = cp
+	c.order = append(c.order, query)
+}
+
+func (c *EmbedCache) moveToEnd(key string) {
+	for i, k := range c.order {
+		if k == key {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			c.order = append(c.order, key)
+			return
+		}
+	}
+}

@@ -35,13 +35,31 @@ type MetadataStore interface {
 	GetIndexStats(ctx context.Context) (*IndexStats, error)
 }
 
+// VectorResult holds a single vector similarity match.
+type VectorResult struct {
+	ChunkID int64   `json:"chunk_id"`
+	Score   float64 `json:"score"` // cosine similarity normalized to [0,1]
+}
+
 // VectorStore provides vector similarity search operations.
 // Default: brute-force in-process. Optional: Qdrant (Phase 3+).
 type VectorStore interface {
-	Search(ctx context.Context, query []float32, limit int) ([]ScoredResult, error)
+	Search(ctx context.Context, query []float32, topK int) ([]VectorResult, error)
 	Upsert(ctx context.Context, chunkID int64, vector []float32) error
 	Delete(ctx context.Context, chunkIDs []int64) error
 	Count(ctx context.Context) (int, error)
+}
+
+// Embedder produces vector embeddings from text.
+type Embedder interface {
+	Embed(ctx context.Context, text string) ([]float32, error)
+	EmbedBatch(ctx context.Context, texts []string) ([][]float32, error)
+}
+
+// VectorDeleter removes vectors by chunk ID. Used to decouple the writer
+// from the vector package while still cleaning up stale embeddings.
+type VectorDeleter interface {
+	Delete(ctx context.Context, chunkIDs []int64) error
 }
 
 // GraphStore provides graph traversal operations.
