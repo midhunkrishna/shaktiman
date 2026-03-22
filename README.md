@@ -308,4 +308,4 @@ testdata/              Test fixtures (TypeScript, Python, Go projects)
 
 ## License
 
-TBD
+[MIT](https://github.com/midhunkrishna/shaktiman/blob/master/LICENSE)
