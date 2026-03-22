@@ -62,12 +62,7 @@ func searchHandler(engine *core.QueryEngine) handlerFunc {
 			return mcpsdk.NewToolResultError(sanitizeError("search failed: ", err)), nil
 		}
 
-		data, err := json.Marshal(results)
-		if err != nil {
-			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
-		}
-
-		return mcpsdk.NewToolResultText(string(data)), nil
+		return mcpsdk.NewToolResultText(formatSearchResults(results, explain)), nil
 	}
 }
 
@@ -113,12 +108,7 @@ func contextHandler(engine *core.QueryEngine) handlerFunc {
 			return mcpsdk.NewToolResultError(sanitizeError("context assembly failed: ", err)), nil
 		}
 
-		data, err := json.Marshal(pkg)
-		if err != nil {
-			return mcpsdk.NewToolResultError(sanitizeError("marshal context: ", err)), nil
-		}
-
-		return mcpsdk.NewToolResultText(string(data)), nil
+		return mcpsdk.NewToolResultText(formatContextPackage(pkg)), nil
 	}
 }
 
