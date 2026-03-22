@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/shaktimanai/shaktiman/internal/daemon"
@@ -29,9 +30,30 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Configure structured logging to stderr (stdout is for MCP protocol)
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+	// Configure structured logging to a file (stdout is reserved for MCP protocol).
+	// Log file is truncated on each startup — previous session logs are discarded.
+	logDir := filepath.Join(projectRoot, ".shaktiman")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "error: cannot create log directory %s: %v\n", logDir, err)
+		os.Exit(1)
+	}
+	logFile, err := os.Create(filepath.Join(logDir, "shaktimand.log"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: cannot open log file: %v\n", err)
+		os.Exit(1)
+	}
+	defer logFile.Close()
+
+	logLevel := slog.LevelInfo
+	if lvl := os.Getenv("SHAKTIMAN_LOG_LEVEL"); lvl != "" {
+		var l slog.Level
+		if err := l.UnmarshalText([]byte(lvl)); err == nil {
+			logLevel = l
+		}
+	}
+
+	logger := slog.New(slog.NewJSONHandler(logFile, &slog.HandlerOptions{
+		Level: logLevel,
 	}))
 	slog.SetDefault(logger)
 
@@ -39,6 +61,16 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	slog.Info("shaktimand starting",
+		"project_root", cfg.ProjectRoot,
+		"db_path", cfg.DBPath,
+		"embed_enabled", cfg.EmbedEnabled,
+		"embed_model", cfg.EmbeddingModel,
+		"ollama_url", cfg.OllamaURL,
+		"watcher_enabled", cfg.WatcherEnabled,
+		"pid", os.Getpid(),
+	)
 
 	d, err := daemon.New(cfg)
 	if err != nil {

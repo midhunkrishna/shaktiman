@@ -154,6 +154,125 @@ func TestScanRepo(t *testing.T) {
 	t.Logf("Scanned %d TypeScript files", len(result.Files))
 }
 
+func TestScanRepo_RelativeRoot(t *testing.T) {
+	t.Parallel()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	testdataAbs := filepath.Join(cwd, "..", "..", "testdata", "go_project")
+	if _, err := os.Stat(testdataAbs); os.IsNotExist(err) {
+		t.Skipf("testdata not found at %s", testdataAbs)
+	}
+
+	// Compute a relative path from cwd to testdata
+	relRoot, err := filepath.Rel(cwd, testdataAbs)
+	if err != nil {
+		t.Fatalf("Rel: %v", err)
+	}
+
+	result, err := ScanRepo(context.Background(), ScanInput{ProjectRoot: relRoot})
+	if err != nil {
+		t.Fatalf("ScanRepo with relative root %q: %v", relRoot, err)
+	}
+
+	if len(result.Files) == 0 {
+		t.Fatalf("expected scanned files with relative root %q, got 0", relRoot)
+	}
+
+	for _, f := range result.Files {
+		if f.Language != "go" {
+			t.Errorf("expected language=go for %s, got %s", f.Path, f.Language)
+		}
+	}
+
+	t.Logf("Scanned %d Go files via relative root %q", len(result.Files), relRoot)
+}
+
+func TestScanRepo_DotRoot(t *testing.T) {
+	// NOT parallel: os.Chdir is process-global and would race with other tests
+	// that rely on filepath.Abs (e.g. TestScanRepo_RelativeRoot).
+
+	// Create a temp project with a Go file
+	tmpDir := t.TempDir()
+	goFile := filepath.Join(tmpDir, "main.go")
+	if err := os.WriteFile(goFile, []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Save and restore cwd since "." is relative
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	result, err := ScanRepo(context.Background(), ScanInput{ProjectRoot: "."})
+	if err != nil {
+		t.Fatalf("ScanRepo with dot root: %v", err)
+	}
+
+	if len(result.Files) != 1 {
+		t.Fatalf("expected 1 file with dot root, got %d", len(result.Files))
+	}
+	if result.Files[0].Path != "main.go" {
+		t.Errorf("expected path=main.go, got %s", result.Files[0].Path)
+	}
+	if result.Files[0].Language != "go" {
+		t.Errorf("expected language=go, got %s", result.Files[0].Language)
+	}
+}
+
+func TestScanRepo_SymlinkOutsideRoot(t *testing.T) {
+	t.Parallel()
+
+	// Create two dirs: project and outside
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	outsideDir := filepath.Join(tmpDir, "outside")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll project: %v", err)
+	}
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll outside: %v", err)
+	}
+
+	// Write a Go file outside the project
+	outsideFile := filepath.Join(outsideDir, "secret.go")
+	if err := os.WriteFile(outsideFile, []byte("package secret\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Write a legitimate file inside the project
+	insideFile := filepath.Join(projectDir, "main.go")
+	if err := os.WriteFile(insideFile, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Create a symlink inside project pointing outside
+	symlink := filepath.Join(projectDir, "escape.go")
+	if err := os.Symlink(outsideFile, symlink); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	result, err := ScanRepo(context.Background(), ScanInput{ProjectRoot: projectDir})
+	if err != nil {
+		t.Fatalf("ScanRepo: %v", err)
+	}
+
+	// Should only find main.go, not escape.go (symlink outside root)
+	if len(result.Files) != 1 {
+		t.Fatalf("expected 1 file (symlink filtered), got %d", len(result.Files))
+	}
+	if result.Files[0].Path != "main.go" {
+		t.Errorf("expected main.go, got %s", result.Files[0].Path)
+	}
+}
+
 func TestWriterManager_ProcessJob(t *testing.T) {
 	t.Parallel()
 

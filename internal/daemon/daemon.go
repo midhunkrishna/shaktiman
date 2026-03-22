@@ -8,6 +8,7 @@ import (
 
 	"github.com/shaktimanai/shaktiman/internal/core"
 	"github.com/shaktimanai/shaktiman/internal/mcp"
+	"github.com/shaktimanai/shaktiman/internal/observability"
 	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 	"github.com/shaktimanai/shaktiman/internal/vector"
@@ -122,7 +123,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 
 	// Run cold indexing in background, then start watcher
 	go func() {
-		d.logger.Info("starting cold index", "root", d.cfg.ProjectRoot)
+		defer observability.Op(d.logger, "cold_index", "root", d.cfg.ProjectRoot)()
 
 		scanResult, err := ScanRepo(ctx, ScanInput{ProjectRoot: d.cfg.ProjectRoot})
 		if err != nil {
@@ -137,8 +138,6 @@ func (d *Daemon) Start(ctx context.Context) error {
 			d.logger.Error("indexing failed", "err", err)
 			return
 		}
-
-		d.logger.Info("cold index complete")
 
 		// Queue chunks for embedding after cold index
 		if d.embedWorker != nil {
@@ -206,7 +205,7 @@ func (d *Daemon) periodicEmbeddingSave(ctx context.Context) {
 				if err := d.vectorStore.SaveToDisk(d.cfg.EmbeddingsPath); err != nil {
 					d.logger.Error("periodic embedding save failed", "err", err)
 				} else {
-					d.logger.Debug("periodic embedding checkpoint", "count", count)
+					d.logger.Info("periodic embedding checkpoint", "count", count)
 				}
 			}
 		case <-ctx.Done():

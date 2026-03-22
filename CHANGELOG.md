@@ -7,6 +7,164 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-03-21
+
+Phase 3 — Semantic Intelligence + Hardening: vector embeddings via Ollama,
+hybrid 5-signal ranking, Rust language support, and security/correctness
+hardening from adversarial + security analysis.
+
+### Added
+
+- **Vector store** (`internal/vector/store.go`) — in-memory `BruteForceStore`
+  with O(n) cosine similarity search, thread-safe via RWMutex. Persistence
+  via binary file format (v2 with CRC32 integrity footer). `Has()` for
+  membership check, `UpsertBatch()` with atomic pre-validation, `Delete()`
+  for stale vector cleanup. Bounds validation on `LoadFromDisk()` (max dim
+  4096, max count 2M, dim mismatch check).
+- **Ollama embedding client** (`internal/vector/embedding.go`) —
+  `OllamaClient` with `Embed()` and `EmbedBatch()` for single/batch
+  embedding via Ollama HTTP API. `Healthy()` endpoint check. Response body
+  limited to 50MB.
+- **Circuit breaker** (`internal/vector/embedding.go`) — mutex-based state
+  machine (Closed → Open → HalfOpen) with exponential backoff (5m → 10m →
+  20m → 40m → 60m cap). Single-probe gate in HalfOpen via `halfOpenProbing`
+  flag. Never permanently disables — always recoverable. `Reset()` for
+  manual recovery.
+- **Embed worker** (`internal/vector/embedding.go`) — `EmbedWorker` with
+  batched processing (default 32), 500ms flush ticker, circuit breaker
+  protection, `OnBatchDone` callback for DB status updates, and graceful
+  drain on context cancellation.
+- **Query embedding cache** (`internal/vector/embedding.go`) — LRU
+  `EmbedCache` with defensive slice copying on `Get()`/`Put()` to prevent
+  caller mutation.
+- **Hybrid semantic search** (`internal/core/engine.go`) — `searchSemantic()`
+  merges keyword + vector candidates, `HybridRank()` with 5-signal ranking
+  (keyword, structural, change, semantic, session). `mergeResults()` hydrates
+  vector-only entries from store.
+- **Fallback level: Hybrid/Mixed** (`internal/core/fallback.go`) —
+  `DetermineLevelFull()` considers embedding readiness and vector coverage
+  (≥80% → Hybrid, ≥20% → Mixed, else Keyword). `embedReady` func plumbed
+  from `EmbedWorker.EmbedReady()` through engine.
+- **Cosine similarity normalization** (`internal/core/ranker.go`) —
+  `NormalizeCosineSimilarity()` maps [-1,1] to [0,1] range for score
+  blending.
+- **Stale vector cleanup** (`internal/daemon/writer.go`) — `VectorDeleter`
+  interface in `types/interfaces.go`. Writer collects old chunk IDs before
+  `DELETE FROM chunks` and calls `vectorDeleter.Delete()` after successful
+  transaction. Handles both enrichment re-index and file delete cases.
+- **Dual embedding filter** (`internal/daemon/daemon.go`,
+  `internal/storage/metadata.go`) — Option A: `queueEmbeddings()` filters
+  by `vectorStore.Has()` for crash reconciliation. Option B: SQL filters by
+  `files.embedding_status != 'complete'`. `MarkChunksEmbedded()` updates
+  file status after successful batch upsert.
+- **Periodic embedding checkpoint** (`internal/daemon/daemon.go`) — 5-minute
+  `SaveToDisk` ticker prevents crash data loss.
+- **Enrichment status tool** (`internal/mcp/tools.go`) — `enrichment_status`
+  MCP tool showing total chunks, embedded count, embedding percentage,
+  pending jobs, circuit breaker state, and index stats.
+- **Rust language support** (`internal/parser/languages.go`) — tree-sitter
+  Rust grammar with `function_item`, `struct_item`, `impl_item`,
+  `enum_item`, `trait_item`, `type_item` node mappings. `.rs` extension
+  registered in scanner and fallback.
+- **Config extensions** — `OllamaURL`, `EmbeddingModel`, `EmbeddingDims`,
+  `EmbeddingsPath`, `EmbedBatchSize`, `EmbedEnabled` fields.
+- **README.md** — project documentation covering installation, Claude Code
+  integration, MCP tools reference, CLI usage, architecture, configuration,
+  and contributing guide.
+- **File logging** (`cmd/shaktimand/main.go`) — daemon logs to
+  `.shaktiman/shaktimand.log` instead of stderr (stdout reserved for MCP
+  protocol). Log file truncated on startup. Configurable level via
+  `SHAKTIMAN_LOG_LEVEL` env var. Startup log includes config summary and PID.
+- **MCP tool logging middleware** (`internal/mcp/server.go`) — `withLogging()`
+  wraps all tool handlers with `duration_ms` and `is_error` tracking.
+- **Operation timing** — `duration_ms` logged for search
+  (`internal/core/engine.go`), cold index (`internal/daemon/enrichment.go`),
+  embed batch (`internal/vector/embedding.go`), and vector save/load
+  (`internal/vector/store.go`).
+- **Back-pressure warnings** — `WriterManager.Submit()` warns when channel is
+  full before blocking (`internal/daemon/writer.go`). `EmbedWorker.Submit()`
+  counts dropped jobs with rate-limited warnings (every 100 drops).
+- **Circuit breaker transition logging** (`internal/vector/embedding.go`) —
+  logs state transitions (open/recovered) with `stateString()` helper.
+- **Scanner debug logging** (`internal/daemon/scanner.go`) — all skip reasons
+  logged at debug level with per-reason context. Scan completion summary with
+  `files_found` and `files_skipped` counts.
+- **`observability.Op()` helper** (`internal/observability/`) — timed
+  operation logger used by daemon cold index.
+- **New tests** — vector store (Has, bounds validation, UpsertBatch
+  atomicity, CRC32 corruption), circuit breaker (exponential backoff, cap,
+  recovery, single probe), embed cache (slice isolation), engine (semantic
+  search integration), scanner (relative root, dot root, symlink-outside-root).
+  Total: 98 tests, all pass with `-race`.
+
+### Changed
+
+- `QueryEngine.SetVectorStore()` now accepts `readyFn func() bool` to check
+  circuit breaker state instead of hardcoding `EmbeddingReady: true`.
+- `QueryEngine.determineLevel()` checks `embedReady` func and vector count
+  for accurate fallback level selection.
+- `WriterManager.processWriteJob()` and `processEnrichmentJob()` return
+  `([]int64, error)` to surface stale chunk IDs for vector cleanup.
+- File upsert in writer resets `embedding_status` to `'pending'` on conflict
+  to trigger re-embedding after file changes.
+- `GetChunksNeedingEmbedding()` SQL now filters by
+  `files.embedding_status != 'complete'`.
+- `HybridRank()` accepts optional `SemanticScores` map and `SemanticReady`
+  flag for 5-signal blending.
+- MCP tool definitions now include `destructive: false` and
+  `idempotent: true` hint annotations for all six tools.
+- Periodic embedding checkpoint log promoted from Debug to Info level.
+
+### Fixed
+
+- **Stale vectors on chunk re-index** — old chunk IDs now deleted from
+  vector store when files are re-indexed or deleted.
+- **Embedding queue overflow** — `queueEmbeddings()` filters already-embedded
+  chunks via both DB flag and vector store membership check.
+- **Crash embedding loss** — periodic 5-minute SaveToDisk checkpoint instead
+  of save-only-on-graceful-shutdown.
+- **LoadFromDisk OOM** — bounds validation rejects oversized dim (>4096) and
+  count (>2M) from crafted persistence files. Dim mismatch check prevents
+  silent model change corruption.
+- **UpsertBatch partial write** — pre-validates all vector dimensions before
+  acquiring write lock; no partial updates on dim mismatch.
+- **Circuit breaker permanent disable** — replaced `StateDisabled` with
+  exponential backoff (5m → 60m cap). System always retries.
+- **HalfOpen unlimited probes** — `halfOpenProbing` flag limits to one
+  concurrent probe request. Single failure in HalfOpen immediately re-opens.
+- **FilesystemFallback symlink escape** — resolves symlinks via
+  `filepath.EvalSymlinks()` and rejects paths outside project root.
+- **FilesystemFallback ctx.Done break** — `break` inside `select` now uses
+  labeled loop to correctly exit file iteration on cancellation.
+- **Diff tool unbounded params** — `since` capped at 720h, `limit` capped
+  at 500.
+- **Ollama response unbounded** — success path now uses `io.LimitReader`
+  (50MB cap) before JSON decode.
+- **Embedding dir permissions** — `os.MkdirAll` uses `0o700` instead of
+  `0o755`.
+- **Persistence file corruption** — v2 format adds CRC32 footer; load
+  verifies integrity. Backward-compatible with v1 (no CRC).
+- **EmbedCache mutation** — `Get()` and `Put()` now copy slices to prevent
+  caller corruption of cached embeddings.
+- **MCP error leakage** — all tool handlers truncate error messages to 200
+  chars via `sanitizeError()`.
+- **Scanner symlink boundary false match** — prefix check now includes path
+  separator (`absRoot + "/"`) to prevent `/project-foo` matching `/project`.
+  Root resolved to absolute path once upfront instead of per-file.
+- **Writer `LastInsertId()` stale ID** — `processEnrichmentJob()` now always
+  uses explicit `SELECT id FROM files` after upsert. `LastInsertId()` returned
+  stale IDs on `ON CONFLICT DO UPDATE` path because `sqlite3_last_insert_rowid`
+  is connection-scoped.
+
+### Security
+
+- Symlink boundary enforcement in `FilesystemFallback`.
+- CRC32 integrity check on embedding persistence file.
+- Response size limits on Ollama HTTP responses.
+- Input bounds on diff tool duration and result limit.
+- Error message sanitization in MCP handlers.
+- Restrictive directory permissions for `.shaktiman/` data.
+
 ## [0.2.0] - 2026-03-20
 
 Phase 2 — Structured Intelligence: multi-language support, dependency graph,
@@ -156,6 +314,7 @@ FTS5 keyword search, budget-fitted context assembly, and MCP tools.
   to find inner `class_declaration` for tree walking while preserving the
   outer node for content.
 
-[unreleased]: https://github.com/shaktimanai/shaktiman/compare/v0.2.0...HEAD
+[unreleased]: https://github.com/shaktimanai/shaktiman/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/shaktimanai/shaktiman/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/shaktimanai/shaktiman/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/shaktimanai/shaktiman/releases/tag/v0.1.0

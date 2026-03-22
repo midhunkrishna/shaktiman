@@ -57,6 +57,7 @@ func (ep *EnrichmentPipeline) IndexAll(ctx context.Context, input IndexAllInput)
 		return nil
 	}
 
+	startTime := time.Now()
 	ep.logger.Info("starting cold index",
 		"total_files", len(input.Files),
 		"needs_index", len(needsIndex))
@@ -77,7 +78,7 @@ func (ep *EnrichmentPipeline) IndexAll(ctx context.Context, input IndexAllInput)
 	var wg sync.WaitGroup
 	var indexErr error
 	var mu sync.Mutex
-	var indexed int
+	var indexed, errCount int
 
 	for i := 0; i < ep.workers; i++ {
 		wg.Add(1)
@@ -105,6 +106,9 @@ func (ep *EnrichmentPipeline) IndexAll(ctx context.Context, input IndexAllInput)
 					ep.logger.Warn("enrich failed",
 						"file", file.Path,
 						"err", err)
+					mu.Lock()
+					errCount++
+					mu.Unlock()
 					continue
 				}
 
@@ -162,9 +166,12 @@ func (ep *EnrichmentPipeline) IndexAll(ctx context.Context, input IndexAllInput)
 		ep.logger.Warn("failed to enable FTS triggers", "err", err)
 	}
 
+	elapsed := time.Since(startTime)
 	ep.logger.Info("cold index complete",
 		"indexed", indexed,
-		"total", len(needsIndex))
+		"errors", errCount,
+		"total", len(needsIndex),
+		"duration_ms", elapsed.Milliseconds())
 
 	return indexErr
 }

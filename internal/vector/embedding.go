@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -189,12 +190,18 @@ func (cb *CircuitBreaker) Allow() bool {
 // RecordSuccess records a successful call.
 func (cb *CircuitBreaker) RecordSuccess() {
 	cb.mu.Lock()
-	defer cb.mu.Unlock()
+	prevState := cb.state
 	cb.consecutiveFail = 0
 	cb.openCycles = 0
 	cb.currentCooldown = cb.baseCooldown
 	cb.halfOpenProbing = false
 	cb.state = StateClosed
+	cb.mu.Unlock()
+
+	if prevState != StateClosed {
+		slog.Info("circuit breaker recovered",
+			"from", stateString(prevState), "to", "closed")
+	}
 }
 
 // RecordFailure records a failed call. Transitions to OPEN with exponential backoff.
@@ -210,25 +217,22 @@ func (cb *CircuitBreaker) RecordFailure() {
 		cb.state = StateOpen
 		cb.lastOpenTime = time.Now()
 		cb.currentCooldown = min(cb.currentCooldown*2, cb.backoffMax)
-		if cb.openCycles >= 3 {
-			slog.Warn("circuit breaker backoff escalated",
-				"cooldown", cb.currentCooldown, "cycles", cb.openCycles)
-		}
+		slog.Warn("circuit breaker opened",
+			"from", "half_open", "cooldown", cb.currentCooldown, "cycles", cb.openCycles)
 		return
 	}
 
 	cb.consecutiveFail++
 	if cb.consecutiveFail >= cb.failThreshold {
+		prevState := cb.state
 		cb.openCycles++
 		cb.state = StateOpen
 		cb.lastOpenTime = time.Now()
 		cb.consecutiveFail = 0
 		// Exponential backoff: 5m → 10m → 20m → 40m → 60m (capped)
 		cb.currentCooldown = min(cb.currentCooldown*2, cb.backoffMax)
-		if cb.openCycles >= 3 {
-			slog.Warn("circuit breaker backoff escalated",
-				"cooldown", cb.currentCooldown, "cycles", cb.openCycles)
-		}
+		slog.Warn("circuit breaker opened",
+			"from", stateString(prevState), "cooldown", cb.currentCooldown, "cycles", cb.openCycles)
 	}
 }
 
@@ -248,6 +252,19 @@ func (cb *CircuitBreaker) Reset() {
 	cb.openCycles = 0
 	cb.currentCooldown = cb.baseCooldown
 	cb.halfOpenProbing = false
+}
+
+func stateString(s CircuitState) string {
+	switch s {
+	case StateClosed:
+		return "closed"
+	case StateOpen:
+		return "open"
+	case StateHalfOpen:
+		return "half_open"
+	default:
+		return "unknown"
+	}
 }
 
 // ── Embed Worker ──
@@ -275,6 +292,7 @@ type EmbedWorker struct {
 	batchSz     int
 	logger      *slog.Logger
 	onBatchDone func(chunkIDs []int64)
+	dropped     atomic.Int64
 }
 
 // NewEmbedWorker creates an embedding worker.
@@ -300,6 +318,12 @@ func (w *EmbedWorker) Submit(job EmbedJob) bool {
 	case w.queue <- job:
 		return true
 	default:
+		total := w.dropped.Add(1)
+		if total == 1 || total%100 == 0 {
+			w.logger.Warn("embed job dropped, queue full",
+				"queue_cap", cap(w.queue),
+				"total_dropped", total)
+		}
 		return false
 	}
 }
@@ -369,6 +393,7 @@ func (w *EmbedWorker) Run(ctx context.Context) {
 }
 
 func (w *EmbedWorker) processBatch(ctx context.Context, batch []EmbedJob) {
+	start := time.Now()
 	if !w.cb.Allow() {
 		w.logger.Debug("circuit breaker open, skipping batch", "size", len(batch))
 		return
@@ -396,6 +421,10 @@ func (w *EmbedWorker) processBatch(ctx context.Context, batch []EmbedJob) {
 		w.logger.Error("upsert batch failed", "err", err)
 		return
 	}
+
+	w.logger.Info("embed batch completed",
+		"size", len(batch),
+		"duration_ms", time.Since(start).Milliseconds())
 
 	if w.onBatchDone != nil {
 		w.onBatchDone(chunkIDs)

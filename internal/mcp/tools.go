@@ -28,6 +28,8 @@ func searchToolDef() mcpsdk.Tool {
 			mcpsdk.Description("Include per-signal score breakdown"),
 		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
+		mcpsdk.WithDestructiveHintAnnotation(false),
+		mcpsdk.WithIdempotentHintAnnotation(true),
 	)
 }
 
@@ -81,6 +83,8 @@ func contextToolDef() mcpsdk.Tool {
 			mcpsdk.Description("Token budget (256-32768, default 8192)"),
 		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
+		mcpsdk.WithDestructiveHintAnnotation(false),
+		mcpsdk.WithIdempotentHintAnnotation(true),
 	)
 }
 
@@ -131,6 +135,8 @@ func symbolsToolDef() mcpsdk.Tool {
 			mcpsdk.Description("Optional kind filter: function, class, method, type, interface, variable"),
 		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
+		mcpsdk.WithDestructiveHintAnnotation(false),
+		mcpsdk.WithIdempotentHintAnnotation(true),
 	)
 }
 
@@ -197,6 +203,8 @@ func dependenciesToolDef() mcpsdk.Tool {
 			mcpsdk.Description("BFS depth 1-5 (default 2)"),
 		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
+		mcpsdk.WithDestructiveHintAnnotation(false),
+		mcpsdk.WithIdempotentHintAnnotation(true),
 	)
 }
 
@@ -276,6 +284,8 @@ func diffToolDef() mcpsdk.Tool {
 			mcpsdk.Description("Maximum diffs to return (default: 50)"),
 		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
+		mcpsdk.WithDestructiveHintAnnotation(false),
+		mcpsdk.WithIdempotentHintAnnotation(true),
 	)
 }
 
@@ -348,6 +358,8 @@ func enrichmentStatusToolDef() mcpsdk.Tool {
 	return mcpsdk.NewTool("enrichment_status",
 		mcpsdk.WithDescription("Show embedding and indexing progress."),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
+		mcpsdk.WithDestructiveHintAnnotation(false),
+		mcpsdk.WithIdempotentHintAnnotation(true),
 	)
 }
 

@@ -98,8 +98,18 @@ func (wm *WriterManager) Submit(job types.WriteJob) error {
 	if wm.closed.Load() {
 		return ErrWriterClosed
 	}
-	wm.ch <- job
-	return nil
+	// Non-blocking attempt first; warn on back-pressure
+	select {
+	case wm.ch <- job:
+		return nil
+	default:
+		wm.logger.Warn("writer channel full, blocking",
+			"queue_len", len(wm.ch),
+			"queue_cap", cap(wm.ch),
+			"file", job.FilePath)
+		wm.ch <- job
+		return nil
+	}
 }
 
 // AddProducer registers a producer goroutine for shutdown ordering.
@@ -208,7 +218,7 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 	}
 
 	// Upsert file — reset embedding_status to 'pending' since chunks are changing
-	res, err := tx.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO files (path, content_hash, mtime, size, language, indexed_at, embedding_status, parse_quality)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(path) DO UPDATE SET
@@ -221,20 +231,17 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 			parse_quality = excluded.parse_quality`,
 		job.File.Path, job.File.ContentHash, job.File.Mtime, job.File.Size,
 		job.File.Language, time.Now().UTC().Format(time.RFC3339Nano),
-		job.File.EmbeddingStatus, job.File.ParseQuality)
-	if err != nil {
+		job.File.EmbeddingStatus, job.File.ParseQuality); err != nil {
 		return nil, fmt.Errorf("upsert file %s: %w", job.FilePath, err)
 	}
 
-	fileID, err := res.LastInsertId()
-	if err != nil {
-		return nil, fmt.Errorf("get file id: %w", err)
-	}
-	if fileID == 0 {
-		err = tx.QueryRowContext(ctx, "SELECT id FROM files WHERE path = ?", job.FilePath).Scan(&fileID)
-		if err != nil {
-			return nil, fmt.Errorf("lookup file id %s: %w", job.FilePath, err)
-		}
+	// Always SELECT the file ID after upsert. LastInsertId() is unreliable
+	// here because sqlite3_last_insert_rowid() is connection-scoped: when the
+	// ON CONFLICT DO UPDATE path is taken, it returns a stale ID from a
+	// previous transaction's INSERT (possibly into a different table).
+	var fileID int64
+	if err := tx.QueryRowContext(ctx, "SELECT id FROM files WHERE path = ?", job.FilePath).Scan(&fileID); err != nil {
+		return nil, fmt.Errorf("lookup file id %s: %w", job.FilePath, err)
 	}
 
 	// Collect old chunk IDs for vector store cleanup before deleting

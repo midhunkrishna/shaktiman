@@ -1,0 +1,311 @@
+# Shaktiman
+
+Local-first code context engine for coding agents.
+
+Shaktiman indexes your codebase and gives Claude Code (or any MCP client) tools to search, navigate, and assemble exactly the right code context — fitted to a token budget so you use fewer tokens and get better results.
+
+- **Indexes code** using tree-sitter: functions, classes, symbols, imports, and call graphs
+- **Hybrid search** combining keyword (FTS5), semantic (vector), structural, and change signals
+- **Budget-fitted context** — asks for 8K tokens, gets exactly 8K tokens of the most relevant code
+- **Live updates** — file watcher re-indexes on save, no manual reindexing needed
+
+## Quick Start
+
+```bash
+# 1. Build
+go build -tags sqlite_fts5 -o shaktiman ./cmd/shaktiman
+go build -tags sqlite_fts5 -o shaktimand ./cmd/shaktimand
+
+# 2. Add to Claude Code (see "Usage with Claude Code" below)
+
+# 3. Start coding — Shaktiman tools appear automatically in Claude Code
+```
+
+## Prerequisites
+
+| Requirement | Notes |
+|-------------|-------|
+| **Go 1.25+** | CGo must be enabled (it is by default) |
+| **C compiler** | Required by SQLite and tree-sitter (gcc/clang, included on macOS) |
+| **Ollama** (optional) | Only needed for semantic/vector search. Without it, keyword search still works. |
+
+## Installation
+
+```bash
+git clone https://github.com/shaktimanai/shaktiman.git
+cd shaktiman
+
+# Build both binaries (sqlite_fts5 tag is required)
+go build -tags sqlite_fts5 -o shaktiman ./cmd/shaktiman
+go build -tags sqlite_fts5 -o shaktimand ./cmd/shaktimand
+
+# Verify
+./shaktiman --help
+```
+
+### Optional: Ollama for Semantic Search
+
+Shaktiman works without Ollama (keyword search only). To enable semantic search:
+
+```bash
+# Install Ollama (https://ollama.com)
+ollama pull nomic-embed-text
+```
+
+Shaktiman connects to `http://localhost:11434` by default. If Ollama is unavailable, the system gracefully falls back to keyword search.
+
+## Initializing a New Project
+
+No manual setup is needed. Shaktiman initializes automatically on first run.
+
+**With Claude Code (recommended):** Just add the MCP config (see next section). When Claude Code starts the daemon, it will:
+1. Create `.shaktiman/` in your project root (SQLite database + embeddings)
+2. Scan and index all supported source files
+3. Start watching for changes
+
+**With the CLI:**
+
+```bash
+# Index a project manually
+./shaktiman index /path/to/your/project
+```
+
+This creates `.shaktiman/index.db` and indexes all source files. Run it again at any time to re-index.
+
+**What gets created:**
+
+```
+your-project/
+  .shaktiman/
+    index.db           # SQLite database (symbols, chunks, FTS index, dependency graph)
+    embeddings.bin     # Vector embeddings (only if Ollama is running)
+```
+
+Add `.shaktiman/` to your `.gitignore`.
+
+**Excluding files:** Shaktiman respects `.gitignore`. For additional exclusions, create a `.shaktimanignore` file in your project root using the same pattern syntax:
+
+```
+# .shaktimanignore
+generated/
+*.pb.go
+*_mock.go
+```
+
+## Usage with Claude Code
+
+Create a `.mcp.json` file in the root of your project, and add:
+
+```json
+{
+  "mcpServers": {
+    "shaktiman": {
+      "command": "/absolute/path/to/shaktimand",
+      "args": ["/absolute/path/to/your/project"],
+      "env": {
+        "SHAKTIMAN_LOG_LEVEL": "DEBUG"
+      }
+    }
+  }
+}
+```
+
+We also need to tell Claude to use the mcp server. Add this to the projects `CLAUDE.md` file.
+
+```
+## MCP Tools (via shaktimand) — MANDATORY
+
+**CRITICAL: Always use shaktiman MCP tools for code search and exploration. This applies to the main agent AND all subagents.** When delegating to any subagent, explicitly instruct it to use `mcp__shaktiman__*` tools instead of Read/Grep/Glob. Subagents do not automatically inherit these instructions.
+
+### Subagent delegation template
+
+When spawning any subagent that needs to read or search code, include this in the prompt:
+
+> **IMPORTANT: Use the MCP tools `mcp__shaktiman__search`, `mcp__shaktiman__context`, `mcp__shaktiman__symbols`, `mcp__shaktiman__dependencies`, and `mcp__shaktiman__diff` for all code search and exploration. Do NOT use Read/Grep/Glob unless MCP tools return no results or insufficient results.**
+
+### Tool mapping
+
+| Instead of | Use | For |
+|---|---|---|
+| Grep, Glob | `mcp__shaktiman__search` | Finding code by keyword or concept |
+| Read (whole files) | `mcp__shaktiman__context` | Getting code context for a task (budget-fitted, ranked, deduplicated) |
+| Grep (definitions) | `mcp__shaktiman__symbols` | Looking up function/class/type definitions by name |
+| (no equivalent) | `mcp__shaktiman__dependencies` | Tracing callers/callees of a symbol |
+| (no equivalent) | `mcp__shaktiman__diff` | Recent file changes and affected symbols |
+| (no equivalent) | `mcp__shaktiman__enrichment_status` | Checking indexing progress |
+
+### Fallback policy
+
+Use Read/Grep/Glob ONLY when:
+1. Shaktiman MCP tools return no results or insufficient results
+2. You need to read a specific file by exact path (e.g., go.mod, CLAUDE.md)
+3. You need to write or edit files (MCP tools are read-only)
+```
+
+That's it. Claude Code will now have access to these tools:
+
+### MCP Tools
+
+| Tool | What it does | Key params |
+|------|-------------|------------|
+| `search` | Find code by keyword or natural language query | `query`, `max_results` (1-200) |
+| `context` | Assemble ranked code context fitted to a token budget | `query`, `budget_tokens` (256-32768) |
+| `symbols` | Look up functions, classes, types by name | `name`, `kind` (function/class/method/type) |
+| `dependencies` | Show callers and callees of a symbol | `symbol`, `direction` (callers/callees/both), `depth` (1-5) |
+| `diff` | Show recent file changes and affected symbols | `since` (e.g. "24h"), `limit` |
+| `enrichment_status` | Check indexing and embedding progress | (none) |
+
+### Example Prompts
+
+You don't need to call tools directly. Just describe what you need:
+
+> "Find all functions that handle authentication"
+
+Claude Code uses the `search` tool to find relevant auth code.
+
+> "Give me context for refactoring the payment flow"
+
+Claude Code uses `context` with a token budget to assemble exactly the right amount of code.
+
+> "What calls the `processOrder` function?"
+
+Claude Code uses `dependencies` to trace the call graph.
+
+> "What changed in the last 2 hours?"
+
+Claude Code uses `diff` to show recent changes with affected symbols.
+
+### How This Reduces Token Usage
+
+Without Shaktiman, Claude Code reads entire files to build context. With Shaktiman:
+
+1. **Budget-fitted assembly** — the `context` tool returns ranked code chunks that fit exactly within a token budget (default 8,192 tokens). No wasted tokens on irrelevant code.
+2. **Chunk-level granularity** — returns individual functions and classes, not entire files.
+3. **Deduplication** — overlapping code chunks are merged automatically.
+4. **Ranked relevance** — most relevant code comes first. If the budget is tight, low-relevance code is dropped, not truncated.
+
+## CLI Usage
+
+Use the CLI for indexing, searching, and status checks without Claude Code:
+
+```bash
+# Index a project
+./shaktiman index /path/to/project
+
+# Check index status
+./shaktiman status /path/to/project
+
+# Search
+./shaktiman search "authentication middleware" --root /path/to/project --max 10
+```
+
+## Supported Languages
+
+| Language | Extensions | Parser |
+|----------|-----------|--------|
+| TypeScript | `.ts`, `.tsx`, `.js`, `.jsx` | tree-sitter-typescript |
+| Python | `.py` | tree-sitter-python |
+| Go | `.go` | tree-sitter-go |
+| Rust | `.rs` | tree-sitter-rust |
+
+Adding a new language: implement a `LanguageConfig` in `internal/parser/languages.go` with the AST node type mappings for your language.
+
+## Architecture
+
+```
+Source Files
+     |
+     v
+  Parser (tree-sitter)  -->  Chunks, Symbols, Edges
+     |
+     v
+  SQLite (WAL + FTS5)   -->  Keyword index, dependency graph, change tracking
+  Vector Store           -->  Semantic embeddings (optional, via Ollama)
+     |
+     v
+  Query Engine           -->  Hybrid ranking, budget-fitted assembly
+     |
+     v
+  MCP Server (stdio)     -->  Claude Code / any MCP client
+```
+
+**Retrieval levels** (automatic fallback):
+1. **Hybrid** — semantic + keyword + structural + change signals (when embeddings are ready)
+2. **Keyword** — FTS5 full-text search + structural ranking (default, no Ollama needed)
+3. **Filesystem** — raw file reading (when index is empty, e.g. first run)
+
+See `docs/` for detailed architecture documents.
+
+## Configuration
+
+All configuration uses sensible defaults. No config file needed.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| DB path | `.shaktiman/index.db` | SQLite database location |
+| Watcher | enabled | Auto-reindex on file save |
+| Watcher debounce | 200ms | Debounce window for file events |
+| Ollama URL | `http://localhost:11434` | Embedding service endpoint |
+| Embedding model | `nomic-embed-text` | Ollama model for embeddings |
+| Embedding dims | 768 | Vector dimensionality |
+| Embeddings | enabled | Set to false to disable vector search |
+| Enrichment workers | 4 | Parallel parsing workers |
+| Token budget | 8,192 | Default context budget |
+
+## Contributing
+
+### Build and Test
+
+```bash
+# Build all packages
+go build -tags sqlite_fts5 ./...
+
+# Run tests with race detection
+go test -race -tags sqlite_fts5 ./...
+
+# Vet
+go vet -tags sqlite_fts5 ./...
+```
+
+### Project Structure
+
+```
+cmd/
+  shaktiman/           CLI tool (index, search, status)
+  shaktimand/          MCP daemon (stdio server)
+internal/
+  types/               Shared types, config, interfaces
+  storage/             SQLite backend (schema, FTS5, graph, diffs)
+  parser/              Tree-sitter parsing, chunking, symbol extraction
+  core/                Query engine, ranking, context assembly, fallback
+  daemon/              Lifecycle, writer, file watcher, enrichment pipeline
+  vector/              In-memory vector store, Ollama client, circuit breaker
+  mcp/                 MCP server, tool handlers, resources
+  eval/                Evaluation harness (recall, precision, MRR)
+docs/                  Architecture and design documents
+testdata/              Test fixtures (TypeScript, Python, Go projects)
+```
+
+### Adding a New Language
+
+1. Add a `LanguageConfig` in `internal/parser/languages.go` with AST node type mappings
+2. Add the tree-sitter grammar import
+3. Register file extensions in `internal/daemon/scan.go` and `internal/core/fallback.go`
+4. Add test fixtures in `testdata/`
+5. Run `go test -race -tags sqlite_fts5 ./...`
+
+## Stack
+
+| Component | Technology |
+|-----------|-----------|
+| Language | Go |
+| Storage | SQLite (WAL mode, FTS5 full-text search) |
+| Parsing | Tree-sitter via CGo |
+| Protocol | MCP (Model Context Protocol) via `mcp-go` |
+| Embeddings | Ollama (optional, `nomic-embed-text` default) |
+| Tokenizer | `tiktoken-go` (cl100k_base) |
+| File watching | `fsnotify` |
+
+## License
+
+TBD

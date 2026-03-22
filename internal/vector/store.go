@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
@@ -142,6 +144,7 @@ var embMagic = [4]byte{'E', 'M', 'B', 'V'}
 // SaveToDisk persists all vectors to a binary file using atomic replace.
 // Writes format v2 with CRC32 integrity footer.
 func (s *BruteForceStore) SaveToDisk(path string) error {
+	start := time.Now()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -206,6 +209,9 @@ func (s *BruteForceStore) SaveToDisk(path string) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("atomic rename: %w", err)
 	}
+	slog.Info("embeddings saved to disk",
+		"path", path, "count", len(s.vectors),
+		"duration_ms", time.Since(start).Milliseconds())
 	return nil
 }
 
@@ -219,6 +225,7 @@ const (
 // Returns nil if the file does not exist (fresh start).
 // Supports v1 (no checksum) and v2 (CRC32 integrity check).
 func (s *BruteForceStore) LoadFromDisk(path string) error {
+	start := time.Now()
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -296,6 +303,9 @@ func (s *BruteForceStore) LoadFromDisk(path string) error {
 		}
 	}
 
+	slog.Info("embeddings loaded from disk",
+		"path", path, "count", len(s.vectors),
+		"duration_ms", time.Since(start).Milliseconds())
 	return nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
@@ -54,11 +55,18 @@ type ContextInput struct {
 
 // Search executes a search and returns scored results using the best available level.
 func (e *QueryEngine) Search(ctx context.Context, input SearchInput) ([]types.ScoredResult, error) {
+	start := time.Now()
 	if input.MaxResults <= 0 {
 		input.MaxResults = 50
 	}
 
 	level := e.determineLevel(ctx)
+	e.logger.Info("search", "strategy", level.String(), "query_len", len(input.Query))
+	defer func() {
+		e.logger.Info("search completed",
+			"strategy", level.String(),
+			"duration_ms", time.Since(start).Milliseconds())
+	}()
 
 	switch level {
 	case LevelHybrid, LevelMixed:

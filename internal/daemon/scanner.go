@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,14 +61,28 @@ func LanguageForExt(ext string) (string, bool) {
 
 // ScanRepo walks the project tree and returns all indexable source files.
 func ScanRepo(ctx context.Context, input ScanInput) (*ScanResult, error) {
+	logger := slog.Default().With("component", "scanner")
 	root := input.ProjectRoot
 	gi := loadIgnorePatterns(root)
 
-	var files []ScannedFile
+	// Resolve root to absolute path once for symlink boundary checks
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolve project root: %w", err)
+	}
+	absRoot, err = filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve project root symlinks: %w", err)
+	}
 
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	var files []ScannedFile
+	var skipped int
+
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil // skip inaccessible files
+			skipped++
+			logger.Debug("scan skip: walk error", "path", path, "err", err)
+			return nil
 		}
 
 		// Check context cancellation
@@ -97,39 +112,58 @@ func ScanRepo(ctx context.Context, input ScanInput) (*ScanResult, error) {
 		// Get project-relative path
 		relPath, err := filepath.Rel(root, path)
 		if err != nil {
+			skipped++
+			logger.Debug("scan skip: rel path failed", "path", path, "err", err)
 			return nil
 		}
 
 		// Check gitignore patterns
 		if gi != nil && gi.MatchesPath(relPath) {
+			skipped++
+			logger.Debug("scan skip: ignored", "path", relPath)
 			return nil
 		}
 
 		// Resolve symlinks (DM-7)
-		absPath, err := filepath.EvalSymlinks(path)
+		absPath, err := filepath.Abs(path)
 		if err != nil {
-			return nil // skip unresolvable symlinks
+			skipped++
+			logger.Debug("scan skip: abs path failed", "path", path, "err", err)
+			return nil
+		}
+		absPath, err = filepath.EvalSymlinks(absPath)
+		if err != nil {
+			skipped++
+			logger.Debug("scan skip: unresolvable symlink", "path", path, "err", err)
+			return nil
 		}
 
 		// Ensure resolved path is still within project root
-		absRoot, _ := filepath.EvalSymlinks(root)
-		if !strings.HasPrefix(absPath, absRoot) {
-			return nil // skip symlinks pointing outside project
+		if !strings.HasPrefix(absPath, absRoot+string(filepath.Separator)) && absPath != absRoot {
+			skipped++
+			logger.Debug("scan skip: symlink outside root", "path", path, "target", absPath)
+			return nil
 		}
 
 		// Read file for hash and size
 		content, err := os.ReadFile(absPath)
 		if err != nil {
-			return nil // skip unreadable files
+			skipped++
+			logger.Debug("scan skip: unreadable", "path", absPath, "err", err)
+			return nil
 		}
 
 		// Skip binary files (check first 512 bytes for null bytes)
 		if isBinary(content) {
+			skipped++
+			logger.Debug("scan skip: binary file", "path", relPath)
 			return nil
 		}
 
 		info, err := d.Info()
 		if err != nil {
+			skipped++
+			logger.Debug("scan skip: stat failed", "path", path, "err", err)
 			return nil
 		}
 
@@ -150,6 +184,11 @@ func ScanRepo(ctx context.Context, input ScanInput) (*ScanResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scan repo %s: %w", root, err)
 	}
+
+	logger.Info("scan complete",
+		"root", root,
+		"files_found", len(files),
+		"files_skipped", skipped)
 
 	return &ScanResult{Files: files}, nil
 }
