@@ -182,9 +182,9 @@ func TestContext_DefaultBudget(t *testing.T) {
 	if pkg == nil {
 		t.Fatal("expected non-nil context package")
 	}
-	// Default budget is 8192
-	if pkg.TotalTokens > 8192 {
-		t.Errorf("expected total_tokens <= 8192, got %d", pkg.TotalTokens)
+	// Default budget is 4096
+	if pkg.TotalTokens > 4096 {
+		t.Errorf("expected total_tokens <= 4096, got %d", pkg.TotalTokens)
 	}
 }
 
@@ -612,6 +612,62 @@ func TestFallbackLevel_String(t *testing.T) {
 		if got := tc.level.String(); got != tc.want {
 			t.Errorf("FallbackLevel(%d).String() = %q, want %q", tc.level, got, tc.want)
 		}
+	}
+}
+
+func TestFilterByScore(t *testing.T) {
+	t.Parallel()
+
+	results := []types.ScoredResult{
+		{ChunkID: 1, Score: 0.9},
+		{ChunkID: 2, Score: 0.5},
+		{ChunkID: 3, Score: 0.1},
+		{ChunkID: 4, Score: 0.05},
+		{ChunkID: 5, Score: 0.3},
+	}
+
+	filtered := filterByScore(results, 0.15)
+	if len(filtered) != 3 {
+		t.Fatalf("expected 3 results above 0.15, got %d", len(filtered))
+	}
+	// Check IDs: should be 1, 2, 5
+	want := []int64{1, 2, 5}
+	for i, w := range want {
+		if filtered[i].ChunkID != w {
+			t.Errorf("filtered[%d].ChunkID = %d, want %d", i, filtered[i].ChunkID, w)
+		}
+	}
+}
+
+func TestFilterByScore_AllPass(t *testing.T) {
+	t.Parallel()
+	results := []types.ScoredResult{
+		{ChunkID: 1, Score: 0.9},
+		{ChunkID: 2, Score: 0.5},
+	}
+	filtered := filterByScore(results, 0.1)
+	if len(filtered) != 2 {
+		t.Errorf("expected 2 results, got %d", len(filtered))
+	}
+}
+
+func TestFilterByScore_NonePass(t *testing.T) {
+	t.Parallel()
+	results := []types.ScoredResult{
+		{ChunkID: 1, Score: 0.1},
+		{ChunkID: 2, Score: 0.05},
+	}
+	filtered := filterByScore(results, 0.5)
+	if len(filtered) != 0 {
+		t.Errorf("expected 0 results, got %d", len(filtered))
+	}
+}
+
+func TestFilterByScore_Empty(t *testing.T) {
+	t.Parallel()
+	filtered := filterByScore(nil, 0.5)
+	if len(filtered) != 0 {
+		t.Errorf("expected 0 results, got %d", len(filtered))
 	}
 }
 

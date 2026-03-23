@@ -107,8 +107,8 @@ func TestIntegration_IndexAndSearch(t *testing.T) {
 	if pkg == nil {
 		t.Fatal("expected non-nil context package")
 	}
-	if pkg.TotalTokens > 8192 {
-		t.Errorf("expected total_tokens <= 8192, got %d", pkg.TotalTokens)
+	if pkg.TotalTokens > 4096 {
+		t.Errorf("expected total_tokens <= 4096, got %d", pkg.TotalTokens)
 	}
 
 	// Verify TypeScript language count

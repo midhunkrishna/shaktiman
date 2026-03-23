@@ -6,7 +6,7 @@ Shaktiman indexes your codebase and gives Claude Code (or any MCP client) tools 
 
 - **Indexes code** using tree-sitter: functions, classes, symbols, imports, and call graphs
 - **Hybrid search** combining keyword (FTS5), semantic (vector), structural, and change signals
-- **Budget-fitted context** — asks for 8K tokens, gets exactly 8K tokens of the most relevant code
+- **Budget-fitted context** — asks for 4K tokens, gets exactly 4K tokens of the most relevant code
 - **Live updates** — file watcher re-indexes on save, no manual reindexing needed
 
 ## Quick Start
@@ -68,9 +68,12 @@ No manual setup is needed. Shaktiman initializes automatically on first run.
 ```bash
 # Index a project manually
 ./shaktiman index /path/to/your/project
+
+# Index and generate embeddings (requires Ollama)
+./shaktiman index --embed /path/to/your/project
 ```
 
-This creates `.shaktiman/index.db` and indexes all source files. Run it again at any time to re-index.
+This creates `.shaktiman/index.db` and indexes all source files. With `--embed`, it also generates vector embeddings for semantic search. Run it again at any time to re-index.
 
 **What gets created:**
 
@@ -148,7 +151,7 @@ That's it. Claude Code will now have access to these tools:
 
 | Tool | What it does | Key params |
 |------|-------------|------------|
-| `search` | Find code by keyword or natural language query | `query`, `max_results` (1-200) |
+| `search` | Find code by keyword or natural language query | `query`, `mode` (locate/full), `max_results` (1-200), `min_score` (0.0-1.0) |
 | `context` | Assemble ranked code context fitted to a token budget | `query`, `budget_tokens` (256-32768) |
 | `symbols` | Look up functions, classes, types by name | `name`, `kind` (function/class/method/type) |
 | `dependencies` | Show callers and callees of a symbol | `symbol`, `direction` (callers/callees/both), `depth` (1-5) |
@@ -179,10 +182,11 @@ Claude Code uses `diff` to show recent changes with affected symbols.
 
 Without Shaktiman, Claude Code reads entire files to build context. With Shaktiman:
 
-1. **Budget-fitted assembly** — the `context` tool returns ranked code chunks that fit exactly within a token budget (default 8,192 tokens). No wasted tokens on irrelevant code.
-2. **Chunk-level granularity** — returns individual functions and classes, not entire files.
-3. **Deduplication** — overlapping code chunks are merged automatically.
-4. **Ranked relevance** — most relevant code comes first. If the budget is tight, low-relevance code is dropped, not truncated.
+1. **Locate-first search** — the default `locate` mode returns compact file pointers (path, line range, symbol, score) without source code. Claude reads only the files it needs via native tools. ~97% fewer tokens than returning full source.
+2. **Budget-fitted assembly** — the `context` tool returns ranked code chunks that fit exactly within a token budget (default 4,096 tokens). No wasted tokens on irrelevant code.
+3. **Chunk-level granularity** — returns individual functions and classes, not entire files.
+4. **Score floor** — results below the minimum relevance threshold (default 0.15) are dropped, not returned.
+5. **Deduplication** — overlapping code chunks are merged automatically.
 
 ## CLI Usage
 
@@ -192,9 +196,9 @@ All MCP tools are also available as CLI subcommands, reading the SQLite index di
 
 | Command | What it does | Key flags |
 |---------|-------------|-----------|
-| `index <root>` | Index a project directory | (none) |
+| `index <root>` | Index a project directory | `--embed` (also generate embeddings) |
 | `status <root>` | Show index status | (none) |
-| `search <query>` | Search indexed code by keyword | `--root`, `--max` (1-200), `--explain` |
+| `search <query>` | Search indexed code by keyword | `--root`, `--max`, `--mode` (locate/full), `--min-score` |
 | `context <query>` | Assemble ranked code context fitted to a token budget | `--root`, `--budget` (256-32768) |
 | `symbols <name>` | Look up functions, classes, types by name | `--root`, `--kind` |
 | `deps <symbol>` | Show callers/callees of a symbol | `--root`, `--direction`, `--depth` (1-5) |
@@ -207,11 +211,17 @@ All MCP tools are also available as CLI subcommands, reading the SQLite index di
 # Index a project
 ./shaktiman index /path/to/project
 
+# Index with embeddings (requires Ollama)
+./shaktiman index --embed /path/to/project
+
 # Check index status
 ./shaktiman status /path/to/project
 
-# Search for code
+# Search for code (locate mode — compact pointers)
 ./shaktiman search "authentication middleware" --root /path/to/project --max 10
+
+# Search with full source code
+./shaktiman search "authentication middleware" --root /path/to/project --mode full
 
 # Assemble context for a task (budget-fitted)
 ./shaktiman context "payment processing flow" --root /path/to/project --budget 4096
@@ -268,10 +278,30 @@ See `docs/` for detailed architecture documents.
 
 ## Configuration
 
-All configuration uses sensible defaults. No config file needed.
+All configuration uses sensible defaults. Optionally create `.shaktiman/shaktiman.toml` to override defaults. A sample config is auto-created on first daemon startup.
+
+```toml
+# .shaktiman/shaktiman.toml
+
+[search]
+# max_results = 10        # Max results per search (1-200)
+# default_mode = "locate"  # "locate" (headers only) or "full" (with source code)
+# min_score = 0.15         # Drop results below this relevance score (0.0-1.0)
+
+[context]
+# enabled = true           # Set false to disable the context tool entirely
+# budget_tokens = 4096     # Default token budget for context assembly (256-32768)
+```
+
+### All Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
+| `search.max_results` | 10 | Max results per search |
+| `search.default_mode` | `locate` | `locate` (compact pointers) or `full` (with source) |
+| `search.min_score` | 0.15 | Minimum relevance score threshold |
+| `context.enabled` | true | Whether to register the context MCP tool |
+| `context.budget_tokens` | 4,096 | Default token budget for context assembly |
 | DB path | `.shaktiman/index.db` | SQLite database location |
 | Watcher | enabled | Auto-reindex on file save |
 | Watcher debounce | 200ms | Debounce window for file events |
@@ -280,7 +310,6 @@ All configuration uses sensible defaults. No config file needed.
 | Embedding dims | 768 | Vector dimensionality |
 | Embeddings | enabled | Set to false to disable vector search |
 | Enrichment workers | 4 | Parallel parsing workers |
-| Token budget | 8,192 | Default context budget |
 
 ## Contributing
 

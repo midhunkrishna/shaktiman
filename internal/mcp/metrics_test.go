@@ -181,6 +181,78 @@ func TestWithMetrics_NilRecorder(t *testing.T) {
 	}
 }
 
+func TestWithResultCount(t *testing.T) {
+	t.Parallel()
+
+	result := mcpsdk.NewToolResultText("test")
+	tagged := withResultCount(result, 42)
+
+	// Should return same pointer
+	if tagged != result {
+		t.Error("withResultCount should return same pointer")
+	}
+
+	// Should extract the count
+	got := extractResultCount(result)
+	if got != 42 {
+		t.Errorf("extractResultCount = %d, want 42", got)
+	}
+
+	// Second extraction should return 0 (LoadAndDelete)
+	got = extractResultCount(result)
+	if got != 0 {
+		t.Errorf("second extractResultCount = %d, want 0 (already deleted)", got)
+	}
+}
+
+func TestExtractResultCount_Nil(t *testing.T) {
+	t.Parallel()
+	got := extractResultCount(nil)
+	if got != 0 {
+		t.Errorf("extractResultCount(nil) = %d, want 0", got)
+	}
+}
+
+func TestExtractResultCount_Untagged(t *testing.T) {
+	t.Parallel()
+	result := mcpsdk.NewToolResultText("untagged")
+	got := extractResultCount(result)
+	if got != 0 {
+		t.Errorf("extractResultCount(untagged) = %d, want 0", got)
+	}
+}
+
+func TestWithMetrics_ResultCount(t *testing.T) {
+	t.Parallel()
+	db := testDB(t)
+	r := testRecorder(t, db, "result-count-test")
+
+	handler := func(_ context.Context, _ mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		result := mcpsdk.NewToolResultText("some results")
+		return withResultCount(result, 7), nil
+	}
+
+	wrapped := withMetrics("counted_tool", r, handler)
+	req := mcpsdk.CallToolRequest{}
+	_, _ = wrapped(context.Background(), req)
+
+	// Drain
+	ctx, cancel := context.WithCancel(context.Background())
+	go r.Run(ctx)
+	time.Sleep(1500 * time.Millisecond)
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	var resultCount int
+	err := db.QueryRow("SELECT result_count FROM tool_calls WHERE tool_name = 'counted_tool'").Scan(&resultCount)
+	if err != nil {
+		t.Fatalf("query result_count: %v", err)
+	}
+	if resultCount != 7 {
+		t.Errorf("result_count = %d, want 7", resultCount)
+	}
+}
+
 func TestResponseBytes(t *testing.T) {
 	t.Parallel()
 

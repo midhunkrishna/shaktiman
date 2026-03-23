@@ -45,6 +45,8 @@ type SearchInput struct {
 	Query      string
 	MaxResults int
 	Explain    bool
+	Mode       string  // "locate" or "full"; consumed by formatting layer only
+	MinScore   float64 // 0.0-1.0; results below this score are dropped post-ranking
 }
 
 // ContextInput configures a context assembly operation.
@@ -57,7 +59,7 @@ type ContextInput struct {
 func (e *QueryEngine) Search(ctx context.Context, input SearchInput) ([]types.ScoredResult, error) {
 	start := time.Now()
 	if input.MaxResults <= 0 {
-		input.MaxResults = 50
+		input.MaxResults = 10
 	}
 
 	level := e.determineLevel(ctx)
@@ -87,7 +89,7 @@ func (e *QueryEngine) Search(ctx context.Context, input SearchInput) ([]types.Sc
 // Context assembles a budget-fitted context package for the given query.
 func (e *QueryEngine) Context(ctx context.Context, input ContextInput) (*types.ContextPackage, error) {
 	if input.BudgetTokens <= 0 {
-		input.BudgetTokens = 8192
+		input.BudgetTokens = 4096
 	}
 
 	level := e.determineLevel(ctx)
@@ -171,6 +173,9 @@ func (e *QueryEngine) searchSemantic(ctx context.Context, input SearchInput, lev
 	if len(ranked) > input.MaxResults {
 		ranked = ranked[:input.MaxResults]
 	}
+	if input.MinScore > 0 {
+		ranked = filterByScore(ranked, input.MinScore)
+	}
 	return ranked, nil
 }
 
@@ -195,6 +200,9 @@ func (e *QueryEngine) searchKeyword(ctx context.Context, input SearchInput) ([]t
 		Weights:       DefaultRankWeights(),
 		SemanticReady: false,
 	})
+	if input.MinScore > 0 {
+		results = filterByScore(results, input.MinScore)
+	}
 	return results, nil
 }
 
@@ -257,6 +265,18 @@ func (e *QueryEngine) embedQuery(ctx context.Context, query string) ([]float32, 
 	}
 	e.embedCache.Put(query, vec)
 	return vec, nil
+}
+
+// filterByScore removes results with Score below the threshold (in-place).
+func filterByScore(results []types.ScoredResult, minScore float64) []types.ScoredResult {
+	n := 0
+	for _, r := range results {
+		if r.Score >= minScore {
+			results[n] = r
+			n++
+		}
+	}
+	return results[:n]
 }
 
 // mergeResults creates a union of keyword and semantic results, hydrating vector-only entries.

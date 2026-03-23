@@ -6,10 +6,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 )
+
+// resultCountMap carries result count from handlers to withMetrics.
+// Keyed by *CallToolResult pointer; cleaned up via LoadAndDelete after each call.
+var resultCountMap sync.Map
+
+// withResultCount attaches a result count to a CallToolResult for metrics extraction.
+func withResultCount(result *mcpsdk.CallToolResult, count int) *mcpsdk.CallToolResult {
+	if result != nil {
+		resultCountMap.Store(result, count)
+	}
+	return result
+}
+
+// extractResultCount retrieves and removes the result count attached to a CallToolResult.
+func extractResultCount(result *mcpsdk.CallToolResult) int {
+	if result == nil {
+		return 0
+	}
+	if v, ok := resultCountMap.LoadAndDelete(result); ok {
+		return v.(int)
+	}
+	return 0
+}
 
 // ToolCallRecord holds metrics for a single MCP tool invocation.
 type ToolCallRecord struct {
@@ -171,6 +195,7 @@ func withMetrics(name string, recorder *MetricsRecorder, h handlerFunc) handlerF
 		isErr := err != nil || (result != nil && result.IsError)
 		respBytes := responseBytes(result)
 		tokensEst := respBytes / 4
+		resultCount := extractResultCount(result)
 
 		// Detailed metrics at debug level
 		logger.Debug("tool_call_metrics",
@@ -181,6 +206,7 @@ func withMetrics(name string, recorder *MetricsRecorder, h handlerFunc) handlerF
 			"args_bytes", argsBytes,
 			"response_bytes", respBytes,
 			"response_tokens_est", tokensEst,
+			"result_count", resultCount,
 		)
 
 		// Async persist
@@ -192,6 +218,7 @@ func withMetrics(name string, recorder *MetricsRecorder, h handlerFunc) handlerF
 				ArgsBytes:         argsBytes,
 				ResponseBytes:     respBytes,
 				ResponseTokensEst: tokensEst,
+				ResultCount:       resultCount,
 				DurationMs:        duration.Milliseconds(),
 				IsError:           isErr,
 			})

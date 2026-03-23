@@ -4,25 +4,38 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/shaktimanai/shaktiman/internal/core"
 	"github.com/shaktimanai/shaktiman/internal/storage"
+	"github.com/shaktimanai/shaktiman/internal/types"
 	"github.com/shaktimanai/shaktiman/internal/vector"
 )
 
 // searchToolDef defines the MCP search tool schema.
-func searchToolDef() mcpsdk.Tool {
+func searchToolDef(cfg types.Config) mcpsdk.Tool {
 	return mcpsdk.NewTool("search",
-		mcpsdk.WithDescription("Search indexed code by keyword query. Returns ranked code chunks matching the query."),
+		mcpsdk.WithDescription(
+			`Search indexed code by keyword or semantic query.
+Default mode is "locate": returns file paths, line ranges, symbols, and scores — no source code.
+Use locate to discover relevant files, then read specific files with the Read tool.
+Set mode="full" only when you need inline source code.`),
 		mcpsdk.WithString("query",
 			mcpsdk.Required(),
 			mcpsdk.Description("Search query text"),
 		),
+		mcpsdk.WithString("mode",
+			mcpsdk.Description(fmt.Sprintf(`Result mode: "locate" (headers only) or "full" (with source code). Default: %q`, cfg.SearchDefaultMode)),
+			mcpsdk.Enum("locate", "full"),
+		),
 		mcpsdk.WithNumber("max_results",
-			mcpsdk.Description("Maximum results to return (1-200, default 50)"),
+			mcpsdk.Description(fmt.Sprintf("Maximum results to return (1-200, default %d)", cfg.SearchMaxResults)),
+		),
+		mcpsdk.WithNumber("min_score",
+			mcpsdk.Description(fmt.Sprintf("Minimum relevance score 0.0-1.0 (default %.2f)", cfg.SearchMinScore)),
 		),
 		mcpsdk.WithBoolean("explain",
 			mcpsdk.Description("Include per-signal score breakdown"),
@@ -34,7 +47,7 @@ func searchToolDef() mcpsdk.Tool {
 }
 
 // searchHandler returns an MCP tool handler for the search tool.
-func searchHandler(engine *core.QueryEngine) handlerFunc {
+func searchHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 	return func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		query, err := req.RequireString("query")
 		if err != nil {
@@ -46,9 +59,19 @@ func searchHandler(engine *core.QueryEngine) handlerFunc {
 			return mcpsdk.NewToolResultError("query exceeds maximum length of 10,000 characters"), nil
 		}
 
-		maxResults := req.GetInt("max_results", 50)
+		mode := req.GetString("mode", cfg.SearchDefaultMode)
+		if mode != "locate" && mode != "full" {
+			return mcpsdk.NewToolResultError("mode must be 'locate' or 'full'"), nil
+		}
+
+		maxResults := req.GetInt("max_results", cfg.SearchMaxResults)
 		if maxResults < 1 || maxResults > 200 {
 			return mcpsdk.NewToolResultError("max_results must be between 1 and 200"), nil
+		}
+
+		minScore := req.GetFloat("min_score", cfg.SearchMinScore)
+		if minScore < 0.0 || minScore > 1.0 {
+			return mcpsdk.NewToolResultError("min_score must be between 0.0 and 1.0"), nil
 		}
 
 		explain := req.GetBool("explain", false)
@@ -57,25 +80,37 @@ func searchHandler(engine *core.QueryEngine) handlerFunc {
 			Query:      query,
 			MaxResults: maxResults,
 			Explain:    explain,
+			MinScore:   minScore,
 		})
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("search failed: ", err)), nil
 		}
 
-		return mcpsdk.NewToolResultText(formatSearchResults(results, explain)), nil
+		var text string
+		if mode == "locate" {
+			text = formatLocateResults(results)
+		} else {
+			text = formatSearchResults(results, explain)
+		}
+
+		return withResultCount(mcpsdk.NewToolResultText(text), len(results)), nil
 	}
 }
 
 // contextToolDef defines the MCP context tool schema.
-func contextToolDef() mcpsdk.Tool {
+func contextToolDef(cfg types.Config) mcpsdk.Tool {
 	return mcpsdk.NewTool("context",
-		mcpsdk.WithDescription("Assemble relevant code context for a task, fitted to a token budget. Returns ranked and deduplicated code chunks."),
+		mcpsdk.WithDescription(fmt.Sprintf(
+			`Assemble a cross-file context overview fitted to a token budget.
+Returns ranked, deduplicated code chunks for multi-file understanding.
+Use smaller budgets (1024-2048) for focused queries. Default budget: %d tokens.
+For single-file reading, prefer the Read tool instead.`, cfg.ContextBudgetTokens)),
 		mcpsdk.WithString("query",
 			mcpsdk.Required(),
 			mcpsdk.Description("What you need context for"),
 		),
 		mcpsdk.WithNumber("budget_tokens",
-			mcpsdk.Description("Token budget (256-32768, default 8192)"),
+			mcpsdk.Description(fmt.Sprintf("Token budget (256-32768, default %d)", cfg.ContextBudgetTokens)),
 		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
 		mcpsdk.WithDestructiveHintAnnotation(false),
@@ -84,7 +119,7 @@ func contextToolDef() mcpsdk.Tool {
 }
 
 // contextHandler returns an MCP tool handler for the context tool.
-func contextHandler(engine *core.QueryEngine) handlerFunc {
+func contextHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 	return func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		query, err := req.RequireString("query")
 		if err != nil {
@@ -95,7 +130,7 @@ func contextHandler(engine *core.QueryEngine) handlerFunc {
 			return mcpsdk.NewToolResultError("query exceeds maximum length of 10,000 characters"), nil
 		}
 
-		budget := req.GetInt("budget_tokens", 8192)
+		budget := req.GetInt("budget_tokens", cfg.ContextBudgetTokens)
 		if budget < 256 || budget > 32768 {
 			return mcpsdk.NewToolResultError("budget_tokens must be between 256 and 32768"), nil
 		}
@@ -108,7 +143,12 @@ func contextHandler(engine *core.QueryEngine) handlerFunc {
 			return mcpsdk.NewToolResultError(sanitizeError("context assembly failed: ", err)), nil
 		}
 
-		return mcpsdk.NewToolResultText(formatContextPackage(pkg)), nil
+		resultCount := 0
+		if pkg != nil {
+			resultCount = len(pkg.Chunks)
+		}
+
+		return withResultCount(mcpsdk.NewToolResultText(formatContextPackage(pkg)), resultCount), nil
 	}
 }
 
@@ -173,7 +213,7 @@ func symbolsHandler(store *storage.Store) handlerFunc {
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
 		}
-		return mcpsdk.NewToolResultText(string(data)), nil
+		return withResultCount(mcpsdk.NewToolResultText(string(data)), len(results)), nil
 	}
 }
 
@@ -258,7 +298,7 @@ func dependenciesHandler(store *storage.Store) handlerFunc {
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
 		}
-		return mcpsdk.NewToolResultText(string(data)), nil
+		return withResultCount(mcpsdk.NewToolResultText(string(data)), len(results)), nil
 	}
 }
 
@@ -338,7 +378,7 @@ func diffHandler(store *storage.Store) handlerFunc {
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
 		}
-		return mcpsdk.NewToolResultText(string(data)), nil
+		return withResultCount(mcpsdk.NewToolResultText(string(data)), len(results)), nil
 	}
 }
 
@@ -410,7 +450,7 @@ func enrichmentStatusHandler(store *storage.Store, vs *vector.BruteForceStore, e
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("marshal status: ", err)), nil
 		}
-		return mcpsdk.NewToolResultText(string(data)), nil
+		return withResultCount(mcpsdk.NewToolResultText(string(data)), 1), nil
 	}
 }
 

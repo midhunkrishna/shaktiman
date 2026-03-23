@@ -205,3 +205,89 @@ func TestFormatContextPackage_Normal(t *testing.T) {
 		t.Errorf("missing second chunk header, got:\n%s", got)
 	}
 }
+
+// ── formatLocateResults tests ──
+
+func TestFormatLocateResults_Empty(t *testing.T) {
+	got := formatLocateResults(nil)
+	if got != "No results found.\n" {
+		t.Errorf("expected 'No results found.\\n', got %q", got)
+	}
+}
+
+func TestFormatLocateResults_Single(t *testing.T) {
+	results := []types.ScoredResult{{
+		Path:       "src/main.go",
+		SymbolName: "main",
+		Kind:       "function",
+		StartLine:  1,
+		EndLine:    10,
+		Score:      0.91,
+		TokenCount: 120,
+	}}
+
+	got := formatLocateResults(results)
+
+	if !strings.HasPrefix(got, "1 results:\n") {
+		t.Errorf("expected count header, got:\n%s", got)
+	}
+	if !strings.Contains(got, "src/main.go:1-10") {
+		t.Errorf("missing path:lines, got:\n%s", got)
+	}
+	if !strings.Contains(got, "main (function)") {
+		t.Errorf("missing symbol info, got:\n%s", got)
+	}
+	if !strings.Contains(got, "score:0.91") {
+		t.Errorf("missing score, got:\n%s", got)
+	}
+	if !strings.Contains(got, "~120 tokens") {
+		t.Errorf("missing token count, got:\n%s", got)
+	}
+	// Should NOT contain any source code
+	if strings.Contains(got, "func ") {
+		t.Error("locate mode should not contain source code")
+	}
+}
+
+func TestFormatLocateResults_Multiple(t *testing.T) {
+	results := []types.ScoredResult{
+		{Path: "a.go", SymbolName: "Foo", Kind: "function", StartLine: 1, EndLine: 10, Score: 0.9, TokenCount: 50},
+		{Path: "b.go", SymbolName: "Bar", Kind: "type", StartLine: 5, EndLine: 20, Score: 0.7, TokenCount: 80},
+	}
+
+	got := formatLocateResults(results)
+
+	if !strings.HasPrefix(got, "2 results:\n") {
+		t.Errorf("expected '2 results:', got:\n%s", got)
+	}
+	lines := strings.Split(strings.TrimSpace(got), "\n")
+	if len(lines) != 3 { // header + 2 results
+		t.Errorf("expected 3 lines, got %d:\n%s", len(lines), got)
+	}
+}
+
+func TestFormatLocateResults_MissingFields(t *testing.T) {
+	results := []types.ScoredResult{{
+		Path:      "x.go",
+		StartLine: 1,
+		EndLine:   5,
+		Score:     0.5,
+	}}
+
+	got := formatLocateResults(results)
+
+	if !strings.Contains(got, "x.go:1-5") {
+		t.Errorf("missing path:lines, got:\n%s", got)
+	}
+	if !strings.Contains(got, "score:0.50") {
+		t.Errorf("missing score, got:\n%s", got)
+	}
+	// No symbol or kind — shouldn't have extra spaces/parens
+	if strings.Contains(got, "()") {
+		t.Error("should not have empty parens")
+	}
+	// No token count
+	if strings.Contains(got, "tokens") {
+		t.Error("should not show tokens when TokenCount=0")
+	}
+}

@@ -169,6 +169,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 		VectorStore: d.vectorStore,
 		EmbedWorker: d.embedWorker,
 		Recorder:    recorder,
+		Config:      d.cfg,
 	})
 	d.logger.Info("MCP server starting on stdio", "session_id", d.sessionID)
 
@@ -209,6 +210,46 @@ func (d *Daemon) queueEmbeddings(ctx context.Context) {
 	submitted := d.embedWorker.SubmitBatch(jobs)
 	d.logger.Info("queued chunks for embedding",
 		"candidates", len(records), "filtered", len(jobs), "submitted", submitted)
+}
+
+// EmbedProject runs the embedding pipeline synchronously. Used by CLI --embed.
+// It queues all chunks needing embedding, runs the worker until the queue drains,
+// then saves embeddings to disk. Returns the total embedded count.
+func (d *Daemon) EmbedProject(ctx context.Context) (int, error) {
+	if d.embedWorker == nil {
+		return 0, fmt.Errorf("embedding not initialized (check Ollama is running at %s)", d.cfg.OllamaURL)
+	}
+
+	d.queueEmbeddings(ctx)
+
+	if d.embedWorker.Pending() == 0 {
+		count, _ := d.vectorStore.Count(ctx)
+		return count, nil
+	}
+
+	embedCtx, embedCancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		d.embedWorker.Run(embedCtx)
+		close(done)
+	}()
+
+	// Poll until queue drains, then let the last in-flight batch finish.
+	for d.embedWorker.Pending() > 0 {
+		time.Sleep(500 * time.Millisecond)
+	}
+	// Give the last batch time to process before cancelling.
+	time.Sleep(1 * time.Second)
+	embedCancel()
+	<-done
+
+	count, _ := d.vectorStore.Count(ctx)
+	if count > 0 {
+		if err := d.vectorStore.SaveToDisk(d.cfg.EmbeddingsPath); err != nil {
+			return count, fmt.Errorf("save embeddings: %w", err)
+		}
+	}
+	return count, nil
 }
 
 // periodicEmbeddingSave checkpoints embeddings to disk every 5 minutes.

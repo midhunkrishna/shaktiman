@@ -41,7 +41,8 @@ func main() {
 }
 
 func indexCmd() *cobra.Command {
-	return &cobra.Command{
+	var embed bool
+	cmd := &cobra.Command{
 		Use:   "index <project-root>",
 		Short: "Index a project directory",
 		Args:  cobra.ExactArgs(1),
@@ -69,9 +70,19 @@ func indexCmd() *cobra.Command {
 			for lang, count := range stats.Languages {
 				fmt.Printf("  %s: %d files\n", lang, count)
 			}
+
+			if embed {
+				count, err := d.EmbedProject(ctx)
+				if err != nil {
+					return fmt.Errorf("embed: %w", err)
+				}
+				fmt.Printf("Embedded: %d chunks → %s\n", count, cfg.EmbeddingsPath)
+			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&embed, "embed", false, "Also generate embeddings (requires Ollama)")
+	return cmd
 }
 
 func statusCmd() *cobra.Command {

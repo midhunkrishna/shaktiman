@@ -70,6 +70,38 @@ func formatSearchResults(results []types.ScoredResult, explain bool) string {
 	return b.String()
 }
 
+// formatLocateResults renders search results as compact one-line-per-result headers
+// without source code content. Use for locate mode where Claude Code only needs
+// file locations for subsequent Read calls.
+func formatLocateResults(results []types.ScoredResult) string {
+	if len(results) == 0 {
+		return "No results found.\n"
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d results:\n", len(results))
+
+	for _, r := range results {
+		b.WriteString(r.Path)
+		fmt.Fprintf(&b, ":%d-%d", r.StartLine, r.EndLine)
+
+		if r.SymbolName != "" {
+			fmt.Fprintf(&b, "  %s", r.SymbolName)
+		}
+		if r.Kind != "" {
+			fmt.Fprintf(&b, " (%s)", r.Kind)
+		}
+		fmt.Fprintf(&b, "  score:%.2f", r.Score)
+
+		if r.TokenCount > 0 {
+			fmt.Fprintf(&b, "  ~%d tokens", r.TokenCount)
+		}
+		b.WriteByte('\n')
+	}
+
+	return b.String()
+}
+
 // formatContextPackage renders a context package as plain text with a summary header
 // followed by formatted chunks.
 func formatContextPackage(pkg *types.ContextPackage) string {

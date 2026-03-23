@@ -9,21 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **TOML config file** (`internal/types/config.go`) — user-tunable knobs via
+  `.shaktiman/shaktiman.toml`. Sample config auto-created on first run.
+  Supports `[search]` (max_results, default_mode, min_score) and `[context]`
+  (enabled, budget_tokens) sections. Pointer-field deserialization for correct
+  partial-file handling.
+- **Locate search mode** (`internal/mcp/format.go`) — compact one-line-per-result
+  format returning path, line range, symbol, kind, and score without source
+  code. ~97% token reduction vs full mode.
+- **Score floor filtering** (`internal/core/engine.go`) — `filterByScore()`
+  drops results below a configurable minimum relevance threshold (default 0.15)
+  post-ranking. Applied in both semantic and keyword search paths.
 - **CLI query commands** (`cmd/shaktiman/query.go`) — all 6 MCP tools now
-  available as CLI subcommands: `search` (updated with `--explain` flag and
-  plain-text output), `context`, `symbols`, `deps`, `diff`,
-  `enrichment-status`. Each reads the SQLite index directly without the MCP
-  daemon.
-- **CLI tests** (`cmd/shaktiman/query_test.go`) — 20 tests: unit tests for
-  format functions (`chunkHeader`, `formatSearchResults`,
-  `formatContextPackage`), integration tests for all 6 commands against
-  in-memory SQLite, arg validation tests, and JSON round-trip test.
+  available as CLI subcommands: `search`, `context`, `symbols`, `deps`, `diff`,
+  `enrichment-status`. JSON output, reads SQLite directly without MCP daemon.
+  `search` and `context` respect `shaktiman.toml` config defaults.
+- **CLI `--embed` flag** (`cmd/shaktiman/main.go`) —
+  `shaktiman index --embed <root>` runs the embedding pipeline after cold
+  indexing. Requires Ollama.
+- **`EmbedProject` daemon method** (`internal/daemon/daemon.go`) — synchronous
+  embedding for CLI use: queues chunks, runs worker until queue drains, saves
+  embeddings to disk.
+- **Result count metrics** (`internal/mcp/metrics.go`) — `withResultCount()`
+  / `extractResultCount()` carry result count through the `withMetrics`
+  wrapper via `sync.Map`. Logged and recorded in `ToolCallRecord`.
+- **`docs/sample_claude.md`** — ready-to-copy CLAUDE.md template for projects
+  using shaktiman. Documents locate-first pattern, tool mapping, subagent
+  delegation, and token efficiency tips.
+- **Context tool toggle** — `context.enabled = false` in `shaktiman.toml`
+  disables the context MCP tool entirely.
+- **Config tests** (`internal/types/config_test.go`) — tests for TOML loading,
+  partial files, validation (7 invalid cases), sample creation, malformed input.
 
 ### Changed
 
-- `search` CLI command now outputs plain text (matching MCP format) instead of
-  JSON, default max results changed from 10 to 50, added `--explain` flag.
-- CLI project structure comment updated in README.
+- Default `SearchMaxResults`: 50 → 10.
+- Default `ContextBudgetTokens` / `MaxBudgetTokens`: 8192 → 4096.
+- Default search mode: `locate` (was always `full`).
+- MCP search tool now accepts `mode` (locate/full) and `min_score` params.
+- MCP tool descriptions rewritten to encourage locate-first pattern.
+- MCP server accepts `Config` in `NewServerInput`; tool defs and handlers are
+  config-driven.
+- `.gitignore` fixed: `/shaktiman` and `/shaktimand` patterns now correctly
+  match only root-level binaries, not `cmd/shaktiman/` source files.
+
+### Dependencies
+
+- Added `github.com/BurntSushi/toml v1.6.0`.
 
 ## [0.3.0] - 2026-03-21
 

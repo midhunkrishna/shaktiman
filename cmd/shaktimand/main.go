@@ -59,6 +59,12 @@ func main() {
 
 	cfg := types.DefaultConfig(projectRoot)
 
+	cfg, err = types.LoadConfigFromFile(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
@@ -69,6 +75,11 @@ func main() {
 		"embed_model", cfg.EmbeddingModel,
 		"ollama_url", cfg.OllamaURL,
 		"watcher_enabled", cfg.WatcherEnabled,
+		"search_max_results", cfg.SearchMaxResults,
+		"search_default_mode", cfg.SearchDefaultMode,
+		"search_min_score", cfg.SearchMinScore,
+		"context_enabled", cfg.ContextEnabled,
+		"context_budget_tokens", cfg.ContextBudgetTokens,
 		"pid", os.Getpid(),
 	)
 
