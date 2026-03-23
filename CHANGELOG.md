@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CLI query commands** (`cmd/shaktiman/query.go`) — all 6 MCP tools now
+  available as CLI subcommands: `search` (updated with `--explain` flag and
+  plain-text output), `context`, `symbols`, `deps`, `diff`,
+  `enrichment-status`. Each reads the SQLite index directly without the MCP
+  daemon.
+- **CLI tests** (`cmd/shaktiman/query_test.go`) — 20 tests: unit tests for
+  format functions (`chunkHeader`, `formatSearchResults`,
+  `formatContextPackage`), integration tests for all 6 commands against
+  in-memory SQLite, arg validation tests, and JSON round-trip test.
+
+### Changed
+
+- `search` CLI command now outputs plain text (matching MCP format) instead of
+  JSON, default max results changed from 10 to 50, added `--explain` flag.
+- CLI project structure comment updated in README.
+
 ## [0.3.0] - 2026-03-21
 
 Phase 3 — Semantic Intelligence + Hardening: vector embeddings via Ollama,

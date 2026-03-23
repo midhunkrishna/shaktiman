@@ -140,6 +140,21 @@ var schemaV1 = []string{
 		PRIMARY KEY (session_id, file_path, chunk_index)
 	)`,
 
+	// ── Tool call metrics ──
+	`CREATE TABLE IF NOT EXISTS tool_calls (
+		id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_id          TEXT NOT NULL,
+		timestamp           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+		tool_name           TEXT NOT NULL,
+		args_json           TEXT,
+		args_bytes          INTEGER NOT NULL DEFAULT 0,
+		response_bytes      INTEGER NOT NULL DEFAULT 0,
+		response_tokens_est INTEGER NOT NULL DEFAULT 0,
+		result_count        INTEGER NOT NULL DEFAULT 0,
+		duration_ms         INTEGER NOT NULL DEFAULT 0,
+		is_error            INTEGER NOT NULL DEFAULT 0
+	)`,
+
 	// ── Indexes ──
 
 	// Files (DM-8: no idx_files_path — UNIQUE creates implicit index)
@@ -178,6 +193,10 @@ var schemaV1 = []string{
 	// Session
 	`CREATE INDEX IF NOT EXISTS idx_access_session ON access_log(session_id, timestamp)`,
 	`CREATE INDEX IF NOT EXISTS idx_access_file ON access_log(file_path, chunk_index)`,
+
+	// Tool call metrics
+	`CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id, timestamp)`,
+	`CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(tool_name, timestamp)`,
 }
 
 // ftsTriggers creates triggers to keep chunks_fts in sync with chunks (DM-1).

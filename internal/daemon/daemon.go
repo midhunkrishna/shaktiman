@@ -26,6 +26,7 @@ type Daemon struct {
 	logger      *slog.Logger
 	vectorStore *vector.BruteForceStore
 	embedWorker *vector.EmbedWorker
+	sessionID   string
 }
 
 // New creates a new Daemon, opening the database and running migrations.
@@ -45,12 +46,13 @@ func New(cfg types.Config) (*Daemon, error) {
 	writer := NewWriterManager(store, cfg.WriterChannelSize)
 
 	d := &Daemon{
-		cfg:    cfg,
-		db:     db,
-		store:  store,
-		writer: writer,
-		engine: engine,
-		logger: slog.Default().With("component", "daemon"),
+		cfg:       cfg,
+		db:        db,
+		store:     store,
+		writer:    writer,
+		engine:    engine,
+		logger:    slog.Default().With("component", "daemon"),
+		sessionID: fmt.Sprintf("%d", time.Now().UnixNano()),
 	}
 
 	// Initialize vector store + embedding pipeline
@@ -150,9 +152,25 @@ func (d *Daemon) Start(ctx context.Context) error {
 		}
 	}()
 
+	// Start metrics recorder
+	recorder := mcp.NewMetricsRecorder(mcp.MetricsRecorderInput{
+		DB:        d.db.Writer(),
+		SessionID: d.sessionID,
+		Logger:    d.logger.With("component", "metrics"),
+	})
+	metricsCtx, metricsCancel := context.WithCancel(ctx)
+	defer metricsCancel()
+	go recorder.Run(metricsCtx)
+
 	// Start MCP server (blocks on stdio)
-	s := mcp.NewServer(d.engine, d.store, d.vectorStore, d.embedWorker)
-	d.logger.Info("MCP server starting on stdio")
+	s := mcp.NewServer(mcp.NewServerInput{
+		Engine:      d.engine,
+		Store:       d.store,
+		VectorStore: d.vectorStore,
+		EmbedWorker: d.embedWorker,
+		Recorder:    recorder,
+	})
+	d.logger.Info("MCP server starting on stdio", "session_id", d.sessionID)
 
 	if err := mcpserver.ServeStdio(s); err != nil {
 		return fmt.Errorf("MCP server: %w", err)

@@ -1,11 +1,6 @@
 package mcp
 
 import (
-	"context"
-	"log/slog"
-	"time"
-
-	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/shaktimanai/shaktiman/internal/core"
@@ -13,24 +8,17 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/vector"
 )
 
-// withLogging wraps an MCP tool handler with request/response logging.
-func withLogging(name string, h handlerFunc) handlerFunc {
-	logger := slog.Default().With("component", "mcp")
-	return func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-		start := time.Now()
-		result, err := h(ctx, req)
-		isErr := err != nil || (result != nil && result.IsError)
-		logger.Info("tool call",
-			"tool", name,
-			"duration_ms", time.Since(start).Milliseconds(),
-			"is_error", isErr,
-		)
-		return result, err
-	}
+// NewServerInput configures the MCP server. CS-5: >2 args → input struct.
+type NewServerInput struct {
+	Engine      *core.QueryEngine
+	Store       *storage.Store
+	VectorStore *vector.BruteForceStore
+	EmbedWorker *vector.EmbedWorker
+	Recorder    *MetricsRecorder // nil disables metrics persistence
 }
 
 // NewServer creates a configured MCP server with tools and resources registered.
-func NewServer(engine *core.QueryEngine, store *storage.Store, vs *vector.BruteForceStore, ew *vector.EmbedWorker) *server.MCPServer {
+func NewServer(input NewServerInput) *server.MCPServer {
 	s := server.NewMCPServer(
 		"shaktiman",
 		"0.2.0",
@@ -38,16 +26,20 @@ func NewServer(engine *core.QueryEngine, store *storage.Store, vs *vector.BruteF
 		server.WithResourceCapabilities(false, false),
 	)
 
+	wrap := func(name string, h handlerFunc) handlerFunc {
+		return withMetrics(name, input.Recorder, h)
+	}
+
 	// Register tools
-	s.AddTool(searchToolDef(), withLogging("search", searchHandler(engine)))
-	s.AddTool(contextToolDef(), withLogging("context", contextHandler(engine)))
-	s.AddTool(symbolsToolDef(), withLogging("symbols", symbolsHandler(store)))
-	s.AddTool(dependenciesToolDef(), withLogging("dependencies", dependenciesHandler(store)))
-	s.AddTool(diffToolDef(), withLogging("diff", diffHandler(store)))
-	s.AddTool(enrichmentStatusToolDef(), withLogging("enrichment_status", enrichmentStatusHandler(store, vs, ew)))
+	s.AddTool(searchToolDef(), wrap("search", searchHandler(input.Engine)))
+	s.AddTool(contextToolDef(), wrap("context", contextHandler(input.Engine)))
+	s.AddTool(symbolsToolDef(), wrap("symbols", symbolsHandler(input.Store)))
+	s.AddTool(dependenciesToolDef(), wrap("dependencies", dependenciesHandler(input.Store)))
+	s.AddTool(diffToolDef(), wrap("diff", diffHandler(input.Store)))
+	s.AddTool(enrichmentStatusToolDef(), wrap("enrichment_status", enrichmentStatusHandler(input.Store, input.VectorStore, input.EmbedWorker)))
 
 	// Register resources
-	s.AddResource(workspaceSummaryDef(), workspaceSummaryHandler(store))
+	s.AddResource(workspaceSummaryDef(), workspaceSummaryHandler(input.Store))
 
 	return s
 }

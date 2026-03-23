@@ -4,14 +4,12 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 
 	"github.com/spf13/cobra"
 
-	"github.com/shaktimanai/shaktiman/internal/core"
 	"github.com/shaktimanai/shaktiman/internal/daemon"
 	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
@@ -31,6 +29,11 @@ func main() {
 	rootCmd.AddCommand(indexCmd())
 	rootCmd.AddCommand(statusCmd())
 	rootCmd.AddCommand(searchCmd())
+	rootCmd.AddCommand(contextCmd())
+	rootCmd.AddCommand(symbolsCmd())
+	rootCmd.AddCommand(depsCmd())
+	rootCmd.AddCommand(diffCmd())
+	rootCmd.AddCommand(enrichmentStatusCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -107,57 +110,4 @@ func statusCmd() *cobra.Command {
 			return nil
 		},
 	}
-}
-
-func searchCmd() *cobra.Command {
-	var root string
-	var maxResults int
-
-	cmd := &cobra.Command{
-		Use:   "search <query>",
-		Short: "Search indexed code",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			query := args[0]
-			cfg := types.DefaultConfig(root)
-
-			db, err := storage.Open(storage.OpenInput{Path: cfg.DBPath})
-			if err != nil {
-				return fmt.Errorf("open db: %w", err)
-			}
-			defer db.Close()
-
-			if err := storage.Migrate(db); err != nil {
-				return fmt.Errorf("migrate: %w", err)
-			}
-
-			store := storage.NewStore(db)
-			engine := core.NewQueryEngine(store, root)
-			ctx := context.Background()
-
-			results, err := engine.Search(ctx, core.SearchInput{
-				Query:      query,
-				MaxResults: maxResults,
-			})
-			if err != nil {
-				return fmt.Errorf("search: %w", err)
-			}
-
-			if len(results) == 0 {
-				fmt.Println("No results found.")
-				return nil
-			}
-
-			data, err := json.MarshalIndent(results, "", "  ")
-			if err != nil {
-				return fmt.Errorf("marshal: %w", err)
-			}
-			fmt.Println(string(data))
-			return nil
-		},
-	}
-
-	cmd.Flags().StringVar(&root, "root", ".", "Project root directory")
-	cmd.Flags().IntVar(&maxResults, "max", 10, "Maximum results")
-	return cmd
 }

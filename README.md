@@ -186,7 +186,22 @@ Without Shaktiman, Claude Code reads entire files to build context. With Shaktim
 
 ## CLI Usage
 
-Use the CLI for indexing, searching, and status checks without Claude Code:
+All MCP tools are also available as CLI subcommands, reading the SQLite index directly without the MCP daemon.
+
+### Commands
+
+| Command | What it does | Key flags |
+|---------|-------------|-----------|
+| `index <root>` | Index a project directory | (none) |
+| `status <root>` | Show index status | (none) |
+| `search <query>` | Search indexed code by keyword | `--root`, `--max` (1-200), `--explain` |
+| `context <query>` | Assemble ranked code context fitted to a token budget | `--root`, `--budget` (256-32768) |
+| `symbols <name>` | Look up functions, classes, types by name | `--root`, `--kind` |
+| `deps <symbol>` | Show callers/callees of a symbol | `--root`, `--direction`, `--depth` (1-5) |
+| `diff` | Show recent file changes and affected symbols | `--root`, `--since`, `--limit` |
+| `enrichment-status` | Check indexing and embedding progress | `--root` |
+
+### Examples
 
 ```bash
 # Index a project
@@ -195,8 +210,23 @@ Use the CLI for indexing, searching, and status checks without Claude Code:
 # Check index status
 ./shaktiman status /path/to/project
 
-# Search
+# Search for code
 ./shaktiman search "authentication middleware" --root /path/to/project --max 10
+
+# Assemble context for a task (budget-fitted)
+./shaktiman context "payment processing flow" --root /path/to/project --budget 4096
+
+# Look up a symbol
+./shaktiman symbols NewServer --root /path/to/project --kind function
+
+# Trace callers of a function
+./shaktiman deps processOrder --root /path/to/project --direction callers --depth 3
+
+# See what changed in the last 2 hours
+./shaktiman diff --root /path/to/project --since 2h
+
+# Check embedding progress
+./shaktiman enrichment-status --root /path/to/project
 ```
 
 ## Supported Languages
@@ -271,7 +301,7 @@ go vet -tags sqlite_fts5 ./...
 
 ```
 cmd/
-  shaktiman/           CLI tool (index, search, status)
+  shaktiman/           CLI tool (index, search, context, symbols, deps, diff, status)
   shaktimand/          MCP daemon (stdio server)
 internal/
   types/               Shared types, config, interfaces
