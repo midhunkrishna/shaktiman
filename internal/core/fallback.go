@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
@@ -43,13 +42,13 @@ func (l FallbackLevel) String() string {
 
 // DetermineLevelInput configures fallback level determination.
 type DetermineLevelInput struct {
-	Store          *storage.Store
+	Store          types.MetadataStore
 	VectorCount    int // number of vectors in the store
 	EmbeddingReady bool
 }
 
 // DetermineLevel decides which retrieval strategy to use based on index state.
-func DetermineLevel(ctx context.Context, store *storage.Store) FallbackLevel {
+func DetermineLevel(ctx context.Context, store types.MetadataStore) FallbackLevel {
 	stats, err := store.GetIndexStats(ctx)
 	if err != nil || stats.TotalChunks == 0 {
 		return LevelFilesystem

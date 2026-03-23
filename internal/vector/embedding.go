@@ -293,6 +293,7 @@ type EmbedWorker struct {
 	logger      *slog.Logger
 	onBatchDone func(chunkIDs []int64)
 	dropped     atomic.Int64
+	inflight    sync.WaitGroup // tracks in-flight processBatch calls
 }
 
 // NewEmbedWorker creates an embedding worker.
@@ -392,7 +393,17 @@ func (w *EmbedWorker) Run(ctx context.Context) {
 	}
 }
 
+// WaitIdle blocks until the queue is empty and no batch is in flight.
+func (w *EmbedWorker) WaitIdle() {
+	for w.Pending() > 0 {
+		time.Sleep(200 * time.Millisecond)
+	}
+	w.inflight.Wait()
+}
+
 func (w *EmbedWorker) processBatch(ctx context.Context, batch []EmbedJob) {
+	w.inflight.Add(1)
+	defer w.inflight.Done()
 	start := time.Now()
 	if !w.cb.Allow() {
 		w.logger.Debug("circuit breaker open, skipping batch", "size", len(batch))

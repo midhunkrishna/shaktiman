@@ -5,13 +5,12 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
-// FTSResult represents a single full-text search match.
-type FTSResult struct {
-	ChunkID int64
-	Rank    float64 // BM25 rank (lower = more relevant)
-}
+// FTSResult is an alias for types.FTSResult.
+type FTSResult = types.FTSResult
 
 // KeywordSearch performs an FTS5 full-text search on chunk content and symbol names.
 // Returns results ordered by BM25 relevance, limited to the given count.
@@ -94,6 +93,19 @@ func (s *Store) RebuildFTS(ctx context.Context) error {
 		}
 		return nil
 	})
+}
+
+// IsFTSStale returns true if the FTS index row count doesn't match the chunks table.
+// Used on startup to detect incomplete cold index (crash between disable triggers and rebuild).
+func (s *Store) IsFTSStale(ctx context.Context) (bool, error) {
+	var chunkCount, ftsCount int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM chunks").Scan(&chunkCount); err != nil {
+		return false, fmt.Errorf("count chunks: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM chunks_fts").Scan(&ftsCount); err != nil {
+		return false, fmt.Errorf("count chunks_fts: %w", err)
+	}
+	return chunkCount != ftsCount, nil
 }
 
 // sanitizeFTSQuery prepares a user query for FTS5 MATCH.

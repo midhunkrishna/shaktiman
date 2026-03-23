@@ -94,21 +94,31 @@ func (wm *WriterManager) Submit(job types.WriteJob) error {
 		return ErrWriterClosed
 	}
 	wm.mu.Lock()
-	defer wm.mu.Unlock()
 	if wm.closed.Load() {
+		wm.mu.Unlock()
 		return ErrWriterClosed
 	}
-	// Non-blocking attempt first; warn on back-pressure
+	// Non-blocking attempt under lock
+	select {
+	case wm.ch <- job:
+		wm.mu.Unlock()
+		return nil
+	default:
+		// Channel full — release lock before blocking so drain() can proceed
+		wm.mu.Unlock()
+	}
+
+	wm.logger.Warn("writer channel full, blocking",
+		"queue_len", len(wm.ch),
+		"queue_cap", cap(wm.ch),
+		"file", job.FilePath)
+
+	// Block outside the lock; also listen for shutdown to avoid deadlock
 	select {
 	case wm.ch <- job:
 		return nil
-	default:
-		wm.logger.Warn("writer channel full, blocking",
-			"queue_len", len(wm.ch),
-			"queue_cap", cap(wm.ch),
-			"file", job.FilePath)
-		wm.ch <- job
-		return nil
+	case <-wm.done:
+		return ErrWriterClosed
 	}
 }
 

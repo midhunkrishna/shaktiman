@@ -71,6 +71,7 @@ func (p *Parser) Parse(ctx context.Context, input ParseInput) (*ParseResult, err
 	if tree == nil {
 		return nil, fmt.Errorf("tree-sitter returned nil tree for %s", input.FilePath)
 	}
+	defer tree.Close()
 
 	root := tree.RootNode()
 	if root == nil {

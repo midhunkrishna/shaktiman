@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/shaktimanai/shaktiman/internal/types"
@@ -408,40 +409,58 @@ func (s *Store) MarkChunksEmbedded(ctx context.Context, chunkIDs []int64) error 
 	if len(chunkIDs) == 0 {
 		return nil
 	}
-	// Find distinct file IDs for the embedded chunks
-	fileIDs := make(map[int64]bool)
+
+	// O(1) lookup set instead of O(m) linear scan per chunk
+	embeddedSet := make(map[int64]bool, len(chunkIDs))
 	for _, cid := range chunkIDs {
+		embeddedSet[cid] = true
+	}
+
+	// Batch query: find distinct file IDs for all embedded chunks at once
+	placeholders := make([]string, len(chunkIDs))
+	args := make([]any, len(chunkIDs))
+	for i, id := range chunkIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := s.db.QueryContext(ctx,
+		fmt.Sprintf("SELECT DISTINCT file_id FROM chunks WHERE id IN (%s)",
+			strings.Join(placeholders, ",")), args...)
+	if err != nil {
+		return fmt.Errorf("batch fetch fileIDs: %w", err)
+	}
+	defer rows.Close()
+
+	var fileIDs []int64
+	for rows.Next() {
 		var fid int64
-		err := s.db.QueryRowContext(ctx, "SELECT file_id FROM chunks WHERE id = ?", cid).Scan(&fid)
-		if err == nil {
-			fileIDs[fid] = true
+		if err := rows.Scan(&fid); err == nil {
+			fileIDs = append(fileIDs, fid)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("scan fileIDs: %w", err)
 	}
 
 	return s.db.WithWriteTx(func(tx *sql.Tx) error {
-		for fid := range fileIDs {
-			// Check if all chunks for this file are in the embedded set
-			var totalChunks int
-			if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM chunks WHERE file_id = ?", fid).Scan(&totalChunks); err != nil {
-				continue
-			}
-			var embeddedCount int
-			rows, err := tx.QueryContext(ctx, "SELECT id FROM chunks WHERE file_id = ?", fid)
+		for _, fid := range fileIDs {
+			chunkRows, err := tx.QueryContext(ctx, "SELECT id FROM chunks WHERE file_id = ?", fid)
 			if err != nil {
 				continue
 			}
-			for rows.Next() {
+
+			totalChunks := 0
+			embeddedCount := 0
+			for chunkRows.Next() {
 				var cid int64
-				if rows.Scan(&cid) == nil {
-					for _, ecid := range chunkIDs {
-						if cid == ecid {
-							embeddedCount++
-							break
-						}
+				if chunkRows.Scan(&cid) == nil {
+					totalChunks++
+					if embeddedSet[cid] {
+						embeddedCount++
 					}
 				}
 			}
-			rows.Close()
+			chunkRows.Close()
 
 			if embeddedCount >= totalChunks && totalChunks > 0 {
 				tx.ExecContext(ctx, "UPDATE files SET embedding_status = 'complete' WHERE id = ?", fid)

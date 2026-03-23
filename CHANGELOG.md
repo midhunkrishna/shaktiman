@@ -52,6 +52,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   config-driven.
 - `.gitignore` fixed: `/shaktiman` and `/shaktimand` patterns now correctly
   match only root-level binaries, not `cmd/shaktiman/` source files.
+- **Interface decoupling** (`internal/core/`, `internal/types/interfaces.go`) —
+  core package now depends on `types.MetadataStore` and `types.VectorStore`
+  interfaces instead of concrete `*storage.Store` / `*vector.BruteForceStore`.
+  `MetadataStore` expanded with `GetSymbolByID`, `GetFilePathByID`,
+  `KeywordSearch`, `ComputeChangeScores`, `Neighbors`. `FTSResult` moved to
+  `types` package (storage uses type alias for compatibility).
+- **`ComputeChangeScores` batched** (`internal/storage/diff.go`) — rewritten
+  from N+1 per-chunk queries to 2 batched `IN (...)` queries (symbol-level +
+  file-level fallback). O(1) per chunk instead of O(N) round trips.
+- **`MarkChunksEmbedded` batched** (`internal/storage/metadata.go`) — replaced
+  per-chunk `SELECT` loop with `map[int64]bool` membership check and single
+  batched `SELECT DISTINCT file_id FROM chunks WHERE id IN (...)` query.
+- **`SaveToDisk` snapshot-then-release** (`internal/vector/store.go`) — copies
+  vector map under RLock, releases lock before disk I/O. Eliminates writer
+  stalls during persistence.
+- **Log rotation** (`cmd/shaktimand/main.go`) — on startup, moves existing
+  `shaktimand.log` to `.shaktiman/session-logs/<timestamp>.log` instead of
+  truncating. Preserves logs from previous sessions.
+
+### Fixed
+
+- **Tree-sitter C memory leak** (`internal/parser/parser.go`) — added
+  `defer tree.Close()` after parse. Without this, every parsed file leaked
+  a C-heap tree allocation (~KBs each), growing unbounded over long sessions.
+- **WriterManager deadlock** (`internal/daemon/writer.go`) — `Submit()` now
+  releases mutex before blocking channel send. Previous code held the lock
+  during `wm.ch <- job`, blocking `Close()` which also acquires the mutex.
+  Added `<-wm.done` select fallback to unblock on shutdown.
+- **FTS external-content staleness** (`internal/storage/fts.go`,
+  `internal/daemon/daemon.go`) — added `IsFTSStale()` that compares chunk
+  count vs FTS row count. Daemon checks on startup and triggers `RebuildFTS()`
+  if stale. Guards against silent index corruption from crashes during bulk
+  inserts with triggers disabled.
+- **Metrics send-on-closed-channel panic** (`internal/mcp/metrics.go`) —
+  replaced `close(r.ch)` shutdown with deadline-based drain (1s). Channel is
+  never closed; GC collects it after `metricsRecorder` exits. Eliminates race
+  between late `Record()` calls and channel close.
+- **Watcher goroutine ordering** (`internal/daemon/daemon.go`) — wrapped
+  watcher event goroutine with `AddProducer()`/`RemoveProducer()` so
+  `WriterManager` waits for watcher-submitted jobs to drain before shutdown.
+  Previously the watcher goroutine could orphan in-flight jobs.
+- **`EmbedProject` premature return** (`internal/vector/embedding.go`,
+  `internal/daemon/daemon.go`) — added `inflight sync.WaitGroup` to
+  `EmbedWorker` tracking in-flight `processBatch` calls. `WaitIdle()` waits
+  for both queue drain and batch completion. Replaces polling+sleep(1s) which
+  could return before the final batch finished writing vectors.
 
 ### Dependencies
 

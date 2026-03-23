@@ -122,6 +122,15 @@ func (d *Daemon) Start(ctx context.Context) error {
 	if err := d.store.EnsureFTSTriggers(ctx); err != nil {
 		d.logger.Warn("FTS trigger recovery failed", "err", err)
 	}
+	// Rebuild FTS if stale (crash during cold index left FTS out of sync)
+	if stale, err := d.store.IsFTSStale(ctx); err != nil {
+		d.logger.Warn("FTS staleness check failed", "err", err)
+	} else if stale {
+		d.logger.Warn("FTS index is stale, rebuilding")
+		if err := d.store.RebuildFTS(ctx); err != nil {
+			d.logger.Error("FTS rebuild on startup failed", "err", err)
+		}
+	}
 
 	// Run cold indexing in background, then start watcher
 	go func() {
@@ -234,12 +243,8 @@ func (d *Daemon) EmbedProject(ctx context.Context) (int, error) {
 		close(done)
 	}()
 
-	// Poll until queue drains, then let the last in-flight batch finish.
-	for d.embedWorker.Pending() > 0 {
-		time.Sleep(500 * time.Millisecond)
-	}
-	// Give the last batch time to process before cancelling.
-	time.Sleep(1 * time.Second)
+	// Wait for queue to drain and in-flight batch to complete.
+	d.embedWorker.WaitIdle()
 	embedCancel()
 	<-done
 
@@ -321,8 +326,11 @@ func (d *Daemon) startWatcher(ctx context.Context, pipeline *EnrichmentPipeline)
 
 	d.logger.Info("file watcher starting", "root", d.cfg.ProjectRoot)
 
-	// Process watcher events
+	// Process watcher events — registered as a writer producer so
+	// drain() waits for in-flight EnrichFile calls before closing.
+	d.writer.AddProducer()
 	go func() {
+		defer d.writer.RemoveProducer()
 		for event := range w.Events() {
 			if err := pipeline.EnrichFile(ctx, event); err != nil {
 				d.logger.Warn("incremental enrich failed",

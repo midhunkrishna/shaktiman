@@ -2,7 +2,13 @@ package types
 
 import "context"
 
-// MetadataStore provides CRUD operations for files, chunks, and symbols.
+// FTSResult holds a single full-text search match.
+type FTSResult struct {
+	ChunkID int64
+	Rank    float64 // BM25 rank (lower = more relevant)
+}
+
+// MetadataStore provides CRUD and query operations for files, chunks, and symbols.
 type MetadataStore interface {
 	// UpsertFile inserts or updates a file record, returning the file ID.
 	UpsertFile(ctx context.Context, file *FileRecord) (int64, error)
@@ -28,11 +34,22 @@ type MetadataStore interface {
 	GetSymbolsByFile(ctx context.Context, fileID int64) ([]SymbolRecord, error)
 	// GetSymbolByName returns symbols matching the given name.
 	GetSymbolByName(ctx context.Context, name string) ([]SymbolRecord, error)
+	// GetSymbolByID returns a single symbol by its ID.
+	GetSymbolByID(ctx context.Context, id int64) (*SymbolRecord, error)
 	// DeleteSymbolsByFile removes all symbols for a file.
 	DeleteSymbolsByFile(ctx context.Context, fileID int64) error
 
+	// GetFilePathByID returns the project-relative path for a file ID.
+	GetFilePathByID(ctx context.Context, fileID int64) (string, error)
 	// GetIndexStats returns aggregate statistics about the index.
 	GetIndexStats(ctx context.Context) (*IndexStats, error)
+
+	// KeywordSearch performs FTS5 full-text search on chunk content.
+	KeywordSearch(ctx context.Context, query string, limit int) ([]FTSResult, error)
+	// ComputeChangeScores returns recency*magnitude scores for chunk IDs.
+	ComputeChangeScores(ctx context.Context, chunkIDs []int64) (map[int64]float64, error)
+	// Neighbors performs BFS graph traversal from a symbol.
+	Neighbors(ctx context.Context, symbolID int64, maxDepth int, direction string) ([]int64, error)
 }
 
 // VectorResult holds a single vector similarity match.
@@ -63,7 +80,7 @@ type VectorDeleter interface {
 }
 
 // GraphStore provides graph traversal operations.
-// Default: SQLite recursive CTEs. Optional: CSR (Phase 3+).
+// Deprecated: Neighbors is now on MetadataStore. Kept for backward compatibility.
 type GraphStore interface {
 	Neighbors(ctx context.Context, symbolID int64, maxDepth int, direction string) ([]int64, error)
 }

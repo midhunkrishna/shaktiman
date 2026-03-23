@@ -5,7 +5,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
@@ -13,8 +12,8 @@ import (
 type AssemblerInput struct {
 	Candidates   []types.ScoredResult
 	BudgetTokens int
-	Store        *storage.Store  // optional, enables structural expansion
-	Ctx          context.Context // optional, required with Store
+	Store        types.MetadataStore // optional, enables structural expansion
+	Ctx          context.Context     // optional, required with Store
 }
 
 // Assemble performs budget-fitted greedy packing of ranked chunks.
@@ -84,7 +83,7 @@ func Assemble(input AssemblerInput) *types.ContextPackage {
 
 // structuralExpand finds BFS neighbor chunks of selected chunks
 // and adds those that fit within the expansion budget.
-func structuralExpand(ctx context.Context, store *storage.Store,
+func structuralExpand(ctx context.Context, store types.MetadataStore,
 	selected []types.ScoredResult, allCandidates []types.ScoredResult, budget int) []types.ScoredResult {
 
 	// Build set of already-selected chunk IDs

@@ -5,12 +5,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
 // KeywordSearch performs FTS5 search and returns hydrated scored results.
-func KeywordSearch(ctx context.Context, store *storage.Store, query string, limit int) ([]types.ScoredResult, error) {
+func KeywordSearch(ctx context.Context, store types.MetadataStore, query string, limit int) ([]types.ScoredResult, error) {
 	ftsResults, err := store.KeywordSearch(ctx, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("keyword search %q: %w", query, err)
@@ -24,7 +23,7 @@ func KeywordSearch(ctx context.Context, store *storage.Store, query string, limi
 }
 
 // hydrateFTSResults enriches FTS results with full chunk data.
-func hydrateFTSResults(ctx context.Context, store *storage.Store, ftsResults []storage.FTSResult) ([]types.ScoredResult, error) {
+func hydrateFTSResults(ctx context.Context, store types.MetadataStore, ftsResults []types.FTSResult) ([]types.ScoredResult, error) {
 	results := make([]types.ScoredResult, 0, len(ftsResults))
 
 	for _, fts := range ftsResults {

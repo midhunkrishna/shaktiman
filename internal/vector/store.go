@@ -143,10 +143,20 @@ var embMagic = [4]byte{'E', 'M', 'B', 'V'}
 
 // SaveToDisk persists all vectors to a binary file using atomic replace.
 // Writes format v2 with CRC32 integrity footer.
+// Snapshots vectors under RLock, then releases before disk I/O.
 func (s *BruteForceStore) SaveToDisk(path string) error {
 	start := time.Now()
+
+	// Snapshot under lock — release before disk I/O to avoid blocking UpsertBatch
 	s.mu.RLock()
-	defer s.mu.RUnlock()
+	snapshot := make(map[int64][]float32, len(s.vectors))
+	dim := s.dim
+	for id, vec := range s.vectors {
+		cp := make([]float32, len(vec))
+		copy(cp, vec)
+		snapshot[id] = cp
+	}
+	s.mu.RUnlock()
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create embedding dir: %w", err)
@@ -172,17 +182,17 @@ func (s *BruteForceStore) SaveToDisk(path string) error {
 		tmp.Close()
 		return fmt.Errorf("write version: %w", err)
 	}
-	if err := binary.Write(w, binary.LittleEndian, uint32(s.dim)); err != nil {
+	if err := binary.Write(w, binary.LittleEndian, uint32(dim)); err != nil {
 		tmp.Close()
 		return fmt.Errorf("write dim: %w", err)
 	}
-	if err := binary.Write(w, binary.LittleEndian, uint32(len(s.vectors))); err != nil {
+	if err := binary.Write(w, binary.LittleEndian, uint32(len(snapshot))); err != nil {
 		tmp.Close()
 		return fmt.Errorf("write count: %w", err)
 	}
 
-	// Entries
-	for id, vec := range s.vectors {
+	// Entries (from snapshot, no lock held)
+	for id, vec := range snapshot {
 		if err := binary.Write(w, binary.LittleEndian, id); err != nil {
 			tmp.Close()
 			return fmt.Errorf("write id: %w", err)
@@ -210,7 +220,7 @@ func (s *BruteForceStore) SaveToDisk(path string) error {
 		return fmt.Errorf("atomic rename: %w", err)
 	}
 	slog.Info("embeddings saved to disk",
-		"path", path, "count", len(s.vectors),
+		"path", path, "count", len(snapshot),
 		"duration_ms", time.Since(start).Milliseconds())
 	return nil
 }

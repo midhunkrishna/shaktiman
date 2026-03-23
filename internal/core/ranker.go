@@ -4,7 +4,6 @@ import (
 	"context"
 	"sort"
 
-	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
@@ -31,7 +30,7 @@ func DefaultRankWeights() RankWeights {
 // HybridRankInput configures hybrid ranking.
 type HybridRankInput struct {
 	Candidates      []types.ScoredResult
-	Store           *storage.Store
+	Store           types.MetadataStore
 	Weights         RankWeights
 	SemanticScores  map[int64]float64 // chunkID → cosine similarity [0,1]
 	SemanticReady   bool              // true if semantic scores are available
@@ -130,7 +129,7 @@ func NormalizeCosineSimilarity(sim float64) float64 {
 
 // computeStructuralScores computes structural boost for candidates.
 // A candidate gets boosted if other high-scoring candidates are BFS-reachable.
-func computeStructuralScores(ctx context.Context, store *storage.Store, candidates []types.ScoredResult) map[int64]float64 {
+func computeStructuralScores(ctx context.Context, store types.MetadataStore, candidates []types.ScoredResult) map[int64]float64 {
 	scores := make(map[int64]float64, len(candidates))
 
 	candidateChunks := make(map[int64]bool, len(candidates))
@@ -170,7 +169,7 @@ func computeStructuralScores(ctx context.Context, store *storage.Store, candidat
 }
 
 // lookupSymbolForChunk finds a symbol ID associated with a chunk.
-func lookupSymbolForChunk(ctx context.Context, store *storage.Store, chunkID int64) int64 {
+func lookupSymbolForChunk(ctx context.Context, store types.MetadataStore, chunkID int64) int64 {
 	chunk, err := store.GetChunkByID(ctx, chunkID)
 	if err != nil || chunk == nil || chunk.SymbolName == "" {
 		return 0
@@ -190,14 +189,14 @@ func lookupSymbolForChunk(ctx context.Context, store *storage.Store, chunkID int
 }
 
 // lookupChunkIDsForSymbols maps symbol IDs to their chunk IDs.
-func lookupChunkIDsForSymbols(ctx context.Context, store *storage.Store, symbolIDs []int64) []int64 {
+func lookupChunkIDsForSymbols(ctx context.Context, store types.MetadataStore, symbolIDs []int64) []int64 {
 	var chunkIDs []int64
 	for _, symID := range symbolIDs {
-		syms, err := store.GetSymbolByID(ctx, symID)
-		if err != nil || syms == nil {
+		sym, err := store.GetSymbolByID(ctx, symID)
+		if err != nil || sym == nil {
 			continue
 		}
-		chunkIDs = append(chunkIDs, syms.ChunkID)
+		chunkIDs = append(chunkIDs, sym.ChunkID)
 	}
 	return chunkIDs
 }

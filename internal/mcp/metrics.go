@@ -108,10 +108,19 @@ func (r *MetricsRecorder) Run(ctx context.Context) {
 				batch = batch[:0]
 			}
 		case <-ctx.Done():
-			// Drain remaining records from channel
-			close(r.ch)
-			for rec := range r.ch {
-				batch = append(batch, rec)
+			// Drain remaining records without closing the channel.
+			// Record() may still be called by in-flight MCP handlers;
+			// closing would cause a send-on-closed-channel panic.
+			// The channel is unreferenced after Run returns and will be GC'd.
+			deadline := time.After(time.Second)
+		drain:
+			for {
+				select {
+				case rec := <-r.ch:
+					batch = append(batch, rec)
+				case <-deadline:
+					break drain
+				}
 			}
 			if len(batch) > 0 {
 				r.flush(batch)

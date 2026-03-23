@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -138,6 +139,7 @@ func (s *Store) GetDiffSymbols(ctx context.Context, diffID int64) ([]DiffSymbolE
 
 // ComputeChangeScores returns recency*magnitude scores for the given chunk IDs.
 // Score = exp(-0.05 * hours_since_change) * min(magnitude / 50.0, 1.0)
+// Uses two batched queries instead of per-chunk lookups.
 func (s *Store) ComputeChangeScores(ctx context.Context, chunkIDs []int64) (map[int64]float64, error) {
 	scores := make(map[int64]float64, len(chunkIDs))
 	if len(chunkIDs) == 0 {
@@ -146,44 +148,94 @@ func (s *Store) ComputeChangeScores(ctx context.Context, chunkIDs []int64) (map[
 
 	now := time.Now().UTC()
 
-	// For each chunk, find the most recent diff that affected it
-	// via diff_symbols.chunk_id or by matching the file
-	for _, chunkID := range chunkIDs {
-		var timestamp string
-		var linesAdded, linesRemoved int
+	placeholders := make([]string, len(chunkIDs))
+	args := make([]any, len(chunkIDs))
+	for i, id := range chunkIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	inClause := strings.Join(placeholders, ",")
 
-		err := s.db.QueryRowContext(ctx, `
-			SELECT dl.timestamp, dl.lines_added, dl.lines_removed
-			FROM diff_log dl
-			JOIN diff_symbols ds ON ds.diff_id = dl.id
-			WHERE ds.chunk_id = ?
-			ORDER BY dl.timestamp DESC LIMIT 1`, chunkID).Scan(&timestamp, &linesAdded, &linesRemoved)
-
-		if err == sql.ErrNoRows {
-			// No diff found for this chunk — check file-level
-			err = s.db.QueryRowContext(ctx, `
-				SELECT dl.timestamp, dl.lines_added, dl.lines_removed
-				FROM diff_log dl
-				JOIN chunks c ON c.file_id = dl.file_id
-				WHERE c.id = ?
-				ORDER BY dl.timestamp DESC LIMIT 1`, chunkID).Scan(&timestamp, &linesAdded, &linesRemoved)
-		}
-		if err == sql.ErrNoRows {
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("change score for chunk %d: %w", chunkID, err)
-		}
-
+	scoreRow := func(timestamp string, linesAdded, linesRemoved int) float64 {
 		t, err := time.Parse(time.RFC3339Nano, timestamp)
 		if err != nil {
-			continue
+			return 0
 		}
-
 		hours := now.Sub(t).Hours()
 		magnitude := float64(linesAdded + linesRemoved)
-		score := math.Exp(-0.05*hours) * math.Min(magnitude/50.0, 1.0)
-		scores[chunkID] = score
+		return math.Exp(-0.05*hours) * math.Min(magnitude/50.0, 1.0)
+	}
+
+	// Query 1: Symbol-level diffs (direct chunk match via diff_symbols)
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT ds.chunk_id, dl.timestamp, dl.lines_added, dl.lines_removed
+		FROM diff_symbols ds
+		JOIN diff_log dl ON dl.id = ds.diff_id
+		WHERE ds.chunk_id IN (%s)
+		ORDER BY dl.timestamp DESC`, inClause), args...)
+	if err != nil {
+		return nil, fmt.Errorf("batch symbol-level change scores: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var chunkID int64
+		var timestamp string
+		var linesAdded, linesRemoved int
+		if err := rows.Scan(&chunkID, &timestamp, &linesAdded, &linesRemoved); err != nil {
+			continue
+		}
+		// Keep only the most recent (first row per chunk due to ORDER BY DESC)
+		if _, exists := scores[chunkID]; exists {
+			continue
+		}
+		if s := scoreRow(timestamp, linesAdded, linesRemoved); s > 0 {
+			scores[chunkID] = s
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scan symbol-level change scores: %w", err)
+	}
+
+	// Query 2: File-level fallback for chunks not found in symbol-level diffs
+	var missing []any
+	var missingPH []string
+	for _, id := range chunkIDs {
+		if _, found := scores[id]; !found {
+			missing = append(missing, id)
+			missingPH = append(missingPH, "?")
+		}
+	}
+
+	if len(missing) > 0 {
+		rows2, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+			SELECT c.id, dl.timestamp, dl.lines_added, dl.lines_removed
+			FROM chunks c
+			JOIN diff_log dl ON dl.file_id = c.file_id
+			WHERE c.id IN (%s)
+			ORDER BY dl.timestamp DESC`, strings.Join(missingPH, ",")), missing...)
+		if err != nil {
+			return nil, fmt.Errorf("batch file-level change scores: %w", err)
+		}
+		defer rows2.Close()
+
+		for rows2.Next() {
+			var chunkID int64
+			var timestamp string
+			var linesAdded, linesRemoved int
+			if err := rows2.Scan(&chunkID, &timestamp, &linesAdded, &linesRemoved); err != nil {
+				continue
+			}
+			if _, exists := scores[chunkID]; exists {
+				continue
+			}
+			if s := scoreRow(timestamp, linesAdded, linesRemoved); s > 0 {
+				scores[chunkID] = s
+			}
+		}
+		if err := rows2.Err(); err != nil {
+			return nil, fmt.Errorf("scan file-level change scores: %w", err)
+		}
 	}
 
 	return scores, nil

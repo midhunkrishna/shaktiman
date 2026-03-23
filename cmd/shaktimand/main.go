@@ -31,13 +31,23 @@ func main() {
 	}
 
 	// Configure structured logging to a file (stdout is reserved for MCP protocol).
-	// Log file is truncated on each startup — previous session logs are discarded.
 	logDir := filepath.Join(projectRoot, ".shaktiman")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot create log directory %s: %v\n", logDir, err)
 		os.Exit(1)
 	}
-	logFile, err := os.Create(filepath.Join(logDir, "shaktimand.log"))
+
+	// Rotate previous log into session-logs/<timestamp>.log
+	logPath := filepath.Join(logDir, "shaktimand.log")
+	if info, err := os.Stat(logPath); err == nil && info.Size() > 0 {
+		sessionDir := filepath.Join(logDir, "session-logs")
+		if mkErr := os.MkdirAll(sessionDir, 0o755); mkErr == nil {
+			ts := info.ModTime().Format("2006-01-02T15-04-05")
+			_ = os.Rename(logPath, filepath.Join(sessionDir, ts+".log"))
+		}
+	}
+
+	logFile, err := os.Create(logPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot open log file: %v\n", err)
 		os.Exit(1)

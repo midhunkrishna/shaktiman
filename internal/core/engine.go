@@ -6,24 +6,23 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 	"github.com/shaktimanai/shaktiman/internal/vector"
 )
 
 // QueryEngine orchestrates search and context assembly.
 type QueryEngine struct {
-	store       *storage.Store
+	store       types.MetadataStore
 	projectRoot string
 	logger      *slog.Logger
-	vectorStore *vector.BruteForceStore // nil if embeddings disabled
-	embedder    types.Embedder          // nil if embeddings disabled
+	vectorStore types.VectorStore // nil if embeddings disabled
+	embedder    types.Embedder    // nil if embeddings disabled
 	embedCache  *vector.EmbedCache
 	embedReady  func() bool // checks if embedding service is available
 }
 
 // NewQueryEngine creates an engine backed by the given store.
-func NewQueryEngine(store *storage.Store, projectRoot string) *QueryEngine {
+func NewQueryEngine(store types.MetadataStore, projectRoot string) *QueryEngine {
 	return &QueryEngine{
 		store:       store,
 		projectRoot: projectRoot,
@@ -34,7 +33,7 @@ func NewQueryEngine(store *storage.Store, projectRoot string) *QueryEngine {
 
 // SetVectorStore attaches a vector store and embedder for semantic search.
 // readyFn reports whether the embedding service is available (circuit breaker check).
-func (e *QueryEngine) SetVectorStore(vs *vector.BruteForceStore, embedder types.Embedder, readyFn func() bool) {
+func (e *QueryEngine) SetVectorStore(vs types.VectorStore, embedder types.Embedder, readyFn func() bool) {
 	e.vectorStore = vs
 	e.embedder = embedder
 	e.embedReady = readyFn
@@ -107,12 +106,12 @@ func (e *QueryEngine) Context(ctx context.Context, input ContextInput) (*types.C
 }
 
 // Store returns the underlying store for direct access.
-func (e *QueryEngine) Store() *storage.Store {
+func (e *QueryEngine) Store() types.MetadataStore {
 	return e.store
 }
 
 // VectorStore returns the vector store, or nil if unavailable.
-func (e *QueryEngine) VectorStore() *vector.BruteForceStore {
+func (e *QueryEngine) VectorStore() types.VectorStore {
 	return e.vectorStore
 }
 
@@ -280,7 +279,7 @@ func filterByScore(results []types.ScoredResult, minScore float64) []types.Score
 }
 
 // mergeResults creates a union of keyword and semantic results, hydrating vector-only entries.
-func mergeResults(ctx context.Context, store *storage.Store, kwResults []types.ScoredResult, semResults []types.VectorResult) []types.ScoredResult {
+func mergeResults(ctx context.Context, store types.MetadataStore, kwResults []types.ScoredResult, semResults []types.VectorResult) []types.ScoredResult {
 	seen := make(map[int64]bool, len(kwResults)+len(semResults))
 	merged := make([]types.ScoredResult, 0, len(kwResults)+len(semResults))
 
