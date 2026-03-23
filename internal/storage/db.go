@@ -62,7 +62,7 @@ func Open(input OpenInput) (*DB, error) {
 func openWriter(path string, inMemory bool) (*sql.DB, error) {
 	dsn := path
 	if !inMemory {
-		dsn = fmt.Sprintf("file:%s?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000&_foreign_keys=ON&cache=shared", path)
+		dsn = fmt.Sprintf("file:%s?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000&_foreign_keys=ON", path)
 	}
 
 	db, err := sql.Open("sqlite3", dsn)
@@ -98,7 +98,7 @@ func openWriter(path string, inMemory bool) (*sql.DB, error) {
 func openReader(path string, inMemory bool) (*sql.DB, error) {
 	dsn := path
 	if !inMemory {
-		dsn = fmt.Sprintf("file:%s?_journal_mode=WAL&_busy_timeout=5000&mode=ro&_foreign_keys=ON&cache=shared", path)
+		dsn = fmt.Sprintf("file:%s?_journal_mode=WAL&_busy_timeout=5000&mode=ro&_foreign_keys=ON", path)
 	}
 
 	db, err := sql.Open("sqlite3", dsn)
