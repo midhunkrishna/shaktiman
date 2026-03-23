@@ -696,3 +696,125 @@ func TestNormalizeBM25(t *testing.T) {
 		})
 	}
 }
+
+// ── Benchmarks ──
+
+func BenchmarkKeywordSearch(b *testing.B) {
+	engine, store := setupBenchEngine(b)
+	seedBenchData(b, store)
+
+	ctx := context.Background()
+	b.ResetTimer()
+	for range b.N {
+		engine.Search(ctx, SearchInput{Query: "validate token", MaxResults: 10})
+	}
+}
+
+func BenchmarkHybridRank(b *testing.B) {
+	store := setupBenchStore(b)
+
+	candidates := make([]types.ScoredResult, 100)
+	for i := range candidates {
+		candidates[i] = types.ScoredResult{
+			ChunkID:   int64(i + 1),
+			Score:     float64(100-i) / 100.0,
+			Path:      "bench.go",
+			StartLine: i * 10,
+			Kind:      "function",
+			Content:   "func bench() {}",
+		}
+	}
+
+	ctx := context.Background()
+	b.ResetTimer()
+	for range b.N {
+		HybridRank(ctx, HybridRankInput{
+			Candidates:    candidates,
+			Store:         store,
+			Weights:       DefaultRankWeights(),
+			SemanticReady: false,
+		})
+	}
+}
+
+func BenchmarkContextAssembly(b *testing.B) {
+	candidates := make([]types.ScoredResult, 50)
+	for i := range candidates {
+		candidates[i] = types.ScoredResult{
+			ChunkID:    int64(i + 1),
+			Score:      float64(50-i) / 50.0,
+			Path:       "bench.go",
+			StartLine:  i * 20,
+			EndLine:    i*20 + 19,
+			TokenCount: 40,
+			Content:    "func bench() { /* code */ }",
+		}
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		Assemble(AssemblerInput{
+			Candidates:   candidates,
+			BudgetTokens: 4096,
+		})
+	}
+}
+
+func setupBenchEngine(b *testing.B) (*QueryEngine, *storage.Store) {
+	b.Helper()
+	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	if err != nil {
+		b.Fatalf("Open: %v", err)
+	}
+	b.Cleanup(func() { db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		b.Fatalf("Migrate: %v", err)
+	}
+	store := storage.NewStore(db)
+	engine := NewQueryEngine(store, b.TempDir())
+	return engine, store
+}
+
+func setupBenchStore(b *testing.B) *storage.Store {
+	b.Helper()
+	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	if err != nil {
+		b.Fatalf("Open: %v", err)
+	}
+	b.Cleanup(func() { db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		b.Fatalf("Migrate: %v", err)
+	}
+	return storage.NewStore(db)
+}
+
+func seedBenchData(b *testing.B, store *storage.Store) {
+	b.Helper()
+	ctx := context.Background()
+
+	fileID, _ := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "src/auth/login.ts", ContentHash: "h1", Mtime: 1.0,
+		Language: "typescript", EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	store.InsertChunks(ctx, fileID, []types.ChunkRecord{
+		{ChunkIndex: 0, SymbolName: "validateToken", Kind: "function",
+			StartLine: 1, EndLine: 20,
+			Content: "export function validateToken(token: string): boolean { return token.length > 0; }",
+			TokenCount: 25},
+		{ChunkIndex: 1, SymbolName: "refreshToken", Kind: "function",
+			StartLine: 22, EndLine: 45,
+			Content: "export async function refreshToken(token: string): Promise<string> { return token; }",
+			TokenCount: 30},
+	})
+
+	fileID2, _ := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "src/utils/hash.ts", ContentHash: "h2", Mtime: 1.0,
+		Language: "typescript", EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	store.InsertChunks(ctx, fileID2, []types.ChunkRecord{
+		{ChunkIndex: 0, SymbolName: "hashPassword", Kind: "function",
+			StartLine: 1, EndLine: 10,
+			Content: "export function hashPassword(password: string): string { return hash(password); }",
+			TokenCount: 20},
+	})
+}

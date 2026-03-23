@@ -24,14 +24,15 @@ type FileChangeEvent struct {
 // Watcher monitors the project directory for file changes using fsnotify.
 // It watches directories (not individual files) to conserve FDs (IP-16).
 type Watcher struct {
-	fsw        *fsnotify.Watcher
-	root       string
-	debounceMs int
-	eventCh    chan FileChangeEvent
-	pending    map[string]time.Time
-	mu         sync.Mutex
-	logger     *slog.Logger
-	dropCount  atomic.Int64
+	fsw            *fsnotify.Watcher
+	root           string
+	debounceMs     int
+	eventCh        chan FileChangeEvent
+	branchSwitchCh chan struct{} // capacity 1, non-blocking signal on bulk changes
+	pending        map[string]time.Time
+	mu             sync.Mutex
+	logger         *slog.Logger
+	dropCount      atomic.Int64
 }
 
 // NewWatcher creates a file watcher for the given project root.
@@ -42,18 +43,25 @@ func NewWatcher(root string, debounceMs int) (*Watcher, error) {
 	}
 
 	return &Watcher{
-		fsw:        fsw,
-		root:       root,
-		debounceMs: debounceMs,
-		eventCh:    make(chan FileChangeEvent, 100),
-		pending:    make(map[string]time.Time),
-		logger:     slog.Default().With("component", "watcher"),
+		fsw:            fsw,
+		root:           root,
+		debounceMs:     debounceMs,
+		eventCh:        make(chan FileChangeEvent, 100),
+		branchSwitchCh: make(chan struct{}, 1),
+		pending:        make(map[string]time.Time),
+		logger:         slog.Default().With("component", "watcher"),
 	}, nil
 }
 
 // Events returns the channel of debounced file change events.
 func (w *Watcher) Events() <-chan FileChangeEvent {
 	return w.eventCh
+}
+
+// BranchSwitchCh returns a channel that signals when a bulk file change
+// (likely branch switch) is detected: >20 source files in one flush cycle.
+func (w *Watcher) BranchSwitchCh() <-chan struct{} {
+	return w.branchSwitchCh
 }
 
 // Start begins watching and emitting debounced events. Blocks until ctx is cancelled.
@@ -153,6 +161,15 @@ func (w *Watcher) flushPending(debounce time.Duration) {
 		delete(w.pending, path)
 	}
 	w.mu.Unlock()
+
+	// Detect likely branch switch: >20 source files changed in one flush
+	if len(ready) > 20 {
+		select {
+		case w.branchSwitchCh <- struct{}{}:
+			w.logger.Info("branch switch detected", "changed_files", len(ready))
+		default:
+		}
+	}
 
 	for _, absPath := range ready {
 		relPath, err := filepath.Rel(w.root, absPath)

@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-03-23
+
+Phase 4 — Session Awareness & Operational Polish: session-aware ranking,
+branch switch detection, summary tool, and production hardening.
+
+### Added
+
+- **Session store** (`internal/core/session.go`) — in-memory LRU map keyed on
+  `filePath:startLine` for stability across chunk re-indexes. Max 2000 entries
+  (~200KB). Three-signal scoring: recency (`exp(-0.07 * minutesAgo)`, ~10min
+  half-life), frequency (`log2(accessCount+1)/4`, capped at 1.0), exploration
+  decay (`exp(-0.1 * queriesSinceLastHit)`). `RecordAccess()`, `RecordBatch()`,
+  `Score()`, `DecayAllExcept()` methods. Thread-safe via `sync.RWMutex`.
+- **Session scoring in ranker** (`internal/core/ranker.go`) —
+  `SessionScorer` interface in `types/interfaces.go`. `HybridRankInput` now
+  accepts optional `SessionScorer`. Replaces hardcoded `sessionScore := 0.0`
+  with actual lookup. `redistributeWeights()` now conditionally redistributes
+  session weight only when scorer is nil.
+- **Branch switch detection** (`internal/daemon/watcher.go`) — tracks file
+  change rate in `flushPending()`. When >20 source files change within a single
+  flush cycle, emits non-blocking signal on `branchSwitchCh`. Daemon handles
+  signal by re-running `ScanRepo()` + `IndexAll()` + embedding queue.
+- **Summary MCP tool** (`internal/mcp/tools.go`) — `summary` tool returns
+  workspace overview: total files, chunks, symbols, language breakdown,
+  embedding percentage, parse errors, stale files. Read-only, idempotent.
+- **Shutdown grace period** (`internal/daemon/daemon.go`) — `Stop()` now uses
+  a 15-second timeout context for writer drain. Logs shutdown duration in
+  milliseconds. Prevents indefinite hang on stuck writer.
+- **Performance benchmarks** (`internal/core/`) — `BenchmarkKeywordSearch`,
+  `BenchmarkHybridRank` (100 candidates), `BenchmarkContextAssembly` (50
+  candidates, 4096 budget), `BenchmarkSessionStore_Score` (~113ns),
+  `BenchmarkSessionStore_RecordAccess` (~210ns),
+  `BenchmarkSessionStore_RecordBatch` (~632ns).
+- **Session store tests** (`internal/core/session_test.go`) — 8 unit tests:
+  record/score, batch recording, LRU eviction, eviction with access refresh,
+  exploration decay, time-based score decay, concurrent access with `-race`.
+- **Ranker session test** (`internal/core/ranker_test.go`) —
+  `TestHybridRank_WithSessionScorer` validates session signal affects ranking
+  order. `TestRedistributeWeights_AllSignalsAvailable` validates no
+  redistribution when all 5 signals are present.
+
+### Changed
+
+- MCP server version bumped to `0.4.0`.
+- `redistributeWeights()` signature: now accepts `sessionReady bool` parameter
+  instead of unconditionally zeroing session weight.
+- `HybridRankInput.SessionScorer` field added (nil = session unavailable).
+- `QueryEngine` gains `sessionStore` field with `SetSessionStore()` setter.
+  Session scores recorded after every search via `recordSession()`.
+- Daemon `New()` creates a `SessionStore(2000)` and wires it to the engine.
+
 ## [Unreleased]
 
 ### Added
@@ -410,7 +461,8 @@ FTS5 keyword search, budget-fitted context assembly, and MCP tools.
   to find inner `class_declaration` for tree walking while preserving the
   outer node for content.
 
-[unreleased]: https://github.com/shaktimanai/shaktiman/compare/v0.3.0...HEAD
+[unreleased]: https://github.com/shaktimanai/shaktiman/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/shaktimanai/shaktiman/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/shaktimanai/shaktiman/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/shaktimanai/shaktiman/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/shaktimanai/shaktiman/releases/tag/v0.1.0

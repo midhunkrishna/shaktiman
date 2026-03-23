@@ -23,7 +23,7 @@ type NewServerInput struct {
 func NewServer(input NewServerInput) *server.MCPServer {
 	s := server.NewMCPServer(
 		"shaktiman",
-		"0.3.0",
+		"0.4.0",
 		server.WithToolCapabilities(false),
 		server.WithResourceCapabilities(false, false),
 	)
@@ -43,6 +43,7 @@ func NewServer(input NewServerInput) *server.MCPServer {
 	s.AddTool(dependenciesToolDef(), wrap("dependencies", dependenciesHandler(input.Store)))
 	s.AddTool(diffToolDef(), wrap("diff", diffHandler(input.Store)))
 	s.AddTool(enrichmentStatusToolDef(), wrap("enrichment_status", enrichmentStatusHandler(input.Store, input.VectorStore, input.EmbedWorker)))
+	s.AddTool(summaryToolDef(), wrap("summary", summaryHandler(input.Store, input.VectorStore)))
 
 	// Register resources
 	s.AddResource(workspaceSummaryDef(), workspaceSummaryHandler(input.Store))

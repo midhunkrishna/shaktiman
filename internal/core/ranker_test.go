@@ -4,6 +4,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"testing"
 
@@ -126,7 +127,7 @@ func TestRedistributeWeights_SemanticUnavailable(t *testing.T) {
 	t.Parallel()
 
 	base := DefaultRankWeights()
-	w := redistributeWeights(base, false)
+	w := redistributeWeights(base, false, false)
 
 	if w.Semantic != 0 {
 		t.Errorf("Semantic should be 0 when unavailable, got %v", w.Semantic)
@@ -158,11 +159,11 @@ func TestRedistributeWeights_AllAvailable(t *testing.T) {
 	t.Parallel()
 
 	base := DefaultRankWeights()
-	w := redistributeWeights(base, true)
+	w := redistributeWeights(base, true, false)
 
-	// Session is still unavailable (Phase 4), so its weight is redistributed
+	// Session is still unavailable, so its weight is redistributed
 	if w.Session != 0 {
-		t.Errorf("Session should be 0 (Phase 4), got %v", w.Session)
+		t.Errorf("Session should be 0 when sessionReady=false, got %v", w.Session)
 	}
 
 	// Semantic should remain available and be scaled up
@@ -181,6 +182,26 @@ func TestRedistributeWeights_AllAvailable(t *testing.T) {
 	// Proportions among all 4 remaining should be preserved
 	if math.Abs(w.Semantic/w.Keyword-4.0) > 1e-9 {
 		t.Errorf("Semantic/Keyword ratio should be 4.0, got %v", w.Semantic/w.Keyword)
+	}
+}
+
+func TestRedistributeWeights_AllSignalsAvailable(t *testing.T) {
+	t.Parallel()
+
+	base := DefaultRankWeights()
+	w := redistributeWeights(base, true, true)
+
+	// All signals available — weights should be unchanged
+	if math.Abs(w.Semantic-base.Semantic) > 1e-9 {
+		t.Errorf("Semantic: want %v, got %v", base.Semantic, w.Semantic)
+	}
+	if math.Abs(w.Session-base.Session) > 1e-9 {
+		t.Errorf("Session: want %v, got %v", base.Session, w.Session)
+	}
+
+	sum := w.Keyword + w.Structural + w.Change + w.Semantic + w.Session
+	if math.Abs(sum-1.0) > 1e-9 {
+		t.Errorf("weights should sum to ~1.0, got %v", sum)
 	}
 }
 
@@ -217,6 +238,50 @@ func TestHybridRank_WithSemanticScores(t *testing.T) {
 	// (semantic weight is dominant after redistribution)
 	if got[0].ChunkID != 2 {
 		t.Errorf("expected ChunkID 2 first (high semantic), got ChunkID %d", got[0].ChunkID)
+	}
+}
+
+// mockSessionScorer returns fixed scores for testing.
+type mockSessionScorer struct {
+	scores map[string]float64
+}
+
+func (m *mockSessionScorer) Score(filePath string, startLine int) float64 {
+	key := fmt.Sprintf("%s:%d", filePath, startLine)
+	return m.scores[key]
+}
+
+func TestHybridRank_WithSessionScorer(t *testing.T) {
+	t.Parallel()
+	store := setupTestStore(t)
+
+	candidates := []types.ScoredResult{
+		{ChunkID: 1, Score: 0.9, Path: "a.go", StartLine: 1, Kind: "function", Content: "func A()"},
+		{ChunkID: 2, Score: 0.3, Path: "b.go", StartLine: 10, Kind: "function", Content: "func B()"},
+		{ChunkID: 3, Score: 0.5, Path: "c.go", StartLine: 20, Kind: "function", Content: "func C()"},
+	}
+
+	scorer := &mockSessionScorer{scores: map[string]float64{
+		"a.go:1":  0.1,
+		"b.go:10": 0.95, // high session score despite low keyword
+		"c.go:20": 0.2,
+	}}
+
+	got := HybridRank(context.Background(), HybridRankInput{
+		Candidates:    candidates,
+		Store:         store,
+		Weights:       RankWeights{Session: 1.0}, // session-only ranking
+		SemanticReady: false,
+		SessionScorer: scorer,
+	})
+
+	if len(got) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(got))
+	}
+
+	// With session-only weights, ChunkID 2 should be first (score 0.95)
+	if got[0].ChunkID != 2 {
+		t.Errorf("expected ChunkID 2 first (high session score), got ChunkID %d", got[0].ChunkID)
 	}
 }
 

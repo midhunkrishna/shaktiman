@@ -454,6 +454,62 @@ func enrichmentStatusHandler(store *storage.Store, vs *vector.BruteForceStore, e
 	}
 }
 
+// ── summary tool ──
+
+func summaryToolDef() mcpsdk.Tool {
+	return mcpsdk.NewTool("summary",
+		mcpsdk.WithDescription("Show workspace overview: files, languages, symbols, and index health."),
+		mcpsdk.WithReadOnlyHintAnnotation(true),
+		mcpsdk.WithDestructiveHintAnnotation(false),
+		mcpsdk.WithIdempotentHintAnnotation(true),
+	)
+}
+
+func summaryHandler(store *storage.Store, vs *vector.BruteForceStore) handlerFunc {
+	return func(ctx context.Context, _ mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		stats, err := store.GetIndexStats(ctx)
+		if err != nil {
+			return mcpsdk.NewToolResultError(sanitizeError("stats query failed: ", err)), nil
+		}
+
+		vectorCount := 0
+		if vs != nil {
+			vectorCount, _ = vs.Count(ctx)
+		}
+
+		embeddingPct := 0.0
+		if stats.TotalChunks > 0 {
+			embeddingPct = float64(vectorCount) / float64(stats.TotalChunks) * 100
+		}
+
+		type summaryResult struct {
+			TotalFiles   int            `json:"total_files"`
+			TotalChunks  int            `json:"total_chunks"`
+			TotalSymbols int            `json:"total_symbols"`
+			Languages    map[string]int `json:"languages"`
+			EmbeddingPct float64        `json:"embedding_pct"`
+			ParseErrors  int            `json:"parse_errors"`
+			StaleFiles   int            `json:"stale_files"`
+		}
+
+		result := summaryResult{
+			TotalFiles:   stats.TotalFiles,
+			TotalChunks:  stats.TotalChunks,
+			TotalSymbols: stats.TotalSymbols,
+			Languages:    stats.Languages,
+			EmbeddingPct: embeddingPct,
+			ParseErrors:  stats.ParseErrors,
+			StaleFiles:   stats.StaleFiles,
+		}
+
+		data, err := json.Marshal(result)
+		if err != nil {
+			return mcpsdk.NewToolResultError(sanitizeError("marshal summary: ", err)), nil
+		}
+		return withResultCount(mcpsdk.NewToolResultText(string(data)), 1), nil
+	}
+}
+
 // handlerFunc matches the MCP server.ToolHandlerFunc signature.
 type handlerFunc = func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error)
 

@@ -32,8 +32,9 @@ type HybridRankInput struct {
 	Candidates      []types.ScoredResult
 	Store           types.MetadataStore
 	Weights         RankWeights
-	SemanticScores  map[int64]float64 // chunkID → cosine similarity [0,1]
-	SemanticReady   bool              // true if semantic scores are available
+	SemanticScores  map[int64]float64    // chunkID → cosine similarity [0,1]
+	SemanticReady   bool                 // true if semantic scores are available
+	SessionScorer   types.SessionScorer  // nil if session scoring unavailable
 }
 
 // HybridRank re-ranks candidates using up to 5 signals:
@@ -45,7 +46,7 @@ func HybridRank(ctx context.Context, input HybridRankInput) []types.ScoredResult
 	}
 
 	// Determine available signals and redistribute weights
-	w := redistributeWeights(input.Weights, input.SemanticReady)
+	w := redistributeWeights(input.Weights, input.SemanticReady, input.SessionScorer != nil)
 
 	// Collect chunk IDs for batch queries
 	chunkIDs := make([]int64, len(input.Candidates))
@@ -67,7 +68,10 @@ func HybridRank(ctx context.Context, input HybridRankInput) []types.ScoredResult
 		keywordScore := results[i].Score
 		structScore := structScores[results[i].ChunkID]
 		changeScore := changeScores[results[i].ChunkID]
-		sessionScore := 0.0 // Phase 4: working set LRU
+		var sessionScore float64
+		if input.SessionScorer != nil {
+			sessionScore = input.SessionScorer.Score(results[i].Path, results[i].StartLine)
+		}
 
 		var semanticScore float64
 		if input.SemanticReady && input.SemanticScores != nil {
@@ -90,7 +94,7 @@ func HybridRank(ctx context.Context, input HybridRankInput) []types.ScoredResult
 
 // redistributeWeights proportionally distributes the weight of unavailable
 // signals to the remaining available ones.
-func redistributeWeights(base RankWeights, semanticReady bool) RankWeights {
+func redistributeWeights(base RankWeights, semanticReady, sessionReady bool) RankWeights {
 	w := base
 
 	var unavailable float64
@@ -98,15 +102,16 @@ func redistributeWeights(base RankWeights, semanticReady bool) RankWeights {
 		unavailable += w.Semantic
 		w.Semantic = 0
 	}
-	// Session is not yet available (Phase 4)
-	unavailable += w.Session
-	w.Session = 0
+	if !sessionReady {
+		unavailable += w.Session
+		w.Session = 0
+	}
 
 	if unavailable == 0 {
 		return w
 	}
 
-	remaining := w.Keyword + w.Structural + w.Change + w.Semantic
+	remaining := w.Keyword + w.Structural + w.Change + w.Semantic + w.Session
 	if remaining == 0 {
 		return w
 	}
@@ -117,6 +122,9 @@ func redistributeWeights(base RankWeights, semanticReady bool) RankWeights {
 	w.Change *= factor
 	if semanticReady {
 		w.Semantic *= factor
+	}
+	if sessionReady {
+		w.Session *= factor
 	}
 
 	return w

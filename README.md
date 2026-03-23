@@ -124,7 +124,7 @@ We also need to tell Claude to use the mcp server. Add this to the projects `CLA
 
 When spawning any subagent that needs to read or search code, include this in the prompt:
 
-> **IMPORTANT: Use the MCP tools `mcp__shaktiman__search`, `mcp__shaktiman__context`, `mcp__shaktiman__symbols`, `mcp__shaktiman__dependencies`, and `mcp__shaktiman__diff` for all code search and exploration. Do NOT use Read/Grep/Glob unless MCP tools return no results or insufficient results.**
+> **IMPORTANT: Use the MCP tools `mcp__shaktiman__search`, `mcp__shaktiman__context`, `mcp__shaktiman__symbols`, `mcp__shaktiman__dependencies`, `mcp__shaktiman__diff`, and `mcp__shaktiman__summary` for all code search and exploration. Do NOT use Read/Grep/Glob unless MCP tools return no results or insufficient results.**
 
 ### Tool mapping
 
@@ -136,6 +136,7 @@ When spawning any subagent that needs to read or search code, include this in th
 | (no equivalent) | `mcp__shaktiman__dependencies` | Tracing callers/callees of a symbol |
 | (no equivalent) | `mcp__shaktiman__diff` | Recent file changes and affected symbols |
 | (no equivalent) | `mcp__shaktiman__enrichment_status` | Checking indexing progress |
+| (no equivalent) | `mcp__shaktiman__summary` | Workspace overview (files, languages, symbols, health) |
 
 ### Fallback policy
 
@@ -157,6 +158,7 @@ That's it. Claude Code will now have access to these tools:
 | `dependencies` | Show callers and callees of a symbol | `symbol`, `direction` (callers/callees/both), `depth` (1-5) |
 | `diff` | Show recent file changes and affected symbols | `since` (e.g. "24h"), `limit` |
 | `enrichment_status` | Check indexing and embedding progress | (none) |
+| `summary` | Show workspace overview (files, languages, symbols, index health) | (none) |
 
 ### Example Prompts
 
@@ -270,7 +272,7 @@ Source Files
 ```
 
 **Retrieval levels** (automatic fallback):
-1. **Hybrid** — semantic + keyword + structural + change signals (when embeddings are ready)
+1. **Hybrid** — semantic + keyword + structural + change + session signals (when embeddings are ready)
 2. **Keyword** — FTS5 full-text search + structural ranking (default, no Ollama needed)
 3. **Filesystem** — raw file reading (when index is empty, e.g. first run)
 

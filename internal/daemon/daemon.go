@@ -45,6 +45,10 @@ func New(cfg types.Config) (*Daemon, error) {
 	engine := core.NewQueryEngine(store, cfg.ProjectRoot)
 	writer := NewWriterManager(store, cfg.WriterChannelSize)
 
+	// Session-aware ranking
+	sessionStore := core.NewSessionStore(2000)
+	engine.SetSessionStore(sessionStore)
+
 	d := &Daemon{
 		cfg:       cfg,
 		db:        db,
@@ -278,12 +282,20 @@ func (d *Daemon) periodicEmbeddingSave(ctx context.Context) {
 	}
 }
 
-// Stop performs graceful shutdown.
+// Stop performs graceful shutdown with a 15-second timeout.
 func (d *Daemon) Stop() error {
+	start := time.Now()
 	d.logger.Info("shutting down")
 
-	// Wait for writer to finish draining
-	<-d.writer.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Wait for writer to finish draining (with timeout)
+	select {
+	case <-d.writer.Done():
+	case <-shutdownCtx.Done():
+		d.logger.Warn("writer drain timeout")
+	}
 
 	// Persist embeddings
 	if d.vectorStore != nil {
@@ -302,7 +314,7 @@ func (d *Daemon) Stop() error {
 		return fmt.Errorf("close database: %w", err)
 	}
 
-	d.logger.Info("shutdown complete")
+	d.logger.Info("shutdown complete", "duration_ms", time.Since(start).Milliseconds())
 	return nil
 }
 
@@ -336,6 +348,34 @@ func (d *Daemon) startWatcher(ctx context.Context, pipeline *EnrichmentPipeline)
 				d.logger.Warn("incremental enrich failed",
 					"path", event.Path,
 					"err", err)
+			}
+		}
+	}()
+
+	// Handle branch switch signals: re-scan and re-index
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-w.BranchSwitchCh():
+				d.logger.Info("branch switch: re-scanning project")
+				scanResult, err := ScanRepo(ctx, ScanInput{ProjectRoot: d.cfg.ProjectRoot})
+				if err != nil {
+					d.logger.Error("branch switch scan failed", "err", err)
+					continue
+				}
+				if err := pipeline.IndexAll(ctx, IndexAllInput{
+					ProjectRoot: d.cfg.ProjectRoot,
+					Files:       scanResult.Files,
+				}); err != nil {
+					d.logger.Error("branch switch index failed", "err", err)
+					continue
+				}
+				if d.embedWorker != nil {
+					d.queueEmbeddings(ctx)
+				}
+				d.logger.Info("branch switch re-index complete")
 			}
 		}
 	}()

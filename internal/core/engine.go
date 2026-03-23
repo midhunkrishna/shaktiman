@@ -12,13 +12,14 @@ import (
 
 // QueryEngine orchestrates search and context assembly.
 type QueryEngine struct {
-	store       types.MetadataStore
-	projectRoot string
-	logger      *slog.Logger
-	vectorStore types.VectorStore // nil if embeddings disabled
-	embedder    types.Embedder    // nil if embeddings disabled
-	embedCache  *vector.EmbedCache
-	embedReady  func() bool // checks if embedding service is available
+	store        types.MetadataStore
+	projectRoot  string
+	logger       *slog.Logger
+	vectorStore  types.VectorStore // nil if embeddings disabled
+	embedder     types.Embedder    // nil if embeddings disabled
+	embedCache   *vector.EmbedCache
+	embedReady   func() bool       // checks if embedding service is available
+	sessionStore *SessionStore     // nil if session scoring disabled
 }
 
 // NewQueryEngine creates an engine backed by the given store.
@@ -37,6 +38,11 @@ func (e *QueryEngine) SetVectorStore(vs types.VectorStore, embedder types.Embedd
 	e.vectorStore = vs
 	e.embedder = embedder
 	e.embedReady = readyFn
+}
+
+// SetSessionStore attaches a session store for session-aware ranking.
+func (e *QueryEngine) SetSessionStore(ss *SessionStore) {
+	e.sessionStore = ss
 }
 
 // SearchInput configures a search operation.
@@ -167,6 +173,7 @@ func (e *QueryEngine) searchSemantic(ctx context.Context, input SearchInput, lev
 		Weights:        DefaultRankWeights(),
 		SemanticScores: semanticScores,
 		SemanticReady:  true,
+		SessionScorer:  e.sessionScorer(),
 	})
 
 	if len(ranked) > input.MaxResults {
@@ -175,6 +182,7 @@ func (e *QueryEngine) searchSemantic(ctx context.Context, input SearchInput, lev
 	if input.MinScore > 0 {
 		ranked = filterByScore(ranked, input.MinScore)
 	}
+	e.recordSession(ranked)
 	return ranked, nil
 }
 
@@ -198,10 +206,12 @@ func (e *QueryEngine) searchKeyword(ctx context.Context, input SearchInput) ([]t
 		Store:         e.store,
 		Weights:       DefaultRankWeights(),
 		SemanticReady: false,
+		SessionScorer: e.sessionScorer(),
 	})
 	if input.MinScore > 0 {
 		results = filterByScore(results, input.MinScore)
 	}
+	e.recordSession(results)
 	return results, nil
 }
 
@@ -241,6 +251,7 @@ func (e *QueryEngine) contextKeyword(ctx context.Context, input ContextInput) (*
 		Store:         e.store,
 		Weights:       DefaultRankWeights(),
 		SemanticReady: false,
+		SessionScorer: e.sessionScorer(),
 	})
 
 	pkg := Assemble(AssemblerInput{
@@ -264,6 +275,27 @@ func (e *QueryEngine) embedQuery(ctx context.Context, query string) ([]float32, 
 	}
 	e.embedCache.Put(query, vec)
 	return vec, nil
+}
+
+// sessionScorer returns the session scorer if available, or nil.
+func (e *QueryEngine) sessionScorer() types.SessionScorer {
+	if e.sessionStore == nil {
+		return nil
+	}
+	return e.sessionStore
+}
+
+// recordSession records search results in the session store and decays non-hits.
+func (e *QueryEngine) recordSession(results []types.ScoredResult) {
+	if e.sessionStore == nil {
+		return
+	}
+	hits := make([]SessionHit, len(results))
+	for i, r := range results {
+		hits[i] = SessionHit{FilePath: r.Path, StartLine: r.StartLine}
+	}
+	e.sessionStore.RecordBatch(hits)
+	e.sessionStore.DecayAllExcept(hits)
 }
 
 // filterByScore removes results with Score below the threshold (in-place).

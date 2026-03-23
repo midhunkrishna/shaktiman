@@ -79,6 +79,11 @@ type VectorDeleter interface {
 	Delete(ctx context.Context, chunkIDs []int64) error
 }
 
+// SessionScorer provides session-aware relevance scores for code locations.
+type SessionScorer interface {
+	Score(filePath string, startLine int) float64
+}
+
 // GraphStore provides graph traversal operations.
 // Deprecated: Neighbors is now on MetadataStore. Kept for backward compatibility.
 type GraphStore interface {
