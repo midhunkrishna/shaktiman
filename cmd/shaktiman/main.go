@@ -15,6 +15,8 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
+var outputFormat string
+
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelWarn,
@@ -24,7 +26,15 @@ func main() {
 	rootCmd := &cobra.Command{
 		Use:   "shaktiman",
 		Short: "Shaktiman code indexing and retrieval CLI",
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if outputFormat != "json" && outputFormat != "text" {
+				return fmt.Errorf("--format must be 'json' or 'text', got %q", outputFormat)
+			}
+			return nil
+		},
 	}
+	rootCmd.PersistentFlags().StringVar(&outputFormat, "format", "json",
+		`Output format: "json" (default) or "text"`)
 
 	rootCmd.AddCommand(indexCmd())
 	rootCmd.AddCommand(statusCmd())

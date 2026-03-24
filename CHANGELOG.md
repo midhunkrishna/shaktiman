@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`--format` CLI flag** (`cmd/shaktiman/main.go`) — persistent flag on root
+  command accepting `json` (default, backward-compatible) or `text` (MCP-style
+  plain text). Applied to all query subcommands: `search`, `context`, `symbols`,
+  `deps`, `diff`, `enrichment-status`. Validated via `PersistentPreRunE`.
+- **`--explain` flag for search** (`cmd/shaktiman/query.go`) — when using
+  `--format text`, includes per-signal score breakdown in result headers.
+- **Shared format package** (`internal/format/`) — extracted text formatters
+  from `internal/mcp/format.go` into a new shared package with exported
+  functions: `SearchResults`, `LocateResults`, `ContextPackage`, `Symbols`,
+  `Dependencies`, `Diffs`, `IndexStats`. New text formatters for symbols,
+  dependencies, diffs, and index stats.
+- **Shared display types** (`internal/format/types.go`) — `SymbolResult`,
+  `DepResult`, `DiffResult` structs with identical JSON tags to the previous
+  local definitions. Used by both CLI and MCP to eliminate struct duplication.
+- **Format package tests** (`internal/format/format_test.go`) — tests for all
+  formatter functions including empty inputs, single/multi results, explain
+  mode, and adjacent-same-file path elision.
+
+### Changed
+
+- `internal/mcp/format.go` — functions replaced with thin delegates to
+  `internal/format`. No behavior change.
+- `internal/mcp/tools.go` — local `symbolResult`, `depResult`, `diffResult`
+  structs replaced with `format.SymbolResult`, `format.DepResult`,
+  `format.DiffResult`. JSON output unchanged.
+- CLI query commands now use `format.*Result` types instead of local struct
+  definitions.
+
 ## [0.5.0] - 2026-03-23
 
 Phase 5 — Language Expansion: add Java, Groovy, Shell, and JavaScript support

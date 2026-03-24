@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/shaktimanai/shaktiman/internal/core"
+	"github.com/shaktimanai/shaktiman/internal/format"
 	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
@@ -19,6 +20,7 @@ func searchCmd() *cobra.Command {
 		maxResults int
 		mode       string
 		minScore   float64
+		explain    bool
 	)
 	cmd := &cobra.Command{
 		Use:   "search <query>",
@@ -60,6 +62,15 @@ func searchCmd() *cobra.Command {
 				return fmt.Errorf("search: %w", err)
 			}
 
+			if outputFormat == "text" {
+				if mode == "locate" {
+					fmt.Print(format.LocateResults(results))
+				} else {
+					fmt.Print(format.SearchResults(results, explain))
+				}
+				return nil
+			}
+
 			data, err := json.MarshalIndent(results, "", "  ")
 			if err != nil {
 				return fmt.Errorf("marshal: %w", err)
@@ -72,6 +83,7 @@ func searchCmd() *cobra.Command {
 	cmd.Flags().IntVar(&maxResults, "max", 0, "Maximum results (0 = use config default)")
 	cmd.Flags().StringVar(&mode, "mode", "", "Result mode: locate or full (empty = use config default)")
 	cmd.Flags().Float64Var(&minScore, "min-score", 0, "Minimum relevance score (0 = use config default)")
+	cmd.Flags().BoolVar(&explain, "explain", false, "Include score breakdown (text format only)")
 	return cmd
 }
 
@@ -110,6 +122,11 @@ func contextCmd() *cobra.Command {
 			})
 			if err != nil {
 				return fmt.Errorf("context: %w", err)
+			}
+
+			if outputFormat == "text" {
+				fmt.Print(format.ContextPackage(pkg))
+				return nil
 			}
 
 			data, err := json.MarshalIndent(pkg, "", "  ")
@@ -151,22 +168,13 @@ func symbolsCmd() *cobra.Command {
 				return fmt.Errorf("symbol lookup: %w", err)
 			}
 
-			type symbolResult struct {
-				Name       string `json:"name"`
-				Kind       string `json:"kind"`
-				Line       int    `json:"line"`
-				Signature  string `json:"signature,omitempty"`
-				Visibility string `json:"visibility"`
-				FilePath   string `json:"file_path"`
-			}
-
-			var results []symbolResult
+			var results []format.SymbolResult
 			for _, s := range syms {
 				if kind != "" && s.Kind != kind {
 					continue
 				}
 				path, _ := store.GetFilePathByID(ctx, s.FileID)
-				results = append(results, symbolResult{
+				results = append(results, format.SymbolResult{
 					Name:       s.Name,
 					Kind:       s.Kind,
 					Line:       s.Line,
@@ -174,6 +182,11 @@ func symbolsCmd() *cobra.Command {
 					Visibility: s.Visibility,
 					FilePath:   path,
 				})
+			}
+
+			if outputFormat == "text" {
+				fmt.Print(format.Symbols(results))
+				return nil
 			}
 
 			data, err := json.MarshalIndent(results, "", "  ")
@@ -225,7 +238,11 @@ func depsCmd() *cobra.Command {
 
 			syms, err := store.GetSymbolByName(ctx, args[0])
 			if err != nil || len(syms) == 0 {
-				fmt.Println("[]")
+				if outputFormat == "text" {
+					fmt.Print(format.Dependencies(nil))
+				} else {
+					fmt.Println("[]")
+				}
 				return nil
 			}
 
@@ -234,26 +251,24 @@ func depsCmd() *cobra.Command {
 				return fmt.Errorf("graph query: %w", err)
 			}
 
-			type depResult struct {
-				Name     string `json:"name"`
-				Kind     string `json:"kind"`
-				FilePath string `json:"file_path"`
-				Line     int    `json:"line"`
-			}
-
-			var results []depResult
+			var results []format.DepResult
 			for _, nID := range neighborIDs {
 				sym, err := store.GetSymbolByID(ctx, nID)
 				if err != nil || sym == nil {
 					continue
 				}
 				path, _ := store.GetFilePathByID(ctx, sym.FileID)
-				results = append(results, depResult{
+				results = append(results, format.DepResult{
 					Name:     sym.Name,
 					Kind:     sym.Kind,
 					FilePath: path,
 					Line:     sym.Line,
 				})
+			}
+
+			if outputFormat == "text" {
+				fmt.Print(format.Dependencies(results))
+				return nil
 			}
 
 			data, err := json.MarshalIndent(results, "", "  ")
@@ -308,20 +323,10 @@ func diffCmd() *cobra.Command {
 				return fmt.Errorf("diff query: %w", err)
 			}
 
-			type diffResult struct {
-				FileID       int64    `json:"file_id"`
-				FilePath     string   `json:"file_path"`
-				ChangeType   string   `json:"change_type"`
-				LinesAdded   int      `json:"lines_added"`
-				LinesRemoved int      `json:"lines_removed"`
-				Timestamp    string   `json:"timestamp"`
-				Symbols      []string `json:"affected_symbols,omitempty"`
-			}
-
-			var results []diffResult
+			var results []format.DiffResult
 			for _, d := range diffs {
 				path, _ := store.GetFilePathByID(ctx, d.FileID)
-				dr := diffResult{
+				dr := format.DiffResult{
 					FileID:       d.FileID,
 					FilePath:     path,
 					ChangeType:   d.ChangeType,
@@ -334,6 +339,11 @@ func diffCmd() *cobra.Command {
 					dr.Symbols = append(dr.Symbols, ds.SymbolName+" ("+ds.ChangeType+")")
 				}
 				results = append(results, dr)
+			}
+
+			if outputFormat == "text" {
+				fmt.Print(format.Diffs(results))
+				return nil
 			}
 
 			data, err := json.MarshalIndent(results, "", "  ")
@@ -368,6 +378,11 @@ func enrichmentStatusCmd() *cobra.Command {
 			stats, err := store.GetIndexStats(context.Background())
 			if err != nil {
 				return fmt.Errorf("stats: %w", err)
+			}
+
+			if outputFormat == "text" {
+				fmt.Print(format.IndexStats(stats))
+				return nil
 			}
 
 			data, err := json.MarshalIndent(stats, "", "  ")

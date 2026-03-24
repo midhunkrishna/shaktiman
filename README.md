@@ -194,13 +194,22 @@ Without Shaktiman, Claude Code reads entire files to build context. With Shaktim
 
 All MCP tools are also available as CLI subcommands, reading the SQLite index directly without the MCP daemon.
 
+### Output Format
+
+All query commands support `--format` to control output:
+
+- `--format json` (default) — pretty-printed JSON, suitable for piping to `jq` or other tools
+- `--format text` — human-readable plain text, same format used by the MCP server
+
+The `--format` flag is persistent and applies to all subcommands.
+
 ### Commands
 
 | Command | What it does | Key flags |
 |---------|-------------|-----------|
 | `index <root>` | Index a project directory | `--embed` (also generate embeddings) |
 | `status <root>` | Show index status | (none) |
-| `search <query>` | Search indexed code by keyword | `--root`, `--max`, `--mode` (locate/full), `--min-score` |
+| `search <query>` | Search indexed code by keyword | `--root`, `--max`, `--mode` (locate/full), `--min-score`, `--explain` |
 | `context <query>` | Assemble ranked code context fitted to a token budget | `--root`, `--budget` (256-32768) |
 | `symbols <name>` | Look up functions, classes, types by name | `--root`, `--kind` |
 | `deps <symbol>` | Show callers/callees of a symbol | `--root`, `--direction`, `--depth` (1-5) |
@@ -219,14 +228,23 @@ All MCP tools are also available as CLI subcommands, reading the SQLite index di
 # Check index status
 ./shaktiman status /path/to/project
 
-# Search for code (locate mode — compact pointers)
+# Search for code (JSON output, default)
 ./shaktiman search "authentication middleware" --root /path/to/project --max 10
 
-# Search with full source code
-./shaktiman search "authentication middleware" --root /path/to/project --mode full
+# Search with human-readable text output (MCP-style locate pointers)
+./shaktiman search "authentication middleware" --root /path/to/project --format text
+
+# Search with full source code in text format
+./shaktiman search "authentication middleware" --root /path/to/project --format text --mode full
+
+# Search with score breakdown
+./shaktiman search "authentication middleware" --root /path/to/project --format text --explain
 
 # Assemble context for a task (budget-fitted)
 ./shaktiman context "payment processing flow" --root /path/to/project --budget 4096
+
+# Context in text format
+./shaktiman context "payment processing flow" --root /path/to/project --format text
 
 # Look up a symbol
 ./shaktiman symbols NewServer --root /path/to/project --kind function
@@ -343,6 +361,7 @@ internal/
   storage/             SQLite backend (schema, FTS5, graph, diffs)
   parser/              Tree-sitter parsing, chunking, symbol extraction
   core/                Query engine, ranking, context assembly, fallback
+  format/              Shared text formatters for CLI and MCP output
   daemon/              Lifecycle, writer, file watcher, enrichment pipeline
   vector/              In-memory vector store, Ollama client, circuit breaker
   mcp/                 MCP server, tool handlers, resources

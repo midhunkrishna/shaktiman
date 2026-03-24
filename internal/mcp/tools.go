@@ -11,6 +11,7 @@ import (
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/shaktimanai/shaktiman/internal/core"
+	"github.com/shaktimanai/shaktiman/internal/format"
 	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 	"github.com/shaktimanai/shaktiman/internal/vector"
@@ -218,22 +219,13 @@ func symbolsHandler(store *storage.Store) handlerFunc {
 
 		kindFilter := req.GetString("kind", "")
 
-		type symbolResult struct {
-			Name       string `json:"name"`
-			Kind       string `json:"kind"`
-			Line       int    `json:"line"`
-			Signature  string `json:"signature,omitempty"`
-			Visibility string `json:"visibility"`
-			FilePath   string `json:"file_path"`
-		}
-
-		var results []symbolResult
+		var results []format.SymbolResult
 		for _, s := range syms {
 			if kindFilter != "" && s.Kind != kindFilter {
 				continue
 			}
 			path, _ := store.GetFilePathByID(ctx, s.FileID)
-			results = append(results, symbolResult{
+			results = append(results, format.SymbolResult{
 				Name:       s.Name,
 				Kind:       s.Kind,
 				Line:       s.Line,
@@ -309,21 +301,14 @@ func dependenciesHandler(store *storage.Store) handlerFunc {
 			return mcpsdk.NewToolResultError(sanitizeError("graph query failed: ", err)), nil
 		}
 
-		type depResult struct {
-			Name     string `json:"name"`
-			Kind     string `json:"kind"`
-			FilePath string `json:"file_path"`
-			Line     int    `json:"line"`
-		}
-
-		var results []depResult
+		var results []format.DepResult
 		for _, nID := range neighborIDs {
 			sym, err := store.GetSymbolByID(ctx, nID)
 			if err != nil || sym == nil {
 				continue
 			}
 			path, _ := store.GetFilePathByID(ctx, sym.FileID)
-			results = append(results, depResult{
+			results = append(results, format.DepResult{
 				Name:     sym.Name,
 				Kind:     sym.Kind,
 				FilePath: path,
@@ -384,20 +369,10 @@ func diffHandler(store *storage.Store) handlerFunc {
 			return mcpsdk.NewToolResultError(sanitizeError("diff query failed: ", err)), nil
 		}
 
-		type diffResult struct {
-			FileID       int64    `json:"file_id"`
-			FilePath     string   `json:"file_path"`
-			ChangeType   string   `json:"change_type"`
-			LinesAdded   int      `json:"lines_added"`
-			LinesRemoved int      `json:"lines_removed"`
-			Timestamp    string   `json:"timestamp"`
-			Symbols      []string `json:"affected_symbols,omitempty"`
-		}
-
-		var results []diffResult
+		var results []format.DiffResult
 		for _, d := range diffs {
 			path, _ := store.GetFilePathByID(ctx, d.FileID)
-			dr := diffResult{
+			dr := format.DiffResult{
 				FileID:       d.FileID,
 				FilePath:     path,
 				ChangeType:   d.ChangeType,
