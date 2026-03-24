@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
@@ -20,8 +21,10 @@ func searchToolDef(cfg types.Config) mcpsdk.Tool {
 	return mcpsdk.NewTool("search",
 		mcpsdk.WithDescription(
 			`Search indexed code by keyword or semantic query.
-Default mode is "locate": returns file paths, line ranges, symbols, and scores — no source code.
-Use locate to discover relevant files, then read specific files with the Read tool.
+Use this INSTEAD of Grep for code discovery — returns 10-50x fewer tokens.
+Default mode is "locate": returns compact file pointers (~12 tokens per result vs ~500 for Grep).
+Supports semantic matching (e.g. "error handling" finds try/catch, recover, Result types).
+Use locate to discover relevant files, then Read specific files you need.
 Set mode="full" only when you need inline source code.`),
 		mcpsdk.WithString("query",
 			mcpsdk.Required(),
@@ -39,6 +42,9 @@ Set mode="full" only when you need inline source code.`),
 		),
 		mcpsdk.WithBoolean("explain",
 			mcpsdk.Description("Include per-signal score breakdown"),
+		),
+		mcpsdk.WithString("path",
+			mcpsdk.Description("Filter results to this file or directory prefix (e.g. 'internal/mcp/' or 'main.go')"),
 		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
 		mcpsdk.WithDestructiveHintAnnotation(false),
@@ -75,15 +81,39 @@ func searchHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 		}
 
 		explain := req.GetBool("explain", false)
+		pathFilter := req.GetString("path", "")
+
+		// Over-fetch when path filter is set to compensate for post-filtering.
+		engineMax := maxResults
+		if pathFilter != "" {
+			engineMax = maxResults * 3
+			if engineMax > 200 {
+				engineMax = 200
+			}
+		}
 
 		results, err := engine.Search(ctx, core.SearchInput{
 			Query:      query,
-			MaxResults: maxResults,
+			MaxResults: engineMax,
 			Explain:    explain,
 			MinScore:   minScore,
 		})
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("search failed: ", err)), nil
+		}
+
+		// Apply path prefix filter if specified.
+		if pathFilter != "" {
+			filtered := results[:0]
+			for _, r := range results {
+				if strings.HasPrefix(r.Path, pathFilter) {
+					filtered = append(filtered, r)
+				}
+			}
+			results = filtered
+			if len(results) > maxResults {
+				results = results[:maxResults]
+			}
 		}
 
 		var text string
@@ -102,7 +132,8 @@ func contextToolDef(cfg types.Config) mcpsdk.Tool {
 	return mcpsdk.NewTool("context",
 		mcpsdk.WithDescription(fmt.Sprintf(
 			`Assemble a cross-file context overview fitted to a token budget.
-Returns ranked, deduplicated code chunks for multi-file understanding.
+Use this INSTEAD of reading multiple files — returns only the relevant chunks, ranked and deduplicated.
+Returns ranked code chunks for multi-file understanding within a strict token budget.
 Use smaller budgets (1024-2048) for focused queries. Default budget: %d tokens.
 For single-file reading, prefer the Read tool instead.`, cfg.ContextBudgetTokens)),
 		mcpsdk.WithString("query",
@@ -156,7 +187,10 @@ func contextHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 
 func symbolsToolDef() mcpsdk.Tool {
 	return mcpsdk.NewTool("symbols",
-		mcpsdk.WithDescription("Look up symbols by name. Returns matching symbols with file path, line, signature, and visibility."),
+		mcpsdk.WithDescription(
+			`Look up symbols (functions, types, classes, methods) by exact name.
+Use this INSTEAD of Grep for finding definitions — returns structured data with file path, line, signature, and visibility.
+More precise than text search: finds the definition, not every mention.`),
 		mcpsdk.WithString("name",
 			mcpsdk.Required(),
 			mcpsdk.Description("Symbol name to search for"),
@@ -221,7 +255,10 @@ func symbolsHandler(store *storage.Store) handlerFunc {
 
 func dependenciesToolDef() mcpsdk.Tool {
 	return mcpsdk.NewTool("dependencies",
-		mcpsdk.WithDescription("Show callers/callees of a symbol using the dependency graph."),
+		mcpsdk.WithDescription(
+			`Show callers/callees of a symbol using the pre-built dependency graph.
+No equivalent in built-in tools — traces call chains across files instantly.
+Use to understand how a function is used or what it depends on.`),
 		mcpsdk.WithString("symbol",
 			mcpsdk.Required(),
 			mcpsdk.Description("Symbol name to find dependencies for"),
@@ -306,7 +343,10 @@ func dependenciesHandler(store *storage.Store) handlerFunc {
 
 func diffToolDef() mcpsdk.Tool {
 	return mcpsdk.NewTool("diff",
-		mcpsdk.WithDescription("Show recent file changes and affected symbols."),
+		mcpsdk.WithDescription(
+			`Show recent file changes and which symbols were added, modified, or removed.
+More structured than git log — returns symbol-level change tracking with timestamps.
+Use to understand what changed recently without parsing raw diffs.`),
 		mcpsdk.WithString("since",
 			mcpsdk.Description("Time window, e.g. '24h', '1h', '30m' (default: 24h)"),
 		),
@@ -386,7 +426,10 @@ func diffHandler(store *storage.Store) handlerFunc {
 
 func enrichmentStatusToolDef() mcpsdk.Tool {
 	return mcpsdk.NewTool("enrichment_status",
-		mcpsdk.WithDescription("Show embedding and indexing progress."),
+		mcpsdk.WithDescription(
+			`Show embedding and indexing progress.
+Use to check if semantic search is available and how complete the index is.
+Returns chunk counts, embedding percentage, and circuit breaker state.`),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
 		mcpsdk.WithDestructiveHintAnnotation(false),
 		mcpsdk.WithIdempotentHintAnnotation(true),
@@ -458,7 +501,10 @@ func enrichmentStatusHandler(store *storage.Store, vs *vector.BruteForceStore, e
 
 func summaryToolDef() mcpsdk.Tool {
 	return mcpsdk.NewTool("summary",
-		mcpsdk.WithDescription("Show workspace overview: files, languages, symbols, and index health."),
+		mcpsdk.WithDescription(
+			`Show workspace overview: files, languages, symbols, and index health.
+Use this to understand codebase structure before searching.
+Returns total files, chunks, symbols, language breakdown, and index quality metrics.`),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
 		mcpsdk.WithDestructiveHintAnnotation(false),
 		mcpsdk.WithIdempotentHintAnnotation(true),
