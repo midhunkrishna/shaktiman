@@ -245,10 +245,14 @@ All MCP tools are also available as CLI subcommands, reading the SQLite index di
 
 | Language | Extensions | Parser |
 |----------|-----------|--------|
-| TypeScript | `.ts`, `.tsx`, `.js`, `.jsx` | tree-sitter-typescript |
+| TypeScript | `.ts`, `.tsx` | tree-sitter-typescript |
+| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` | tree-sitter-javascript |
 | Python | `.py` | tree-sitter-python |
 | Go | `.go` | tree-sitter-go |
 | Rust | `.rs` | tree-sitter-rust |
+| Java | `.java` | tree-sitter-java |
+| Groovy | `.groovy`, `.gradle` | tree-sitter-groovy |
+| Shell | `.sh`, `.bash` | tree-sitter-bash |
 
 Adding a new language: implement a `LanguageConfig` in `internal/parser/languages.go` with the AST node type mappings for your language.
 

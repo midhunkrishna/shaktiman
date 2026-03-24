@@ -82,15 +82,15 @@ func (p *Parser) walkForEdges(node *sitter.Node, owner string, ctx *edgeContext)
 	}
 
 	// Call expressions
-	if nodeType == "call_expression" || nodeType == "call" {
+	if nodeType == "call_expression" || nodeType == "call" || nodeType == "method_invocation" || nodeType == "function_call" {
 		callee := extractCalleeName(node, ctx.source)
 		if callee != "" && callee != newOwner {
 			ctx.addEdge(newOwner, callee, "calls")
 		}
 	}
 
-	// TypeScript class heritage
-	if nodeType == "extends_clause" {
+	// TypeScript/JavaScript class heritage
+	if nodeType == "extends_clause" || nodeType == "class_heritage" {
 		p.extractHeritageTypeNames(node, newOwner, "inherits", ctx)
 		return
 	}
@@ -99,11 +99,31 @@ func (p *Parser) walkForEdges(node *sitter.Node, owner string, ctx *edgeContext)
 		return
 	}
 
-	// Python class bases
+	// Java inheritance
+	if nodeType == "superclass" {
+		p.extractHeritageTypeNames(node, newOwner, "inherits", ctx)
+		return
+	}
+	if nodeType == "super_interfaces" {
+		p.extractHeritageTypeNames(node, newOwner, "implements", ctx)
+		return
+	}
+
+	// Python/Groovy class bases
 	if nodeType == "class_definition" {
-		superclasses := node.ChildByFieldName("superclasses")
-		if superclasses != nil {
-			p.extractPythonBases(superclasses, newOwner, ctx)
+		if ctx.cfg.Name == "python" {
+			superclasses := node.ChildByFieldName("superclasses")
+			if superclasses != nil {
+				p.extractPythonBases(superclasses, newOwner, ctx)
+			}
+		} else if ctx.cfg.Name == "groovy" {
+			superclass := node.ChildByFieldName("superclass")
+			if superclass != nil {
+				name := extractName(superclass, ctx.source)
+				if name != "" {
+					ctx.addEdge(newOwner, name, "inherits")
+				}
+			}
 		}
 	}
 
@@ -119,10 +139,17 @@ func (p *Parser) extractImportEdgesFrom(node *sitter.Node, owner string, ctx *ed
 	switch ctx.cfg.Name {
 	case "typescript":
 		p.tsImportEdges(node, owner, ctx)
+	case "javascript":
+		p.tsImportEdges(node, owner, ctx) // same AST structure as TypeScript
 	case "python":
 		p.pyImportEdges(node, owner, ctx)
 	case "go":
 		p.goImportEdges(node, owner, ctx)
+	case "java":
+		p.javaImportEdges(node, owner, ctx)
+	case "groovy":
+		p.groovyImportEdges(node, owner, ctx)
+	// bash has no imports
 	}
 }
 
@@ -207,14 +234,58 @@ func (p *Parser) goImportEdges(node *sitter.Node, owner string, ctx *edgeContext
 	walk(node)
 }
 
+func (p *Parser) javaImportEdges(node *sitter.Node, owner string, ctx *edgeContext) {
+	// Java: import foo.bar.Baz; → extract "Baz"
+	var walk func(n *sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n.Type() == "scoped_identifier" {
+			name := n.ChildByFieldName("name")
+			if name != nil {
+				ctx.addEdge(owner, name.Content(ctx.source), "imports")
+			}
+			return
+		}
+		if n.Type() == "identifier" {
+			ctx.addEdge(owner, n.Content(ctx.source), "imports")
+			return
+		}
+		for i := 0; i < int(n.NamedChildCount()); i++ {
+			walk(n.NamedChild(i))
+		}
+	}
+	walk(node)
+}
+
+func (p *Parser) groovyImportEdges(node *sitter.Node, owner string, ctx *edgeContext) {
+	// Groovy: import foo.bar.Baz → extract last dot-separated component
+	var walk func(n *sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n.Type() == "dotted_identifier" || n.Type() == "identifier" {
+			content := n.Content(ctx.source)
+			parts := strings.Split(content, ".")
+			ctx.addEdge(owner, parts[len(parts)-1], "imports")
+			return
+		}
+		for i := 0; i < int(n.NamedChildCount()); i++ {
+			walk(n.NamedChild(i))
+		}
+	}
+	walk(node)
+}
+
 // ── Call expression helpers ──
 
 func extractCalleeName(node *sitter.Node, source []byte) string {
 	fn := node.ChildByFieldName("function")
-	if fn == nil {
-		return ""
+	if fn != nil {
+		return resolveCallee(fn, source)
 	}
-	return resolveCallee(fn, source)
+	// Java method_invocation uses "name" field
+	name := node.ChildByFieldName("name")
+	if name != nil {
+		return name.Content(source)
+	}
+	return ""
 }
 
 func resolveCallee(node *sitter.Node, source []byte) string {

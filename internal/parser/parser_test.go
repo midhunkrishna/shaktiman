@@ -686,3 +686,272 @@ type Config struct {
 		t.Error("expected type symbol 'Config'")
 	}
 }
+
+// ── Java tests ──
+
+func TestParse_JavaClassWithMethods(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`package com.example;
+
+import java.util.List;
+
+public class UserService {
+    private final String name;
+
+    public UserService(String name) {
+        this.name = name;
+    }
+
+    public List<String> getUsers() {
+        return List.of("alice", "bob");
+    }
+
+    public void deleteUser(String id) {
+        System.out.println("deleting " + id);
+    }
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "UserService.java",
+		Content:  src,
+		Language: "java",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Should have a class symbol
+	foundClass := false
+	for _, s := range result.Symbols {
+		if s.Name == "UserService" && s.Kind == "class" {
+			foundClass = true
+			break
+		}
+	}
+	if !foundClass {
+		t.Error("expected class symbol 'UserService'")
+	}
+
+	// Should have method symbols
+	methods := map[string]bool{}
+	for _, s := range result.Symbols {
+		if s.Kind == "method" {
+			methods[s.Name] = true
+		}
+	}
+	for _, m := range []string{"UserService", "getUsers", "deleteUser"} {
+		if !methods[m] {
+			t.Errorf("expected method symbol %q", m)
+		}
+	}
+
+	// Should have import edge
+	foundImport := false
+	for _, e := range result.Edges {
+		if e.Kind == "imports" && e.DstSymbolName == "List" {
+			foundImport = true
+			break
+		}
+	}
+	if !foundImport {
+		t.Error("expected import edge for 'List'")
+	}
+}
+
+// ── Groovy tests ──
+
+func TestParse_GroovyFunction(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`def greet(String name) {
+    println "Hello, ${name}!"
+}
+
+int add(int a, int b) {
+    return a + b
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "utils.groovy",
+		Content:  src,
+		Language: "groovy",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	functions := map[string]bool{}
+	for _, s := range result.Symbols {
+		if s.Kind == "function" {
+			functions[s.Name] = true
+		}
+	}
+	for _, f := range []string{"greet", "add"} {
+		if !functions[f] {
+			t.Errorf("expected function symbol %q", f)
+		}
+	}
+}
+
+// ── Bash tests ──
+
+func TestParse_BashFunctions(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`#!/bin/bash
+
+NAME="world"
+
+greet() {
+    echo "Hello, $1!"
+}
+
+function cleanup {
+    rm -rf /tmp/work
+}
+
+greet "$NAME"
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "script.sh",
+		Content:  src,
+		Language: "bash",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	functions := map[string]bool{}
+	for _, s := range result.Symbols {
+		if s.Kind == "function" {
+			functions[s.Name] = true
+		}
+	}
+	for _, f := range []string{"greet", "cleanup"} {
+		if !functions[f] {
+			t.Errorf("expected function symbol %q", f)
+		}
+	}
+}
+
+// ── JavaScript tests ──
+
+func TestParse_JavaScriptClassWithMethods(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`import { EventEmitter } from 'events';
+
+export class Server extends EventEmitter {
+    constructor(port) {
+        super();
+        this.port = port;
+    }
+
+    start() {
+        console.log("listening on " + this.port);
+    }
+}
+
+export function createServer(port) {
+    return new Server(port);
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "server.js",
+		Content:  src,
+		Language: "javascript",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Should have class symbol
+	foundClass := false
+	for _, s := range result.Symbols {
+		if s.Name == "Server" && s.Kind == "class" {
+			foundClass = true
+			break
+		}
+	}
+	if !foundClass {
+		t.Error("expected class symbol 'Server'")
+	}
+
+	// Should have function symbol
+	foundFunc := false
+	for _, s := range result.Symbols {
+		if s.Name == "createServer" && s.Kind == "function" {
+			foundFunc = true
+			break
+		}
+	}
+	if !foundFunc {
+		t.Error("expected function symbol 'createServer'")
+	}
+
+	// Should have method symbols
+	methods := map[string]bool{}
+	for _, s := range result.Symbols {
+		if s.Kind == "method" {
+			methods[s.Name] = true
+		}
+	}
+	for _, m := range []string{"constructor", "start"} {
+		if !methods[m] {
+			t.Errorf("expected method symbol %q", m)
+		}
+	}
+
+	// Should have import edge
+	foundImport := false
+	for _, e := range result.Edges {
+		if e.Kind == "imports" && e.DstSymbolName == "EventEmitter" {
+			foundImport = true
+			break
+		}
+	}
+	if !foundImport {
+		t.Error("expected import edge for 'EventEmitter'")
+	}
+
+	// Should have inheritance edge
+	foundInherits := false
+	for _, e := range result.Edges {
+		if e.Kind == "inherits" && e.DstSymbolName == "EventEmitter" {
+			foundInherits = true
+			break
+		}
+	}
+	if !foundInherits {
+		t.Error("expected inherits edge for 'EventEmitter'")
+	}
+}

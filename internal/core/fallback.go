@@ -99,7 +99,7 @@ func FilesystemFallback(ctx context.Context, projectRoot string, query string, b
 		}
 		ext := strings.ToLower(filepath.Ext(d.Name()))
 		switch ext {
-		case ".ts", ".tsx", ".py", ".go", ".rs":
+		case ".ts", ".tsx", ".py", ".go", ".rs", ".java", ".groovy", ".gradle", ".sh", ".bash", ".js", ".jsx", ".mjs", ".cjs":
 			// Resolve symlinks and verify path stays within project root
 			absPath, err := filepath.EvalSymlinks(path)
 			if err != nil {

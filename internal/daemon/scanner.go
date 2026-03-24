@@ -46,11 +46,20 @@ var skipDirs = map[string]bool{
 
 // languageExtensions maps file extensions to language names.
 var languageExtensions = map[string]string{
-	".ts":  "typescript",
-	".tsx": "typescript",
-	".py":  "python",
-	".go":  "go",
-	".rs":  "rust",
+	".ts":      "typescript",
+	".tsx":     "typescript",
+	".py":      "python",
+	".go":      "go",
+	".rs":      "rust",
+	".java":    "java",
+	".groovy":  "groovy",
+	".gradle":  "groovy",
+	".sh":      "bash",
+	".bash":    "bash",
+	".js":      "javascript",
+	".jsx":     "javascript",
+	".mjs":     "javascript",
+	".cjs":     "javascript",
 }
 
 // LanguageForExt returns the language for a file extension (e.g. ".go" → "go").

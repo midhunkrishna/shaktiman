@@ -4,7 +4,11 @@ import (
 	"fmt"
 
 	sitter "github.com/smacker/go-tree-sitter"
+	"github.com/smacker/go-tree-sitter/bash"
 	"github.com/smacker/go-tree-sitter/golang"
+	"github.com/smacker/go-tree-sitter/groovy"
+	"github.com/smacker/go-tree-sitter/java"
+	"github.com/smacker/go-tree-sitter/javascript"
 	"github.com/smacker/go-tree-sitter/python"
 	"github.com/smacker/go-tree-sitter/rust"
 	"github.com/smacker/go-tree-sitter/typescript/typescript"
@@ -34,6 +38,14 @@ func GetLanguageConfig(lang string) (*LanguageConfig, error) {
 		return goConfig(), nil
 	case "rust":
 		return rustConfig(), nil
+	case "java":
+		return javaConfig(), nil
+	case "groovy":
+		return groovyConfig(), nil
+	case "bash":
+		return bashConfig(), nil
+	case "javascript":
+		return javascriptConfig(), nil
 	default:
 		return nil, fmt.Errorf("unsupported language: %s", lang)
 	}
@@ -42,7 +54,7 @@ func GetLanguageConfig(lang string) (*LanguageConfig, error) {
 // SupportedLanguage returns true if the language is supported.
 func SupportedLanguage(lang string) bool {
 	switch lang {
-	case "typescript", "python", "go", "rust":
+	case "typescript", "python", "go", "rust", "java", "groovy", "bash", "javascript":
 		return true
 	default:
 		return false
@@ -188,6 +200,133 @@ func rustConfig() *LanguageConfig {
 		ClassBodyType: "declaration_list",
 		ClassTypes: map[string]bool{
 			"impl_item": true,
+		},
+	}
+}
+
+func javaConfig() *LanguageConfig {
+	return &LanguageConfig{
+		Name:    "java",
+		Grammar: java.GetLanguage(),
+		ChunkableTypes: map[string]string{
+			"class_declaration":           "class",
+			"interface_declaration":       "interface",
+			"enum_declaration":            "type",
+			"record_declaration":          "class",
+			"annotation_type_declaration": "type",
+			"method_declaration":          "method",
+			"constructor_declaration":     "method",
+			"import_declaration":          "",
+			"package_declaration":         "",
+			"field_declaration":           "block",
+		},
+		SymbolKindMap: map[string]string{
+			"class_declaration":           "class",
+			"interface_declaration":       "interface",
+			"enum_declaration":            "type",
+			"record_declaration":          "class",
+			"annotation_type_declaration": "type",
+			"method_declaration":          "method",
+			"constructor_declaration":     "method",
+			"field_declaration":           "variable",
+		},
+		ClassBodyTypes: map[string]bool{
+			"method_declaration":      true,
+			"constructor_declaration": true,
+		},
+		ImportTypes: map[string]bool{
+			"import_declaration": true,
+		},
+		ExportType:    "",
+		ClassBodyType: "class_body",
+		ClassTypes: map[string]bool{
+			"class_declaration":  true,
+			"record_declaration": true,
+		},
+	}
+}
+
+func groovyConfig() *LanguageConfig {
+	return &LanguageConfig{
+		Name:    "groovy",
+		Grammar: groovy.GetLanguage(),
+		ChunkableTypes: map[string]string{
+			"function_definition":  "function",
+			"function_declaration": "function",
+			"class_definition":     "class",
+			"groovy_import":        "",
+			"groovy_package":       "",
+			"declaration":          "block",
+		},
+		SymbolKindMap: map[string]string{
+			"function_definition":  "function",
+			"function_declaration": "function",
+			"class_definition":     "class",
+		},
+		ClassBodyTypes: map[string]bool{
+			"function_definition":  true,
+			"function_declaration": true,
+		},
+		ImportTypes: map[string]bool{
+			"groovy_import": true,
+		},
+		ExportType:    "",
+		ClassBodyType: "closure",
+		ClassTypes: map[string]bool{
+			"class_definition": true,
+		},
+	}
+}
+
+func bashConfig() *LanguageConfig {
+	return &LanguageConfig{
+		Name:    "bash",
+		Grammar: bash.GetLanguage(),
+		ChunkableTypes: map[string]string{
+			"function_definition": "function",
+		},
+		SymbolKindMap: map[string]string{
+			"function_definition": "function",
+		},
+		ClassBodyTypes: map[string]bool{},
+		ImportTypes:    map[string]bool{},
+		ExportType:     "",
+		ClassBodyType:  "",
+		ClassTypes:     map[string]bool{},
+	}
+}
+
+func javascriptConfig() *LanguageConfig {
+	return &LanguageConfig{
+		Name:    "javascript",
+		Grammar: javascript.GetLanguage(),
+		ChunkableTypes: map[string]string{
+			"function_declaration":           "function",
+			"class_declaration":              "class",
+			"generator_function_declaration": "function",
+			"export_statement":               "",
+			"lexical_declaration":            "block",
+			"variable_declaration":           "block",
+		},
+		SymbolKindMap: map[string]string{
+			"function_declaration":           "function",
+			"class_declaration":              "class",
+			"generator_function_declaration": "function",
+			"method_definition":              "method",
+			"lexical_declaration":            "variable",
+			"variable_declaration":           "variable",
+		},
+		ClassBodyTypes: map[string]bool{
+			"method_definition": true,
+			"field_definition":  true,
+		},
+		ImportTypes: map[string]bool{
+			"import_statement": true,
+		},
+		ExportType:    "export_statement",
+		ClassBodyType: "class_body",
+		ClassTypes: map[string]bool{
+			"class_declaration": true,
 		},
 	}
 }

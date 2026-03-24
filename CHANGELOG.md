@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-03-23
+
+Phase 5 — Language Expansion: add Java, Groovy, Shell, and JavaScript support
+with full-pipeline integration tests for all supported languages.
+
+### Added
+
+- **Java language support** (`internal/parser/languages.go`) — tree-sitter-java
+  grammar with node mappings for `class_declaration`, `interface_declaration`,
+  `enum_declaration`, `record_declaration`, `method_declaration`,
+  `constructor_declaration`, `import_declaration`, `package_declaration`.
+  Extensions: `.java`.
+- **Groovy language support** — tree-sitter-groovy grammar with node mappings
+  for `function_definition`, `function_declaration`, `class_definition`,
+  `groovy_import`, `groovy_package`. Extensions: `.groovy`, `.gradle`.
+- **Shell/Bash language support** — tree-sitter-bash grammar with
+  `function_definition` chunking. Extensions: `.sh`, `.bash`.
+- **JavaScript language support** — tree-sitter-javascript grammar (separate
+  from TypeScript) with `function_declaration`, `class_declaration`,
+  `generator_function_declaration`, `export_statement`, `import_statement`.
+  Extensions: `.js`, `.jsx`, `.mjs`, `.cjs`.
+- **Import edge extraction** (`internal/parser/edges.go`) — Java
+  `scoped_identifier` → last name component; Groovy `dotted_identifier` → last
+  dot-component; JavaScript delegates to TypeScript import logic.
+- **Call edge extraction** — added `method_invocation` (Java) and
+  `function_call` (Groovy) to call-expression detection.
+- **Inheritance edge extraction** — Java `superclass`/`super_interfaces`;
+  JavaScript `class_heritage`; Groovy `class_definition` superclass field.
+- **Package declaration header routing** (`internal/parser/chunker.go`) —
+  generalized to handle `package_declaration` (Java) and `groovy_package`
+  alongside Go's `package_clause`.
+- **Testdata fixtures** — `testdata/java_project/` (3 files),
+  `testdata/groovy_project/` (2 files), `testdata/bash_project/` (2 files),
+  `testdata/javascript_project/` (3 files).
+- **Language compatibility integration tests** (`internal/daemon/daemon_test.go`)
+  — `TestIntegration_LanguageCompatibility`: table-driven test exercising the
+  full pipeline (scan → parse → index → search → context assembly) for all 7
+  languages. `TestIntegration_MultiLanguageProject`: indexes a project with all
+  7 languages simultaneously, verifies language stats and cross-language FTS
+  search. `TestIntegration_IncrementalIndex_NewLanguage`: verifies incremental
+  indexing correctly picks up newly added language files.
+- **Parser unit tests** (`internal/parser/parser_test.go`) — 4 new tests:
+  `TestParse_JavaClassWithMethods`, `TestParse_GroovyFunction`,
+  `TestParse_BashFunctions`, `TestParse_JavaScriptClassWithMethods`.
+
 ## [0.4.0] - 2026-03-23
 
 Phase 4 — Session Awareness & Operational Polish: session-aware ranking,

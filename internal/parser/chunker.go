@@ -34,8 +34,8 @@ func (p *Parser) chunkFile(root *sitter.Node, source []byte, cfg *LanguageConfig
 			continue
 		}
 
-		// Go: package_clause goes to header
-		if nodeType == "package_clause" {
+		// Package declarations go to header (Go, Java, Groovy)
+		if nodeType == "package_clause" || nodeType == "package_declaration" || nodeType == "groovy_package" {
 			headerParts = append(headerParts, headerFragment{
 				content:   child.Content(source),
 				startLine: int(child.StartPoint().Row) + 1,
@@ -388,12 +388,12 @@ func buildHeaderChunk(parts []headerFragment, tc *tokenCounter) types.ChunkRecor
 // extractName finds the identifier name of a declaration node.
 func extractName(node *sitter.Node, source []byte) string {
 	// Try common field names
-	for _, field := range []string{"name", "property"} {
+	for _, field := range []string{"name", "property", "function"} {
 		if child := node.ChildByFieldName(field); child != nil {
 			t := child.Type()
 			if t == "identifier" || t == "type_identifier" ||
 				t == "property_identifier" || t == "package_identifier" ||
-				t == "field_identifier" {
+				t == "field_identifier" || t == "word" {
 				return child.Content(source)
 			}
 		}
@@ -468,6 +468,8 @@ func findDeclarationChild(node *sitter.Node) *sitter.Node {
 		// Python
 		"function_definition": true,
 		"class_definition":    true,
+		// JavaScript
+		"generator_function_declaration": true,
 	}
 
 	if decl := node.ChildByFieldName("declaration"); decl != nil {
