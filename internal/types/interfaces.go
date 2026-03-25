@@ -89,3 +89,23 @@ type SessionScorer interface {
 type GraphStore interface {
 	Neighbors(ctx context.Context, symbolID int64, maxDepth int, direction string) ([]int64, error)
 }
+
+// EmbedJob represents a single chunk to be embedded.
+type EmbedJob struct {
+	ChunkID int64
+	Content string
+}
+
+// EmbedSource provides pull-based access to chunks needing embedding.
+// Used by EmbedWorker.RunFromDB for cursor-based embedding.
+type EmbedSource interface {
+	GetEmbedPage(ctx context.Context, afterID int64, limit int) ([]EmbedJob, error)
+	MarkChunksEmbedded(ctx context.Context, chunkIDs []int64) error
+	CountChunksNeedingEmbedding(ctx context.Context) (int, error)
+}
+
+// EmbedProgress reports embedding progress during RunFromDB.
+type EmbedProgress struct {
+	Embedded int
+	Total    int
+}

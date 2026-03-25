@@ -144,7 +144,14 @@ func (wm *WriterManager) processJob(ctx context.Context, job types.WriteJob) {
 			"file", job.FilePath,
 			"err", err)
 	}
-	// Clean up stale vectors after successful transaction
+	// Clean up stale vectors after successful transaction.
+	// INVARIANT (Phase 1): When a file is re-indexed, processEnrichmentJob deletes old
+	// chunks and inserts new ones (with embedded=0), resets embedding_status='pending',
+	// and returns stale chunk IDs here. The vectorDeleter removes their vectors.
+	// This ensures RunFromDB picks up the new chunks (embedded=0) on its next page,
+	// and old vectors are cleaned up. No additional synchronization is needed between
+	// RunFromDB and the watcher — BruteForceStore is RWMutex-protected, and the
+	// cursor-based query naturally skips deleted rows.
 	if err == nil && wm.vectorDeleter != nil && len(staleChunkIDs) > 0 {
 		if delErr := wm.vectorDeleter.Delete(ctx, staleChunkIDs); delErr != nil {
 			wm.logger.Warn("vector cleanup failed", "chunks", len(staleChunkIDs), "err", delErr)

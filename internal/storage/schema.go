@@ -3,9 +3,10 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 // schemaV1 contains all DDL statements for schema version 1.
 // Tables: files, chunks, symbols, edges, pending_edges, diff_log, diff_symbols,
@@ -51,7 +52,8 @@ var schemaV1 = []string{
 		token_count     INTEGER NOT NULL,
 		signature       TEXT,
 		parse_quality   TEXT NOT NULL DEFAULT 'full'
-			CHECK (parse_quality IN ('full', 'partial'))
+			CHECK (parse_quality IN ('full', 'partial')),
+		embedded        INTEGER NOT NULL DEFAULT 0
 	)`,
 
 	`CREATE TABLE IF NOT EXISTS symbols (
@@ -166,6 +168,7 @@ var schemaV1 = []string{
 	`CREATE INDEX IF NOT EXISTS idx_chunks_file_index ON chunks(file_id, chunk_index)`,
 	`CREATE INDEX IF NOT EXISTS idx_chunks_symbol_name ON chunks(symbol_name)`,
 	`CREATE INDEX IF NOT EXISTS idx_chunks_kind ON chunks(kind)`,
+	`CREATE INDEX IF NOT EXISTS idx_chunks_embedded ON chunks(embedded, id)`,
 
 	// Symbols
 	`CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name)`,
@@ -219,10 +222,30 @@ var ftsTriggers = []string{
 	END`,
 }
 
+// migrationsV1toV2 adds per-chunk embedding tracking.
+var migrationsV1toV2 = []string{
+	`ALTER TABLE chunks ADD COLUMN embedded INTEGER NOT NULL DEFAULT 0`,
+	`CREATE INDEX IF NOT EXISTS idx_chunks_embedded ON chunks(embedded, id)`,
+}
+
+// currentSchemaVersion returns the highest version recorded, or 0 if the
+// schema_version table does not yet exist.
+func currentSchemaVersion(tx *sql.Tx) (int, error) {
+	var version int
+	err := tx.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&version)
+	if err != nil {
+		// Table might not exist yet (fresh DB).
+		return 0, nil
+	}
+	return version, nil
+}
+
 // Migrate creates all tables and indexes for the current schema version.
 // It is idempotent — safe to call on an existing database.
+// For existing v1 databases, it runs incremental migrations to reach v2.
 func Migrate(db *DB) error {
 	return db.WithWriteTx(func(tx *sql.Tx) error {
+		// Apply base schema (all CREATE IF NOT EXISTS — idempotent).
 		for _, stmt := range schemaV1 {
 			if _, err := tx.Exec(stmt); err != nil {
 				return fmt.Errorf("exec schema DDL: %w", err)
@@ -235,7 +258,25 @@ func Migrate(db *DB) error {
 			}
 		}
 
-		// Record schema version if not present
+		// Determine current version and apply incremental migrations.
+		cur, err := currentSchemaVersion(tx)
+		if err != nil {
+			return fmt.Errorf("read schema version: %w", err)
+		}
+
+		if cur < 2 {
+			for _, stmt := range migrationsV1toV2 {
+				if _, err := tx.Exec(stmt); err != nil {
+					// "duplicate column" means migration already applied partially.
+					if isDuplicateColumnError(err) {
+						continue
+					}
+					return fmt.Errorf("migrate v1→v2: %w", err)
+				}
+			}
+		}
+
+		// Record schema version if not present.
 		var count int
 		if err := tx.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version = ?", schemaVersion).Scan(&count); err != nil {
 			return fmt.Errorf("check schema version: %w", err)
@@ -248,4 +289,9 @@ func Migrate(db *DB) error {
 
 		return nil
 	})
+}
+
+// isDuplicateColumnError checks if the error is a SQLite "duplicate column name" error.
+func isDuplicateColumnError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "duplicate column name")
 }

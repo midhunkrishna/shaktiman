@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
 // Sentinel errors for embedding operations.
@@ -399,6 +401,150 @@ func (w *EmbedWorker) WaitIdle() {
 		time.Sleep(200 * time.Millisecond)
 	}
 	w.inflight.Wait()
+}
+
+// RunFromDB pulls chunks from source using cursor-based pagination, embeds them
+// in batches, and marks them as embedded. It is a synchronous, blocking call that
+// replaces the channel-based Submit/Run path for bulk embedding.
+//
+// The cursor never advances past a failed batch — on circuit breaker rejection or
+// embed error, the same batch is retried with exponential backoff.
+//
+// Has() reconciliation: chunks already present in the vector store are skipped
+// (marked embedded in DB) but not re-embedded. This handles crash recovery where
+// DB says embedded=0 but the vector store loaded vectors from disk.
+func (w *EmbedWorker) RunFromDB(ctx context.Context, source types.EmbedSource, onProgress func(types.EmbedProgress)) error {
+	const pageSize = 256
+
+	total, err := source.CountChunksNeedingEmbedding(ctx)
+	if err != nil {
+		return fmt.Errorf("count chunks needing embedding: %w", err)
+	}
+	if total == 0 {
+		if onProgress != nil {
+			onProgress(types.EmbedProgress{Embedded: 0, Total: 0})
+		}
+		return nil
+	}
+
+	embedded := 0
+	lastID := int64(0)
+
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		page, err := source.GetEmbedPage(ctx, lastID, pageSize)
+		if err != nil {
+			return fmt.Errorf("get embed page after %d: %w", lastID, err)
+		}
+		if len(page) == 0 {
+			break
+		}
+
+		// Process page in batches of w.batchSz.
+		for i := 0; i < len(page); i += w.batchSz {
+			end := i + w.batchSz
+			if end > len(page) {
+				end = len(page)
+			}
+			batch := page[i:end]
+
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+
+			batchIDs := make([]int64, len(batch))
+			for j, job := range batch {
+				batchIDs[j] = job.ChunkID
+			}
+
+			// Has() reconciliation: skip chunks already in vector store.
+			var needEmbed []types.EmbedJob
+			for _, job := range batch {
+				if !w.store.Has(ctx, job.ChunkID) {
+					needEmbed = append(needEmbed, job)
+				}
+			}
+
+			if len(needEmbed) == 0 {
+				// All chunks already in store — just mark them in DB.
+				if err := source.MarkChunksEmbedded(ctx, batchIDs); err != nil {
+					return fmt.Errorf("mark already-embedded chunks: %w", err)
+				}
+				embedded += len(batch)
+				if onProgress != nil {
+					onProgress(types.EmbedProgress{Embedded: embedded, Total: total})
+				}
+				continue
+			}
+
+			// Embed the chunks that need it, with circuit breaker retry.
+			texts := make([]string, len(needEmbed))
+			needIDs := make([]int64, len(needEmbed))
+			for j, job := range needEmbed {
+				texts[j] = job.Content
+				needIDs[j] = job.ChunkID
+			}
+
+			var vectors [][]float32
+			const maxRetries = 30 // ~1-2 min of retries before giving up on a batch
+			retries := 0
+			for {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				if retries >= maxRetries {
+					return fmt.Errorf("embed batch failed after %d retries: %w", retries, ErrCircuitOpen)
+				}
+				if !w.cb.Allow() {
+					w.logger.Debug("circuit breaker open, waiting to retry batch",
+						"batch_size", len(needEmbed), "retry", retries)
+					retries++
+					select {
+					case <-time.After(2 * time.Second):
+						continue
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}
+
+				vectors, err = w.embedder.EmbedBatch(ctx, texts)
+				if err != nil {
+					w.cb.RecordFailure()
+					retries++
+					w.logger.Warn("embed batch failed, retrying",
+						"size", len(needEmbed), "retry", retries, "err", err)
+					select {
+					case <-time.After(1 * time.Second):
+						continue
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}
+				w.cb.RecordSuccess()
+				break
+			}
+
+			if err := w.store.UpsertBatch(ctx, needIDs, vectors); err != nil {
+				return fmt.Errorf("upsert batch: %w", err)
+			}
+
+			if err := source.MarkChunksEmbedded(ctx, batchIDs); err != nil {
+				return fmt.Errorf("mark chunks embedded: %w", err)
+			}
+
+			embedded += len(batch)
+			if onProgress != nil {
+				onProgress(types.EmbedProgress{Embedded: embedded, Total: total})
+			}
+		}
+
+		lastID = page[len(page)-1].ChunkID
+	}
+
+	return nil
 }
 
 func (w *EmbedWorker) processBatch(ctx context.Context, batch []EmbedJob) {

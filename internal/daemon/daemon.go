@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/shaktimanai/shaktiman/internal/core"
@@ -18,15 +20,17 @@ import (
 
 // Daemon manages the lifecycle of the Shaktiman indexing system.
 type Daemon struct {
-	cfg         types.Config
-	db          *storage.DB
-	store       *storage.Store
-	writer      *WriterManager
-	engine      *core.QueryEngine
-	logger      *slog.Logger
-	vectorStore *vector.BruteForceStore
-	embedWorker *vector.EmbedWorker
-	sessionID   string
+	cfg              types.Config
+	db               *storage.DB
+	store            *storage.Store
+	writer           *WriterManager
+	engine           *core.QueryEngine
+	logger           *slog.Logger
+	vectorStore      *vector.BruteForceStore
+	embedWorker      *vector.EmbedWorker
+	sessionID        string
+	embeddingActive  atomic.Bool
+	embedMu          sync.Mutex
 }
 
 // New creates a new Daemon, opening the database and running migrations.
@@ -154,9 +158,11 @@ func (d *Daemon) Start(ctx context.Context) error {
 			return
 		}
 
-		// Queue chunks for embedding after cold index
+		// Embed chunks after cold index using pull-based cursor
 		if d.embedWorker != nil {
-			d.queueEmbeddings(ctx)
+			if _, err := d.embedFromDB(ctx); err != nil {
+				d.logger.Warn("cold-index embedding failed", "err", err)
+			}
 		}
 
 		// Start file watcher after cold index
@@ -225,34 +231,49 @@ func (d *Daemon) queueEmbeddings(ctx context.Context) {
 		"candidates", len(records), "filtered", len(jobs), "submitted", submitted)
 }
 
+// embedFromDB runs the pull-based embedding pipeline to completion.
+// It uses cursor-based DB pagination instead of the channel-based Submit path,
+// ensuring zero data loss regardless of chunk count.
+// Serialized via embedMu to prevent concurrent runs from cold-index and branch-switch.
+func (d *Daemon) embedFromDB(ctx context.Context) (int, error) {
+	d.embedMu.Lock()
+	defer d.embedMu.Unlock()
+
+	d.embeddingActive.Store(true)
+	defer d.embeddingActive.Store(false)
+
+	// Trigger an immediate save checkpoint so the periodic saver switches to
+	// 30s intervals on its next tick (instead of waiting up to 5 minutes).
+	if count, _ := d.vectorStore.Count(ctx); count > 0 {
+		if err := d.vectorStore.SaveToDisk(d.cfg.EmbeddingsPath); err != nil {
+			d.logger.Warn("pre-embed save failed", "err", err)
+		}
+	}
+
+	if err := d.embedWorker.RunFromDB(ctx, d.store, func(p types.EmbedProgress) {
+		d.logger.Info("embedding progress",
+			"embedded", p.Embedded, "total", p.Total)
+	}); err != nil {
+		return 0, fmt.Errorf("RunFromDB: %w", err)
+	}
+
+	count, _ := d.vectorStore.Count(ctx)
+	return count, nil
+}
+
 // EmbedProject runs the embedding pipeline synchronously. Used by CLI --embed.
-// It queues all chunks needing embedding, runs the worker until the queue drains,
-// then saves embeddings to disk. Returns the total embedded count.
+// Uses pull-based DB cursor (RunFromDB) for zero data loss at any scale.
+// Saves embeddings to disk on completion.
 func (d *Daemon) EmbedProject(ctx context.Context) (int, error) {
 	if d.embedWorker == nil {
 		return 0, fmt.Errorf("embedding not initialized (check Ollama is running at %s)", d.cfg.OllamaURL)
 	}
 
-	d.queueEmbeddings(ctx)
-
-	if d.embedWorker.Pending() == 0 {
-		count, _ := d.vectorStore.Count(ctx)
-		return count, nil
+	count, err := d.embedFromDB(ctx)
+	if err != nil {
+		return count, err
 	}
 
-	embedCtx, embedCancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	go func() {
-		d.embedWorker.Run(embedCtx)
-		close(done)
-	}()
-
-	// Wait for queue to drain and in-flight batch to complete.
-	d.embedWorker.WaitIdle()
-	embedCancel()
-	<-done
-
-	count, _ := d.vectorStore.Count(ctx)
 	if count > 0 {
 		if err := d.vectorStore.SaveToDisk(d.cfg.EmbeddingsPath); err != nil {
 			return count, fmt.Errorf("save embeddings: %w", err)
@@ -261,20 +282,51 @@ func (d *Daemon) EmbedProject(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-// periodicEmbeddingSave checkpoints embeddings to disk every 5 minutes.
+// periodicEmbeddingSave checkpoints embeddings to disk. Uses 30s interval during
+// active embedding (crash safety) and 5min interval otherwise. A short poll
+// interval detects embedding-active transitions without waiting for a full 5min tick.
 func (d *Daemon) periodicEmbeddingSave(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Minute)
+	const activeInterval = 30 * time.Second
+	const idleInterval = 5 * time.Minute
+	const pollInterval = 10 * time.Second // how often to check if embedding started
+
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
+	lastSave := time.Now()
 	for {
 		select {
 		case <-ticker.C:
+			active := d.embeddingActive.Load()
+			saveInterval := idleInterval
+			if active {
+				saveInterval = activeInterval
+			}
+
+			if time.Since(lastSave) < saveInterval {
+				// Not time to save yet, but keep polling at short interval
+				// so we detect embedding-active transitions quickly.
+				if active {
+					ticker.Reset(pollInterval)
+				} else {
+					ticker.Reset(idleInterval)
+				}
+				continue
+			}
+
 			count, _ := d.vectorStore.Count(ctx)
 			if count > 0 {
 				if err := d.vectorStore.SaveToDisk(d.cfg.EmbeddingsPath); err != nil {
 					d.logger.Error("periodic embedding save failed", "err", err)
 				} else {
 					d.logger.Info("periodic embedding checkpoint", "count", count)
+					lastSave = time.Now()
 				}
+			}
+
+			if active {
+				ticker.Reset(activeInterval)
+			} else {
+				ticker.Reset(idleInterval)
 			}
 		case <-ctx.Done():
 			return
@@ -373,7 +425,9 @@ func (d *Daemon) startWatcher(ctx context.Context, pipeline *EnrichmentPipeline)
 					continue
 				}
 				if d.embedWorker != nil {
-					d.queueEmbeddings(ctx)
+					if _, err := d.embedFromDB(ctx); err != nil {
+						d.logger.Warn("branch-switch embedding failed", "err", err)
+					}
 				}
 				d.logger.Info("branch switch re-index complete")
 			}

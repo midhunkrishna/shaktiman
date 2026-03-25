@@ -403,69 +403,111 @@ type EmbedJobRecord = struct {
 	Content string
 }
 
-// MarkChunksEmbedded updates files.embedding_status to 'complete' for files
-// where ALL chunks are now embedded (given the embedded chunk IDs).
+// GetEmbedPage returns up to limit chunks that need embedding (embedded = 0),
+// with c.id > afterID. This is the cursor-based pagination method for RunFromDB.
+func (s *Store) GetEmbedPage(ctx context.Context, afterID int64, limit int) ([]types.EmbedJob, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT c.id, c.content FROM chunks c WHERE c.embedded = 0 AND c.id > ? ORDER BY c.id LIMIT ?`,
+		afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("get embed page: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []types.EmbedJob
+	for rows.Next() {
+		var j types.EmbedJob
+		if err := rows.Scan(&j.ChunkID, &j.Content); err != nil {
+			return nil, fmt.Errorf("scan embed page row: %w", err)
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+// CountChunksNeedingEmbedding returns the number of chunks with embedded = 0.
+func (s *Store) CountChunksNeedingEmbedding(ctx context.Context) (int, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chunks WHERE embedded = 0`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count chunks needing embedding: %w", err)
+	}
+	return count, nil
+}
+
+// MarkChunksEmbedded marks individual chunks as embedded and updates the parent
+// file's embedding_status based on cumulative progress. Files where all chunks
+// are now embedded get status 'complete'; files with some embedded get 'partial'.
 func (s *Store) MarkChunksEmbedded(ctx context.Context, chunkIDs []int64) error {
 	if len(chunkIDs) == 0 {
 		return nil
 	}
 
-	// O(1) lookup set instead of O(m) linear scan per chunk
-	embeddedSet := make(map[int64]bool, len(chunkIDs))
-	for _, cid := range chunkIDs {
-		embeddedSet[cid] = true
-	}
-
-	// Batch query: find distinct file IDs for all embedded chunks at once
-	placeholders := make([]string, len(chunkIDs))
-	args := make([]any, len(chunkIDs))
-	for i, id := range chunkIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-	rows, err := s.db.QueryContext(ctx,
-		fmt.Sprintf("SELECT DISTINCT file_id FROM chunks WHERE id IN (%s)",
-			strings.Join(placeholders, ",")), args...)
-	if err != nil {
-		return fmt.Errorf("batch fetch fileIDs: %w", err)
-	}
-	defer rows.Close()
-
-	var fileIDs []int64
-	for rows.Next() {
-		var fid int64
-		if err := rows.Scan(&fid); err == nil {
-			fileIDs = append(fileIDs, fid)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("scan fileIDs: %w", err)
-	}
-
 	return s.db.WithWriteTx(func(tx *sql.Tx) error {
-		for _, fid := range fileIDs {
-			chunkRows, err := tx.QueryContext(ctx, "SELECT id FROM chunks WHERE file_id = ?", fid)
-			if err != nil {
-				continue
+		// Process in batches of 500 to stay under SQLite's variable limit.
+		const batchLimit = 500
+		for start := 0; start < len(chunkIDs); start += batchLimit {
+			end := start + batchLimit
+			if end > len(chunkIDs) {
+				end = len(chunkIDs)
+			}
+			batch := chunkIDs[start:end]
+
+			placeholders := make([]string, len(batch))
+			args := make([]any, len(batch))
+			for i, id := range batch {
+				placeholders[i] = "?"
+				args[i] = id
+			}
+			ph := strings.Join(placeholders, ",")
+
+			// Step 1: Mark individual chunks as embedded.
+			if _, err := tx.ExecContext(ctx,
+				fmt.Sprintf("UPDATE chunks SET embedded = 1 WHERE id IN (%s)", ph),
+				args...); err != nil {
+				return fmt.Errorf("mark chunks embedded: %w", err)
 			}
 
-			totalChunks := 0
-			embeddedCount := 0
-			for chunkRows.Next() {
-				var cid int64
-				if chunkRows.Scan(&cid) == nil {
-					totalChunks++
-					if embeddedSet[cid] {
-						embeddedCount++
+			// Step 2: Get affected file IDs.
+			rows, err := tx.QueryContext(ctx,
+				fmt.Sprintf("SELECT DISTINCT file_id FROM chunks WHERE id IN (%s)", ph),
+				args...)
+			if err != nil {
+				return fmt.Errorf("get affected file IDs: %w", err)
+			}
+			var fileIDs []int64
+			for rows.Next() {
+				var fid int64
+				if err := rows.Scan(&fid); err != nil {
+					rows.Close()
+					return fmt.Errorf("scan file ID: %w", err)
+				}
+				fileIDs = append(fileIDs, fid)
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("iterate file IDs: %w", err)
+			}
+
+			// Step 3: Update file embedding status based on cumulative progress.
+			for _, fid := range fileIDs {
+				var remaining int
+				if err := tx.QueryRowContext(ctx,
+					"SELECT COUNT(*) FROM chunks WHERE file_id = ? AND embedded = 0",
+					fid).Scan(&remaining); err != nil {
+					return fmt.Errorf("count remaining for file %d: %w", fid, err)
+				}
+				if remaining == 0 {
+					if _, err := tx.ExecContext(ctx,
+						"UPDATE files SET embedding_status = 'complete' WHERE id = ?", fid); err != nil {
+						return fmt.Errorf("mark file complete: %w", err)
+					}
+				} else {
+					if _, err := tx.ExecContext(ctx,
+						"UPDATE files SET embedding_status = 'partial' WHERE id = ? AND embedding_status != 'complete'",
+						fid); err != nil {
+						return fmt.Errorf("mark file partial: %w", err)
 					}
 				}
-			}
-			chunkRows.Close()
-
-			if embeddedCount >= totalChunks && totalChunks > 0 {
-				tx.ExecContext(ctx, "UPDATE files SET embedding_status = 'complete' WHERE id = ?", fid)
-			} else if embeddedCount > 0 {
-				tx.ExecContext(ctx, "UPDATE files SET embedding_status = 'partial' WHERE id = ?", fid)
 			}
 		}
 		return nil

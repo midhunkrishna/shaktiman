@@ -27,6 +27,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   formatter functions including empty inputs, single/multi results, explain
   mode, and adjacent-same-file path elision.
 
+- **Pull-based embedding pipeline** (`internal/vector/embedding.go`) —
+  `RunFromDB` method replaces fire-and-forget channel submission with a
+  cursor-based DB pagination loop. Zero data loss at any chunk count.
+  Circuit breaker retry with bounded `maxRetries=30`, `Has()` reconciliation
+  for crash recovery (skips chunks already in vector store loaded from disk).
+- **Per-chunk embedded tracking** (`internal/storage/schema.go`) — schema
+  migration v1→v2 adds `embedded INTEGER NOT NULL DEFAULT 0` column to
+  `chunks` table with `idx_chunks_embedded` index. Enables cumulative
+  multi-batch file completion tracking.
+- **Embedding storage methods** (`internal/storage/metadata.go`) —
+  `GetEmbedPage` (cursor-based pagination), `CountChunksNeedingEmbedding`,
+  rewritten `MarkChunksEmbedded` with per-chunk `embedded` flag and
+  cumulative file status (`pending` → `partial` → `complete`). Batches IDs
+  in groups of 500 to stay within SQLite variable limits.
+- **Embedding types** (`internal/types/interfaces.go`) — `EmbedJob`,
+  `EmbedSource` interface, `EmbedProgress` struct. Placed in `types` package
+  to avoid import cycles between `storage` and `vector`.
+- **Daemon embedding integration** (`internal/daemon/daemon.go`) —
+  `embedFromDB` method with `sync.Mutex` serialization between cold-index
+  and branch-switch goroutines. `embeddingActive` atomic flag drives smart
+  periodic save (30s during active embedding, 5min idle, 10s poll).
+  Immediate save checkpoint on embed start for crash safety.
+- **Watcher safety invariant** (`internal/daemon/writer.go`) — doc comment
+  documenting how `processEnrichmentJob` + `vectorDeleter` ensure
+  `RunFromDB` and watcher concurrency safety.
+- **Embedding integration tests** (`internal/daemon/daemon_test.go`) —
+  `TestEmbedProject_LargeChunkCount` (5200 chunks, zero drops),
+  `TestEmbedProject_OllamaDown` (graceful failure),
+  `TestEmbedProject_CrashRecovery` (Has() reconciliation),
+  `TestEmbedProject_IncrementalAfterCold` (only new chunks re-embedded).
+- **Embedding benchmarks** — `BenchmarkGetEmbedPage`,
+  `BenchmarkMarkChunksEmbedded`, `BenchmarkCountChunksNeedingEmbedding`
+  (`internal/storage/metadata_bench_test.go`); `BenchmarkRunFromDB_Throughput`
+  (15K batches/sec), `BenchmarkRunFromDB_Memory`
+  (`internal/vector/embedding_bench_test.go`).
+- **Docs reorganization** — `docs/` flat files organized into
+  `architecture/`, `design/`, `planning/`, `reference/` subdirectories.
+- **Contributing guide** (`docs/reference/contributing_guide.md`) — test
+  commands for unit, integration, benchmark, and coverage runs.
+
 ### Changed
 
 - `internal/mcp/format.go` — functions replaced with thin delegates to
@@ -161,7 +201,7 @@ branch switch detection, summary tool, and production hardening.
 - **Result count metrics** (`internal/mcp/metrics.go`) — `withResultCount()`
   / `extractResultCount()` carry result count through the `withMetrics`
   wrapper via `sync.Map`. Logged and recorded in `ToolCallRecord`.
-- **`docs/sample_claude.md`** — ready-to-copy CLAUDE.md template for projects
+- **`docs/reference/sample_claude.md`** — ready-to-copy CLAUDE.md template for projects
   using shaktiman. Documents locate-first pattern, tool mapping, subagent
   delegation, and token efficiency tips.
 - **Context tool toggle** — `context.enabled = false` in `shaktiman.toml`

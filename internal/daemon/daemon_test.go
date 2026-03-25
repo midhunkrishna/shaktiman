@@ -2,9 +2,15 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/shaktimanai/shaktiman/internal/core"
 	"github.com/shaktimanai/shaktiman/internal/storage"
@@ -862,4 +868,471 @@ public class App {
 
 	d2.Stop()
 	t.Logf("Incremental: %d files, %d languages after adding Java", stats.TotalFiles, len(stats.Languages))
+}
+
+// ── Embedding Integration Tests ──
+
+// newMockOllama creates an httptest.Server that mimics POST /api/embed.
+// It returns embeddings of the requested dimension for each input text.
+// requestCount is incremented atomically for each request.
+func newMockOllama(dims int, requestCount *atomic.Int64) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requestCount != nil {
+			requestCount.Add(1)
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/api/embed" {
+			http.NotFound(w, r)
+			return
+		}
+
+		var req struct {
+			Model string `json:"model"`
+			Input any    `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Determine the number of texts sent. Input can be a string or []string.
+		var count int
+		switch v := req.Input.(type) {
+		case string:
+			count = 1
+		case []any:
+			count = len(v)
+		default:
+			http.Error(w, "unexpected input type", http.StatusBadRequest)
+			return
+		}
+
+		// Generate deterministic embeddings of the right dimension.
+		embeddings := make([][]float32, count)
+		for i := range embeddings {
+			vec := make([]float32, dims)
+			for j := range vec {
+				vec[j] = float32(i+1) * 0.01 * float32(j+1)
+			}
+			embeddings[i] = vec
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"embeddings": embeddings})
+	}))
+}
+
+// writeGoFiles creates n Go files in dir, each with funcsPerFile functions.
+// Each function is large enough (>20 tokens) to avoid being merged by the chunker.
+func writeGoFiles(t *testing.T, dir string, n, funcsPerFile int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		var content string
+		content = "package main\n\n"
+		for j := 0; j < funcsPerFile; j++ {
+			// Generate a function with enough body to exceed minChunkTokens (20).
+			content += fmt.Sprintf(
+				"func file%d_func%d(input string) string {\n"+
+					"\tresult := input\n"+
+					"\tfor k := 0; k < %d; k++ {\n"+
+					"\t\tresult = result + \"suffix\"\n"+
+					"\t}\n"+
+					"\treturn result\n"+
+					"}\n\n", i, j, j+1)
+		}
+		path := filepath.Join(dir, fmt.Sprintf("file_%d.go", i))
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", path, err)
+		}
+	}
+}
+
+// embedCfg returns a Config with embedding enabled, pointing to the given mock server.
+func embedCfg(projectRoot, dbPath, embeddingsPath, ollamaURL string) types.Config {
+	return types.Config{
+		ProjectRoot:       projectRoot,
+		DBPath:            dbPath,
+		EnrichmentWorkers: 2,
+		WriterChannelSize: 500,
+		EmbedEnabled:      true,
+		OllamaURL:         ollamaURL,
+		EmbeddingModel:    "test",
+		EmbeddingDims:     4,
+		EmbedBatchSize:    32,
+		EmbeddingsPath:    embeddingsPath,
+	}
+}
+
+func TestEmbedProject_LargeChunkCount(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	var reqCount atomic.Int64
+	srv := newMockOllama(dims, &reqCount)
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Create 200 Go files with ~25 functions each to produce 5000+ chunks.
+	writeGoFiles(t, projectDir, 200, 25)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	embPath := filepath.Join(tmpDir, "embeddings.bin")
+	cfg := embedCfg(projectDir, dbPath, embPath, srv.URL)
+
+	ctx := context.Background()
+
+	// Index with a first daemon instance (WriterManager is single-use).
+	d1, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon (index): %v", err)
+	}
+	if err := d1.IndexProject(ctx); err != nil {
+		t.Fatalf("IndexProject: %v", err)
+	}
+
+	stats, err := d1.Store().GetIndexStats(ctx)
+	if err != nil {
+		t.Fatalf("GetIndexStats: %v", err)
+	}
+	if stats.TotalChunks < 5000 {
+		t.Fatalf("expected >= 5000 chunks, got %d", stats.TotalChunks)
+	}
+	t.Logf("Indexed: %d files, %d chunks", stats.TotalFiles, stats.TotalChunks)
+
+	// Verify all chunks need embedding before we start.
+	needBefore, err := d1.Store().CountChunksNeedingEmbedding(ctx)
+	if err != nil {
+		t.Fatalf("CountChunksNeedingEmbedding before: %v", err)
+	}
+	if needBefore != stats.TotalChunks {
+		t.Fatalf("expected %d chunks needing embedding, got %d", stats.TotalChunks, needBefore)
+	}
+
+	// Embed all chunks.
+	count, err := d1.EmbedProject(ctx)
+	if err != nil {
+		t.Fatalf("EmbedProject: %v", err)
+	}
+	if count == 0 {
+		t.Fatal("EmbedProject returned 0 vectors")
+	}
+	t.Logf("Embedded %d vectors", count)
+
+	// Verify: zero chunks needing embedding.
+	needAfter, err := d1.Store().CountChunksNeedingEmbedding(ctx)
+	if err != nil {
+		t.Fatalf("CountChunksNeedingEmbedding after: %v", err)
+	}
+	if needAfter != 0 {
+		t.Errorf("expected 0 chunks needing embedding after EmbedProject, got %d", needAfter)
+	}
+
+	// Verify: vector count matches total chunks (zero drops).
+	if count != stats.TotalChunks {
+		t.Errorf("expected vector count %d == total chunks %d (zero drops)", count, stats.TotalChunks)
+	}
+
+	// Verify: mock server was called at least once.
+	if reqCount.Load() == 0 {
+		t.Error("expected at least one request to mock Ollama")
+	}
+
+	d1.Stop()
+}
+
+func TestEmbedProject_OllamaDown(t *testing.T) {
+	t.Parallel()
+
+	// Mock Ollama that always returns 500.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeGoFiles(t, projectDir, 10, 10)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	embPath := filepath.Join(tmpDir, "embeddings.bin")
+	cfg := embedCfg(projectDir, dbPath, embPath, srv.URL)
+
+	ctx := context.Background()
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon: %v", err)
+	}
+
+	if err := d.IndexProject(ctx); err != nil {
+		t.Fatalf("IndexProject: %v", err)
+	}
+
+	stats, err := d.Store().GetIndexStats(ctx)
+	if err != nil {
+		t.Fatalf("GetIndexStats: %v", err)
+	}
+	if stats.TotalChunks == 0 {
+		t.Fatal("expected chunks after indexing")
+	}
+	t.Logf("Indexed: %d files, %d chunks", stats.TotalFiles, stats.TotalChunks)
+
+	// EmbedProject should return an error (maxRetries exceeded or context timeout).
+	// Use a short timeout to avoid 57s of retry backoff starving parallel tests.
+	embedCtx, embedCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer embedCancel()
+	_, embedErr := d.EmbedProject(embedCtx)
+	if embedErr == nil {
+		t.Fatal("expected EmbedProject to return error when Ollama is down")
+	}
+	t.Logf("EmbedProject returned expected error: %v", embedErr)
+
+	// Verify: some chunks may NOT be embedded (expected failure mode).
+	needEmbed, err := d.Store().CountChunksNeedingEmbedding(ctx)
+	if err != nil {
+		t.Fatalf("CountChunksNeedingEmbedding: %v", err)
+	}
+	if needEmbed == 0 {
+		t.Error("expected some chunks still needing embedding after Ollama failure")
+	}
+
+	// Verify: no panic, daemon is still usable -- can still query stats.
+	stats2, err := d.Store().GetIndexStats(ctx)
+	if err != nil {
+		t.Fatalf("GetIndexStats after failure: %v", err)
+	}
+	if stats2.TotalChunks != stats.TotalChunks {
+		t.Errorf("expected stable chunk count after embed failure, got %d vs %d",
+			stats2.TotalChunks, stats.TotalChunks)
+	}
+
+	d.Stop()
+}
+
+func TestEmbedProject_CrashRecovery(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	var reqCount atomic.Int64
+	srv := newMockOllama(dims, &reqCount)
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeGoFiles(t, projectDir, 20, 5)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	embPath := filepath.Join(tmpDir, "embeddings.bin")
+	cfg := embedCfg(projectDir, dbPath, embPath, srv.URL)
+
+	ctx := context.Background()
+
+	// Phase 1: Index + embed all chunks.
+	d1, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon (phase 1): %v", err)
+	}
+	if err := d1.IndexProject(ctx); err != nil {
+		t.Fatalf("IndexProject (phase 1): %v", err)
+	}
+
+	count1, err := d1.EmbedProject(ctx)
+	if err != nil {
+		t.Fatalf("EmbedProject (phase 1): %v", err)
+	}
+	t.Logf("Phase 1: embedded %d vectors", count1)
+
+	needAfter1, err := d1.Store().CountChunksNeedingEmbedding(ctx)
+	if err != nil {
+		t.Fatalf("CountChunksNeedingEmbedding (phase 1): %v", err)
+	}
+	if needAfter1 != 0 {
+		t.Fatalf("expected 0 chunks needing embedding after phase 1, got %d", needAfter1)
+	}
+	d1.Stop()
+
+	// Simulate crash: reset some chunks to embedded=0 in the DB.
+	// Open the DB directly to manipulate it.
+	crashDB, err := storage.Open(storage.OpenInput{Path: dbPath})
+	if err != nil {
+		t.Fatalf("Open crash DB: %v", err)
+	}
+	// Reset ~10 chunks to embedded=0 (simulating crash before mark).
+	const resetCount = 10
+	res, err := crashDB.Writer().ExecContext(ctx,
+		"UPDATE chunks SET embedded = 0 WHERE id IN (SELECT id FROM chunks LIMIT ?)", resetCount)
+	if err != nil {
+		crashDB.Close()
+		t.Fatalf("reset chunks: %v", err)
+	}
+	affected, _ := res.RowsAffected()
+	t.Logf("Simulated crash: reset %d chunks to embedded=0", affected)
+	crashDB.Close()
+
+	// Phase 2: Create new daemon (same DB + embeddings path), re-embed.
+	reqCount.Store(0) // reset request counter
+	d2, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon (phase 2): %v", err)
+	}
+
+	// Verify: some chunks need embedding after crash simulation.
+	needBefore2, err := d2.Store().CountChunksNeedingEmbedding(ctx)
+	if err != nil {
+		t.Fatalf("CountChunksNeedingEmbedding before phase 2: %v", err)
+	}
+	if needBefore2 == 0 {
+		t.Fatal("expected chunks needing embedding after crash simulation")
+	}
+	if needBefore2 > resetCount {
+		t.Errorf("expected <= %d chunks needing embedding, got %d", resetCount, needBefore2)
+	}
+	t.Logf("Phase 2: %d chunks need embedding", needBefore2)
+
+	// EmbedProject should only re-embed the reset chunks (Has() reconciliation
+	// skips chunks that are already in the vector store loaded from disk).
+	count2, err := d2.EmbedProject(ctx)
+	if err != nil {
+		t.Fatalf("EmbedProject (phase 2): %v", err)
+	}
+	t.Logf("Phase 2: vector store has %d vectors after re-embed", count2)
+
+	// Verify: final state has all chunks embedded.
+	needAfter2, err := d2.Store().CountChunksNeedingEmbedding(ctx)
+	if err != nil {
+		t.Fatalf("CountChunksNeedingEmbedding after phase 2: %v", err)
+	}
+	if needAfter2 != 0 {
+		t.Errorf("expected 0 chunks needing embedding after recovery, got %d", needAfter2)
+	}
+
+	// Verify: vector count is the same as phase 1 (no duplicates).
+	if count2 != count1 {
+		t.Errorf("expected vector count %d after recovery == phase 1 count %d", count2, count1)
+	}
+
+	d2.Stop()
+}
+
+func TestEmbedProject_IncrementalAfterCold(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	srv := newMockOllama(dims, nil)
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Phase 1: Create 5 Go files, index + embed all.
+	writeGoFiles(t, projectDir, 5, 5)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	embPath := filepath.Join(tmpDir, "embeddings.bin")
+	cfg := embedCfg(projectDir, dbPath, embPath, srv.URL)
+
+	ctx := context.Background()
+
+	d1, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon (phase 1): %v", err)
+	}
+	if err := d1.IndexProject(ctx); err != nil {
+		t.Fatalf("IndexProject (phase 1): %v", err)
+	}
+
+	count1, err := d1.EmbedProject(ctx)
+	if err != nil {
+		t.Fatalf("EmbedProject (phase 1): %v", err)
+	}
+
+	stats1, err := d1.Store().GetIndexStats(ctx)
+	if err != nil {
+		t.Fatalf("GetIndexStats (phase 1): %v", err)
+	}
+	t.Logf("Phase 1: %d files, %d chunks, %d vectors",
+		stats1.TotalFiles, stats1.TotalChunks, count1)
+
+	needAfter1, err := d1.Store().CountChunksNeedingEmbedding(ctx)
+	if err != nil {
+		t.Fatalf("CountChunksNeedingEmbedding (phase 1): %v", err)
+	}
+	if needAfter1 != 0 {
+		t.Fatalf("expected 0 chunks needing embedding after phase 1, got %d", needAfter1)
+	}
+	d1.Stop()
+
+	// Phase 2: Add 3 new files, re-index + re-embed with fresh daemon.
+	for i := 0; i < 3; i++ {
+		name := fmt.Sprintf("new_file_%d.go", i)
+		content := fmt.Sprintf("package main\n\nfunc newFunc%d_a() {}\nfunc newFunc%d_b() {}\n", i, i)
+		path := filepath.Join(projectDir, name)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+
+	d2, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon (phase 2): %v", err)
+	}
+	if err := d2.IndexProject(ctx); err != nil {
+		t.Fatalf("IndexProject (phase 2): %v", err)
+	}
+
+	stats2, err := d2.Store().GetIndexStats(ctx)
+	if err != nil {
+		t.Fatalf("GetIndexStats (phase 2): %v", err)
+	}
+	t.Logf("Phase 2: %d files, %d chunks", stats2.TotalFiles, stats2.TotalChunks)
+
+	if stats2.TotalFiles < stats1.TotalFiles+3 {
+		t.Errorf("expected >= %d files after adding 3, got %d",
+			stats1.TotalFiles+3, stats2.TotalFiles)
+	}
+
+	// Only the new files' chunks should need embedding.
+	needBefore2, err := d2.Store().CountChunksNeedingEmbedding(ctx)
+	if err != nil {
+		t.Fatalf("CountChunksNeedingEmbedding before phase 2 embed: %v", err)
+	}
+	if needBefore2 == 0 {
+		t.Fatal("expected new chunks needing embedding after adding files")
+	}
+	t.Logf("Phase 2: %d chunks need embedding (new files)", needBefore2)
+
+	count2, err := d2.EmbedProject(ctx)
+	if err != nil {
+		t.Fatalf("EmbedProject (phase 2): %v", err)
+	}
+
+	// Verify: all chunks now embedded.
+	needAfter2, err := d2.Store().CountChunksNeedingEmbedding(ctx)
+	if err != nil {
+		t.Fatalf("CountChunksNeedingEmbedding after phase 2: %v", err)
+	}
+	if needAfter2 != 0 {
+		t.Errorf("expected 0 chunks needing embedding after phase 2, got %d", needAfter2)
+	}
+
+	// Verify: total embedded count increased.
+	if count2 <= count1 {
+		t.Errorf("expected vector count to increase from %d, got %d", count1, count2)
+	}
+	t.Logf("Phase 2: vector count increased from %d to %d", count1, count2)
+
+	d2.Stop()
 }
