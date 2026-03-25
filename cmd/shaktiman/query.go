@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -21,6 +22,7 @@ func searchCmd() *cobra.Command {
 		mode       string
 		minScore   float64
 		explain    bool
+		path       string
 	)
 	cmd := &cobra.Command{
 		Use:   "search <query>",
@@ -52,14 +54,37 @@ func searchCmd() *cobra.Command {
 				mode = cfg.SearchDefaultMode
 			}
 
+			// Over-fetch when path filter is set to compensate for post-filtering.
+			engineMax := maxResults
+			if path != "" {
+				engineMax = maxResults * 3
+				if engineMax > 200 {
+					engineMax = 200
+				}
+			}
+
 			results, err := engine.Search(context.Background(), core.SearchInput{
 				Query:      args[0],
-				MaxResults: maxResults,
+				MaxResults: engineMax,
 				Mode:       mode,
 				MinScore:   minScore,
 			})
 			if err != nil {
 				return fmt.Errorf("search: %w", err)
+			}
+
+			// Apply path prefix filter if specified.
+			if path != "" {
+				filtered := results[:0]
+				for _, r := range results {
+					if strings.HasPrefix(r.Path, path) {
+						filtered = append(filtered, r)
+					}
+				}
+				results = filtered
+				if len(results) > maxResults {
+					results = results[:maxResults]
+				}
 			}
 
 			if outputFormat == "text" {
@@ -84,6 +109,7 @@ func searchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&mode, "mode", "", "Result mode: locate or full (empty = use config default)")
 	cmd.Flags().Float64Var(&minScore, "min-score", 0, "Minimum relevance score (0 = use config default)")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Include score breakdown (text format only)")
+	cmd.Flags().StringVar(&path, "path", "", "Filter results to file or directory prefix")
 	return cmd
 }
 
