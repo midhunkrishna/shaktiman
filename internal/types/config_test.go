@@ -215,3 +215,33 @@ func searchString(s, substr string) bool {
 	}
 	return false
 }
+
+func TestWriteSampleConfig_MkdirAllFails(t *testing.T) {
+	t.Parallel()
+
+	// Use a path with a null byte -- os.MkdirAll will fail with EINVAL.
+	// WriteSampleConfig should silently return (log and exit), not panic.
+	WriteSampleConfig("/invalid\x00path")
+}
+
+func TestWriteSampleConfig_AlreadyExists(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Create the config file first.
+	WriteSampleConfig(dir)
+
+	// Call again -- should overwrite without error (idempotent).
+	WriteSampleConfig(dir)
+
+	// File should still be valid.
+	cfg := DefaultConfig(dir)
+	loaded, err := LoadConfigFromFile(cfg)
+	if err != nil {
+		t.Fatalf("LoadConfigFromFile after double write: %v", err)
+	}
+	def := DefaultConfig(dir)
+	if loaded.SearchMaxResults != def.SearchMaxResults {
+		t.Errorf("SearchMaxResults = %d, want %d", loaded.SearchMaxResults, def.SearchMaxResults)
+	}
+}

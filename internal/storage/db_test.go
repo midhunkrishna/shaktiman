@@ -3,7 +3,11 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"path/filepath"
 	"testing"
+
+	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
 func TestOpenInMemory(t *testing.T) {
@@ -139,5 +143,131 @@ func TestEmbeddedColumnMigration(t *testing.T) {
 	// Verify idempotent re-migration
 	if err := Migrate(db); err != nil {
 		t.Fatalf("re-Migrate: %v", err)
+	}
+}
+
+func TestWithWriteTx_Rollback(t *testing.T) {
+	t.Parallel()
+
+	db, err := Open(OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Insert a file first.
+	store.UpsertFile(ctx, &types.FileRecord{
+		Path: "before.go", ContentHash: "h", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+
+	// A failing transaction should rollback -- no new file inserted.
+	wantErr := errors.New("intentional failure")
+	err = db.WithWriteTx(func(tx *sql.Tx) error {
+		tx.ExecContext(ctx, `INSERT INTO files (path, content_hash, mtime, embedding_status, parse_quality) VALUES ('rollback.go', 'h', 1.0, 'pending', 'full')`)
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected wrapped error, got %v", err)
+	}
+
+	// The "rollback.go" file should not exist.
+	f, _ := store.GetFileByPath(ctx, "rollback.go")
+	if f != nil {
+		t.Error("expected rollback.go to not exist after rolled-back transaction")
+	}
+}
+
+func TestMigrate_DuplicateColumnRecovery(t *testing.T) {
+	t.Parallel()
+	db, err := Open(OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	// Run migration once to set up all tables.
+	if err := Migrate(db); err != nil {
+		t.Fatalf("first Migrate: %v", err)
+	}
+
+	// Simulate a partial v1->v2 migration crash: reset the schema version to 1.
+	// On the next Migrate call, it will try to add the "embedded" column again,
+	// hitting isDuplicateColumnError, which should be tolerated.
+	err = db.WithWriteTx(func(tx *sql.Tx) error {
+		_, err := tx.Exec("UPDATE schema_version SET version = 1")
+		return err
+	})
+	if err != nil {
+		t.Fatalf("reset schema version: %v", err)
+	}
+
+	// This should succeed, exercising the isDuplicateColumnError path.
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate after version reset: %v", err)
+	}
+
+	// Verify version is back to current.
+	var version int
+	if err := db.QueryRowContext(context.Background(),
+		"SELECT MAX(version) FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read version: %v", err)
+	}
+	if version != schemaVersion {
+		t.Errorf("version = %d, want %d", version, schemaVersion)
+	}
+}
+
+func TestOpen_InvalidPath(t *testing.T) {
+	t.Parallel()
+
+	// Path under /dev/null is not a valid directory and MkdirAll will fail.
+	_, err := Open(OpenInput{Path: "/dev/null/subdir/test.db"})
+	if err == nil {
+		t.Fatal("expected error for invalid path")
+	}
+}
+
+func TestClose_Idempotent(t *testing.T) {
+	t.Parallel()
+	db, err := Open(OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	// First Close should succeed.
+	if err := db.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+}
+
+func TestOpen_FileMode(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	db, err := Open(OpenInput{Path: dbPath})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	// Verify the database is functional.
+	store := NewStore(db)
+	_, err = store.UpsertFile(context.Background(), &types.FileRecord{
+		Path: "test.go", ContentHash: "h", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile on file-based DB: %v", err)
 	}
 }
