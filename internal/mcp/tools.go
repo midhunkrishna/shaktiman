@@ -411,7 +411,7 @@ Returns chunk counts, embedding percentage, and circuit breaker state.`),
 	)
 }
 
-func enrichmentStatusHandler(store *storage.Store, vs *vector.BruteForceStore, ew *vector.EmbedWorker) handlerFunc {
+func enrichmentStatusHandler(store *storage.Store, vs types.VectorStore, ew *vector.EmbedWorker) handlerFunc {
 	return func(ctx context.Context, _ mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		stats, err := store.GetIndexStats(ctx)
 		if err != nil {
@@ -486,7 +486,7 @@ Returns total files, chunks, symbols, language breakdown, and index quality metr
 	)
 }
 
-func summaryHandler(store *storage.Store, vs *vector.BruteForceStore) handlerFunc {
+func summaryHandler(store *storage.Store, vs types.VectorStore) handlerFunc {
 	return func(ctx context.Context, _ mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		stats, err := store.GetIndexStats(ctx)
 		if err != nil {

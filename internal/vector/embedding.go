@@ -279,7 +279,7 @@ type EmbedJob struct {
 
 // EmbedWorkerInput configures the EmbedWorker.
 type EmbedWorkerInput struct {
-	Store       *BruteForceStore
+	Store       types.VectorStore
 	Embedder    *OllamaClient
 	BatchSize   int
 	OnBatchDone func(chunkIDs []int64) // optional callback after successful upsert
@@ -287,7 +287,7 @@ type EmbedWorkerInput struct {
 
 // EmbedWorker processes embedding jobs in batches with circuit breaker protection.
 type EmbedWorker struct {
-	store       *BruteForceStore
+	store       types.VectorStore
 	embedder    *OllamaClient
 	cb          *CircuitBreaker
 	queue       chan EmbedJob
@@ -468,7 +468,11 @@ func (w *EmbedWorker) RunFromDB(ctx context.Context, source types.EmbedSource, o
 			// Has() reconciliation: skip chunks already in vector store.
 			var needEmbed []types.EmbedJob
 			for _, job := range batch {
-				if !w.store.Has(ctx, job.ChunkID) {
+				has, err := w.store.Has(ctx, job.ChunkID)
+				if err != nil {
+					return fmt.Errorf("check vector store for chunk %d: %w", job.ChunkID, err)
+				}
+				if !has {
 					needEmbed = append(needEmbed, job)
 				}
 			}

@@ -26,7 +26,7 @@ type Daemon struct {
 	writer           *WriterManager
 	engine           *core.QueryEngine
 	logger           *slog.Logger
-	vectorStore      *vector.BruteForceStore
+	vectorStore      types.VectorStore
 	embedWorker      *vector.EmbedWorker
 	sessionID        string
 	embeddingActive  atomic.Bool
@@ -78,7 +78,9 @@ func New(cfg types.Config) (*Daemon, error) {
 
 func (d *Daemon) initEmbedding() {
 	vs := vector.NewBruteForceStore(d.cfg.EmbeddingDims)
-	if err := vs.LoadFromDisk(d.cfg.EmbeddingsPath); err != nil {
+	d.vectorStore = vs
+
+	if err := d.loadVectors(d.cfg.EmbeddingsPath); err != nil {
 		d.logger.Warn("load embeddings from disk failed", "err", err)
 	} else {
 		count, _ := vs.Count(context.Background())
@@ -103,7 +105,6 @@ func (d *Daemon) initEmbedding() {
 		},
 	})
 
-	d.vectorStore = vs
 	d.embedWorker = worker
 	d.engine.SetVectorStore(vs, client, worker.EmbedReady)
 }
@@ -212,7 +213,8 @@ func (d *Daemon) queueEmbeddings(ctx context.Context) {
 	// for crash-before-save scenario where DB says 'complete' but vectors are lost)
 	jobs := make([]vector.EmbedJob, 0, len(records))
 	for _, r := range records {
-		if d.vectorStore.Has(ctx, r.ChunkID) {
+		has, _ := d.vectorStore.Has(ctx, r.ChunkID)
+		if has {
 			continue
 		}
 		jobs = append(jobs, vector.EmbedJob{
@@ -245,7 +247,7 @@ func (d *Daemon) embedFromDB(ctx context.Context, onProgress func(types.EmbedPro
 	// Trigger an immediate save checkpoint so the periodic saver switches to
 	// 30s intervals on its next tick (instead of waiting up to 5 minutes).
 	if count, _ := d.vectorStore.Count(ctx); count > 0 {
-		if err := d.vectorStore.SaveToDisk(d.cfg.EmbeddingsPath); err != nil {
+		if err := d.saveVectors(d.cfg.EmbeddingsPath); err != nil {
 			d.logger.Warn("pre-embed save failed", "err", err)
 		}
 	}
@@ -283,7 +285,7 @@ func (d *Daemon) EmbedProject(ctx context.Context, onProgress func(types.EmbedPr
 
 	// Save embeddings even on partial failure (crash safety).
 	if count > 0 {
-		if saveErr := d.vectorStore.SaveToDisk(d.cfg.EmbeddingsPath); saveErr != nil {
+		if saveErr := d.saveVectors(d.cfg.EmbeddingsPath); saveErr != nil {
 			d.logger.Warn("save embeddings failed", "err", saveErr)
 		}
 	}
@@ -327,7 +329,7 @@ func (d *Daemon) periodicEmbeddingSave(ctx context.Context) {
 
 			count, _ := d.vectorStore.Count(ctx)
 			if count > 0 {
-				if err := d.vectorStore.SaveToDisk(d.cfg.EmbeddingsPath); err != nil {
+				if err := d.saveVectors(d.cfg.EmbeddingsPath); err != nil {
 					d.logger.Error("periodic embedding save failed", "err", err)
 				} else {
 					d.logger.Info("periodic embedding checkpoint", "count", count)
@@ -365,7 +367,7 @@ func (d *Daemon) Stop() error {
 	if d.vectorStore != nil {
 		count, _ := d.vectorStore.Count(context.Background())
 		if count > 0 {
-			if err := d.vectorStore.SaveToDisk(d.cfg.EmbeddingsPath); err != nil {
+			if err := d.saveVectors(d.cfg.EmbeddingsPath); err != nil {
 				d.logger.Error("save embeddings failed", "err", err)
 			} else {
 				d.logger.Info("saved embeddings to disk", "count", count)
@@ -379,6 +381,22 @@ func (d *Daemon) Stop() error {
 	}
 
 	d.logger.Info("shutdown complete", "duration_ms", time.Since(start).Milliseconds())
+	return nil
+}
+
+// saveVectors persists vectors if the store supports explicit persistence.
+func (d *Daemon) saveVectors(path string) error {
+	if p, ok := d.vectorStore.(types.VectorPersister); ok {
+		return p.SaveToDisk(path)
+	}
+	return nil
+}
+
+// loadVectors loads vectors if the store supports explicit persistence.
+func (d *Daemon) loadVectors(path string) error {
+	if p, ok := d.vectorStore.(types.VectorPersister); ok {
+		return p.LoadFromDisk(path)
+	}
 	return nil
 }
 

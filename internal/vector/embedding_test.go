@@ -667,7 +667,7 @@ func TestRunFromDB_AllChunksEmbedded(t *testing.T) {
 
 	// Verify all chunks are in the vector store.
 	for _, job := range jobs {
-		if !store.Has(context.Background(), job.ChunkID) {
+		if has, _ := store.Has(context.Background(), job.ChunkID); !has {
 			t.Errorf("store missing chunk %d", job.ChunkID)
 		}
 	}
@@ -733,7 +733,7 @@ func TestRunFromDB_CircuitBreakerRetry(t *testing.T) {
 
 	// Verify all chunks embedded despite initial failures.
 	for _, job := range jobs {
-		if !store.Has(context.Background(), job.ChunkID) {
+		if has, _ := store.Has(context.Background(), job.ChunkID); !has {
 			t.Errorf("store missing chunk %d after CB retry", job.ChunkID)
 		}
 	}
@@ -905,7 +905,7 @@ func TestRunFromDB_HasReconciliation(t *testing.T) {
 
 	// All chunks should now be in the store.
 	for _, job := range jobs {
-		if !store.Has(context.Background(), job.ChunkID) {
+		if has, _ := store.Has(context.Background(), job.ChunkID); !has {
 			t.Errorf("store missing chunk %d", job.ChunkID)
 		}
 	}

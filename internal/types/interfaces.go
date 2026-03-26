@@ -58,13 +58,25 @@ type VectorResult struct {
 	Score   float64 `json:"score"` // cosine similarity normalized to [0,1]
 }
 
-// VectorStore provides vector similarity search operations.
-// Default: brute-force in-process. Optional: Qdrant (Phase 3+).
+// VectorStore provides vector similarity search and storage operations.
+// Default implementation: BruteForceStore (in-memory). Alternative backends
+// (HNSW, Qdrant, pgvector) implement this same interface.
 type VectorStore interface {
 	Search(ctx context.Context, query []float32, topK int) ([]VectorResult, error)
 	Upsert(ctx context.Context, chunkID int64, vector []float32) error
+	UpsertBatch(ctx context.Context, chunkIDs []int64, vectors [][]float32) error
 	Delete(ctx context.Context, chunkIDs []int64) error
+	Has(ctx context.Context, chunkID int64) (bool, error)
 	Count(ctx context.Context) (int, error)
+	Close() error
+}
+
+// VectorPersister is optionally implemented by vector stores that need
+// explicit disk persistence (e.g. BruteForceStore). Stores with built-in
+// persistence (Qdrant, HNSW) do not implement this.
+type VectorPersister interface {
+	SaveToDisk(path string) error
+	LoadFromDisk(path string) error
 }
 
 // Embedder produces vector embeddings from text.
