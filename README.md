@@ -1,5 +1,7 @@
 # Shaktiman
 
+[![codecov](https://codecov.io/gh/midhunkrishna/shaktiman/branch/master/graph/badge.svg?token=BZ7NUTRX30)](https://codecov.io/gh/midhunkrishna/shaktiman)
+
 Local-first code context engine for coding agents.
 
 Shaktiman indexes your codebase and gives Claude Code (or any MCP client) tools to search, navigate, and assemble exactly the right code context — fitted to a token budget so you use fewer tokens and get better results.
