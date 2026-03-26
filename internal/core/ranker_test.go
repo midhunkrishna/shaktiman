@@ -4,6 +4,7 @@ package core
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"math"
 	"testing"
@@ -282,6 +283,211 @@ func TestHybridRank_WithSessionScorer(t *testing.T) {
 	// With session-only weights, ChunkID 2 should be first (score 0.95)
 	if got[0].ChunkID != 2 {
 		t.Errorf("expected ChunkID 2 first (high session score), got ChunkID %d", got[0].ChunkID)
+	}
+}
+
+func TestLookupSymbolForChunk_NoSymbol(t *testing.T) {
+	t.Parallel()
+	store := setupTestStore(t)
+	ctx := context.Background()
+
+	// Insert a file and a chunk with no SymbolName.
+	fileID, err := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "nosym.go", ContentHash: "h1", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+	chunkIDs, err := store.InsertChunks(ctx, fileID, []types.ChunkRecord{
+		{ChunkIndex: 0, SymbolName: "", Kind: "block",
+			StartLine: 1, EndLine: 10,
+			Content: "package main", TokenCount: 5},
+	})
+	if err != nil {
+		t.Fatalf("InsertChunks: %v", err)
+	}
+
+	id := lookupSymbolForChunk(ctx, store, chunkIDs[0])
+	if id != 0 {
+		t.Errorf("expected 0 for chunk with no symbol name, got %d", id)
+	}
+}
+
+func TestLookupChunkIDsForSymbols_UnknownID(t *testing.T) {
+	t.Parallel()
+	store := setupTestStore(t)
+
+	// Unknown symbol IDs should be silently skipped.
+	result := lookupChunkIDsForSymbols(context.Background(), store, []int64{99999})
+	if len(result) != 0 {
+		t.Errorf("expected 0 results for unknown IDs, got %d", len(result))
+	}
+}
+
+func TestComputeStructuralScores_WithGraphEdges(t *testing.T) {
+	t.Parallel()
+	store := setupTestStore(t)
+	ctx := context.Background()
+
+	// Create two files, each with 1 chunk and 1 symbol, connected by an edge.
+	fileID1, err := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "a.go", ContentHash: "h1", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile 1: %v", err)
+	}
+	chunkIDs1, err := store.InsertChunks(ctx, fileID1, []types.ChunkRecord{
+		{ChunkIndex: 0, SymbolName: "FuncA", Kind: "function",
+			StartLine: 1, EndLine: 10, Content: "func A() {}", TokenCount: 5},
+	})
+	if err != nil {
+		t.Fatalf("InsertChunks 1: %v", err)
+	}
+	symIDs1, err := store.InsertSymbols(ctx, fileID1, []types.SymbolRecord{
+		{ChunkID: chunkIDs1[0], Name: "FuncA", Kind: "function", Line: 1, Visibility: "exported"},
+	})
+	if err != nil {
+		t.Fatalf("InsertSymbols 1: %v", err)
+	}
+
+	fileID2, err := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "b.go", ContentHash: "h2", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile 2: %v", err)
+	}
+	chunkIDs2, err := store.InsertChunks(ctx, fileID2, []types.ChunkRecord{
+		{ChunkIndex: 0, SymbolName: "FuncB", Kind: "function",
+			StartLine: 1, EndLine: 10, Content: "func B() {}", TokenCount: 5},
+	})
+	if err != nil {
+		t.Fatalf("InsertChunks 2: %v", err)
+	}
+	symIDs2, err := store.InsertSymbols(ctx, fileID2, []types.SymbolRecord{
+		{ChunkID: chunkIDs2[0], Name: "FuncB", Kind: "function", Line: 1, Visibility: "exported"},
+	})
+	if err != nil {
+		t.Fatalf("InsertSymbols 2: %v", err)
+	}
+
+	// Insert a direct edge: FuncA -> FuncB
+	err = store.DB().WithWriteTx(func(tx *sql.Tx) error {
+		symMap := map[string]int64{
+			"FuncA": symIDs1[0],
+			"FuncB": symIDs2[0],
+		}
+		return store.InsertEdges(ctx, tx, fileID1, []types.EdgeRecord{
+			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
+		}, symMap)
+	})
+	if err != nil {
+		t.Fatalf("InsertEdges: %v", err)
+	}
+
+	candidates := []types.ScoredResult{
+		{ChunkID: chunkIDs1[0], Score: 0.9, Path: "a.go", SymbolName: "FuncA",
+			Kind: "function", StartLine: 1, EndLine: 10},
+		{ChunkID: chunkIDs2[0], Score: 0.8, Path: "b.go", SymbolName: "FuncB",
+			Kind: "function", StartLine: 1, EndLine: 10},
+	}
+
+	scores := computeStructuralScores(ctx, store, candidates)
+
+	// Both chunks should have non-zero structural scores because they are
+	// BFS-reachable neighbors and both appear in the candidate set.
+	if scores[chunkIDs1[0]] == 0 {
+		t.Error("expected non-zero structural score for FuncA (neighbor FuncB is a candidate)")
+	}
+	if scores[chunkIDs2[0]] == 0 {
+		t.Error("expected non-zero structural score for FuncB (neighbor FuncA is a candidate)")
+	}
+}
+
+func TestLookupSymbolForChunk_MatchingSymbol(t *testing.T) {
+	t.Parallel()
+	store := setupTestStore(t)
+	ctx := context.Background()
+
+	fileID, err := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "sym.go", ContentHash: "h1", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+	chunkIDs, err := store.InsertChunks(ctx, fileID, []types.ChunkRecord{
+		{ChunkIndex: 0, SymbolName: "MyFunc", Kind: "function",
+			StartLine: 1, EndLine: 10, Content: "func MyFunc() {}", TokenCount: 5},
+	})
+	if err != nil {
+		t.Fatalf("InsertChunks: %v", err)
+	}
+	symIDs, err := store.InsertSymbols(ctx, fileID, []types.SymbolRecord{
+		{ChunkID: chunkIDs[0], Name: "MyFunc", Kind: "function", Line: 1, Visibility: "exported"},
+	})
+	if err != nil {
+		t.Fatalf("InsertSymbols: %v", err)
+	}
+
+	got := lookupSymbolForChunk(ctx, store, chunkIDs[0])
+	if got != symIDs[0] {
+		t.Errorf("lookupSymbolForChunk = %d, want %d", got, symIDs[0])
+	}
+}
+
+func TestLookupSymbolForChunk_MatchesSameFile(t *testing.T) {
+	t.Parallel()
+	store := setupTestStore(t)
+	ctx := context.Background()
+
+	// Create two files, both with a symbol named "Handler".
+	// lookupSymbolForChunk should prefer the same-file symbol.
+	fileID1, err := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "f1.go", ContentHash: "h1", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile 1: %v", err)
+	}
+	chunkIDs1, err := store.InsertChunks(ctx, fileID1, []types.ChunkRecord{
+		{ChunkIndex: 0, SymbolName: "Handler", Kind: "function",
+			StartLine: 1, EndLine: 10, Content: "func Handler() {}", TokenCount: 5},
+	})
+	if err != nil {
+		t.Fatalf("InsertChunks 1: %v", err)
+	}
+	symIDs1, err := store.InsertSymbols(ctx, fileID1, []types.SymbolRecord{
+		{ChunkID: chunkIDs1[0], Name: "Handler", Kind: "function", Line: 1, Visibility: "exported"},
+	})
+	if err != nil {
+		t.Fatalf("InsertSymbols 1: %v", err)
+	}
+
+	fileID2, err := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "f2.go", ContentHash: "h2", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile 2: %v", err)
+	}
+	chunkIDs2, err := store.InsertChunks(ctx, fileID2, []types.ChunkRecord{
+		{ChunkIndex: 0, SymbolName: "Handler", Kind: "function",
+			StartLine: 1, EndLine: 10, Content: "func Handler() {}", TokenCount: 5},
+	})
+	if err != nil {
+		t.Fatalf("InsertChunks 2: %v", err)
+	}
+	store.InsertSymbols(ctx, fileID2, []types.SymbolRecord{
+		{ChunkID: chunkIDs2[0], Name: "Handler", Kind: "function", Line: 1, Visibility: "exported"},
+	})
+
+	// Lookup for file1's chunk should return file1's symbol
+	got := lookupSymbolForChunk(ctx, store, chunkIDs1[0])
+	if got != symIDs1[0] {
+		t.Errorf("lookupSymbolForChunk for file1 chunk = %d, want %d (same-file match)", got, symIDs1[0])
 	}
 }
 

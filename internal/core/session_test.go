@@ -205,6 +205,43 @@ func TestSessionStore_Concurrent(t *testing.T) {
 	}
 }
 
+func TestNewSessionStore_ZeroMaxSize(t *testing.T) {
+	t.Parallel()
+
+	// Zero maxSize should default to 2000.
+	ss := NewSessionStore(0)
+
+	// Insert 2001 entries; if maxSize=2000, the store should evict.
+	for i := 0; i < 2001; i++ {
+		ss.RecordAccess(fmt.Sprintf("file%d.go", i), i)
+	}
+	if ss.Len() > 2000 {
+		t.Errorf("Len() = %d, expected <= 2000 (default maxSize)", ss.Len())
+	}
+}
+
+func TestRecordBatch_ReAccess(t *testing.T) {
+	t.Parallel()
+
+	ss := NewSessionStore(100)
+
+	// First access.
+	ss.RecordBatch([]SessionHit{
+		{FilePath: "a.go", StartLine: 1},
+	})
+	s1 := ss.Score("a.go", 1)
+
+	// Second access to same key -- score should increase.
+	ss.RecordBatch([]SessionHit{
+		{FilePath: "a.go", StartLine: 1},
+	})
+	s2 := ss.Score("a.go", 1)
+
+	if s2 <= s1 {
+		t.Errorf("score after re-access (%f) should be > initial score (%f)", s2, s1)
+	}
+}
+
 // ── Benchmarks ──
 
 func BenchmarkSessionStore_Score(b *testing.B) {
