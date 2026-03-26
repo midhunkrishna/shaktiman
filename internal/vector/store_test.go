@@ -6,7 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/shaktimanai/shaktiman/internal/types"
 )
+
+// Compile-time interface checks.
+var _ types.VectorStore = (*BruteForceStore)(nil)
+var _ types.VectorPersister = (*BruteForceStore)(nil)
 
 func TestBruteForceStore_UpsertAndCount(t *testing.T) {
 	t.Parallel()
@@ -312,24 +318,32 @@ func TestBruteForceStore_Has(t *testing.T) {
 	ctx := context.Background()
 	s := NewBruteForceStore(2)
 
-	if s.Has(ctx, 1) {
+	if has, err := s.Has(ctx, 1); err != nil {
+		t.Fatalf("Has: %v", err)
+	} else if has {
 		t.Fatal("Has(1) should be false on empty store")
 	}
 
 	if err := s.Upsert(ctx, 1, []float32{1, 0}); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
-	if !s.Has(ctx, 1) {
+	if has, err := s.Has(ctx, 1); err != nil {
+		t.Fatalf("Has: %v", err)
+	} else if !has {
 		t.Fatal("Has(1) should be true after upsert")
 	}
-	if s.Has(ctx, 2) {
+	if has, err := s.Has(ctx, 2); err != nil {
+		t.Fatalf("Has: %v", err)
+	} else if has {
 		t.Fatal("Has(2) should be false")
 	}
 
 	if err := s.Delete(ctx, []int64{1}); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if s.Has(ctx, 1) {
+	if has, err := s.Has(ctx, 1); err != nil {
+		t.Fatalf("Has: %v", err)
+	} else if has {
 		t.Fatal("Has(1) should be false after delete")
 	}
 }

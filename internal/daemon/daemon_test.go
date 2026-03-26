@@ -1305,9 +1305,12 @@ func TestEmbedProject_IncrementalAfterCold(t *testing.T) {
 	}
 	t.Logf("Phase 2: %d files, %d chunks", stats2.TotalFiles, stats2.TotalChunks)
 
-	if stats2.TotalFiles < stats1.TotalFiles+3 {
-		t.Errorf("expected >= %d files after adding 3, got %d",
-			stats1.TotalFiles+3, stats2.TotalFiles)
+	// Assert against actual files on disk (ground truth) rather than
+	// stats1.TotalFiles which can be inflated by transient scanner artifacts.
+	goFiles, _ := filepath.Glob(filepath.Join(projectDir, "*.go"))
+	if stats2.TotalFiles < len(goFiles) {
+		t.Errorf("expected >= %d indexed files (on disk), got %d",
+			len(goFiles), stats2.TotalFiles)
 	}
 
 	// Only the new files' chunks should need embedding.

@@ -927,6 +927,18 @@ func (f *failingVectorStore) Delete(ctx context.Context, chunkIDs []int64) error
 	return nil
 }
 
+func (f *failingVectorStore) UpsertBatch(ctx context.Context, chunkIDs []int64, vectors [][]float32) error {
+	return nil
+}
+
+func (f *failingVectorStore) Has(ctx context.Context, chunkID int64) (bool, error) {
+	return false, nil
+}
+
+func (f *failingVectorStore) Close() error {
+	return nil
+}
+
 func TestSearch_KeywordWithMinScore(t *testing.T) {
 	t.Parallel()
 	engine, store := setupTestEngine(t)

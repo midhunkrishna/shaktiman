@@ -13,7 +13,7 @@ import (
 type NewServerInput struct {
 	Engine      *core.QueryEngine
 	Store       *storage.Store
-	VectorStore *vector.BruteForceStore
+	VectorStore types.VectorStore
 	EmbedWorker *vector.EmbedWorker
 	Recorder    *MetricsRecorder // nil disables metrics persistence
 	Config      types.Config     // MCP tool configuration

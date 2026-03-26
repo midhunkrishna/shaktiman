@@ -126,11 +126,16 @@ func (s *BruteForceStore) Count(_ context.Context) (int, error) {
 }
 
 // Has returns true if a vector exists for the given chunk ID.
-func (s *BruteForceStore) Has(_ context.Context, chunkID int64) bool {
+func (s *BruteForceStore) Has(_ context.Context, chunkID int64) (bool, error) {
 	s.mu.RLock()
 	_, ok := s.vectors[chunkID]
 	s.mu.RUnlock()
-	return ok
+	return ok, nil
+}
+
+// Close is a no-op for the in-memory brute-force store.
+func (s *BruteForceStore) Close() error {
+	return nil
 }
 
 // Dim returns the vector dimensionality.
