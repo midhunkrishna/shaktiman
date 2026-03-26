@@ -256,3 +256,242 @@ func TestComputeChangeScores(t *testing.T) {
 		t.Errorf("expected empty scores map, got %d entries", len(scores))
 	}
 }
+
+func TestComputeChangeScores_InvalidTimestamp(t *testing.T) {
+	t.Parallel()
+	db, store := setupTestDB(t)
+	ctx := context.Background()
+
+	fileID, chunkID, symID := insertTestFileChunkSymbol(t, store, "badts.go", "BadTsFunc")
+
+	// Insert a diff with an invalid (unparseable) timestamp to exercise scoreRow returning 0.
+	err := db.WithWriteTx(func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+			INSERT INTO diff_log (file_id, timestamp, change_type, lines_added, lines_removed)
+			VALUES (?, 'not-a-timestamp', 'modify', 20, 5)`, fileID)
+		if err != nil {
+			return err
+		}
+		diffID, _ := res.LastInsertId()
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO diff_symbols (diff_id, symbol_id, symbol_name, change_type, chunk_id)
+			VALUES (?, ?, 'BadTsFunc', 'modified', ?)`, diffID, symID, chunkID)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("insert diff data: %v", err)
+	}
+
+	// scoreRow should return 0 for the invalid timestamp, so no score assigned.
+	scores, err := store.ComputeChangeScores(ctx, []int64{chunkID})
+	if err != nil {
+		t.Fatalf("ComputeChangeScores: %v", err)
+	}
+	if _, ok := scores[chunkID]; ok {
+		t.Error("expected no score for chunk with invalid timestamp")
+	}
+}
+
+func TestComputeChangeScores_FileLevelFallback(t *testing.T) {
+	t.Parallel()
+	db, store := setupTestDB(t)
+	ctx := context.Background()
+
+	// Create a file with a chunk but no symbol-level diff_symbols entry.
+	// This exercises the file-level fallback path (Query 2).
+	fileID, chunkID, _ := insertTestFileChunkSymbol(t, store, "fallback.go", "FallbackFunc")
+
+	// Insert a diff log entry for the file but do NOT insert diff_symbols for the chunk.
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	err := db.WithWriteTx(func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO diff_log (file_id, timestamp, change_type, lines_added, lines_removed)
+			VALUES (?, ?, 'modify', 40, 10)`, fileID, now)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("insert diff data: %v", err)
+	}
+
+	scores, err := store.ComputeChangeScores(ctx, []int64{chunkID})
+	if err != nil {
+		t.Fatalf("ComputeChangeScores: %v", err)
+	}
+
+	score, ok := scores[chunkID]
+	if !ok {
+		t.Fatal("expected score for chunk via file-level fallback, got none")
+	}
+	if score <= 0 {
+		t.Errorf("expected positive score, got %f", score)
+	}
+	// With 50 total lines changed and ~0 hours elapsed:
+	// score = exp(-0.05 * ~0) * min(50/50, 1.0) = ~1.0 * 1.0 = ~1.0
+	if score < 0.9 || score > 1.1 {
+		t.Errorf("expected score ~1.0 for 50 lines changed recently, got %f", score)
+	}
+}
+
+func TestInsertDiffLog_Direct(t *testing.T) {
+	t.Parallel()
+	db, store := setupTestDB(t)
+	ctx := context.Background()
+
+	fileID, _, _ := insertTestFileChunkSymbol(t, store, "direct_diff.go", "DirectFunc")
+
+	entry := DiffLogEntry{
+		FileID:       fileID,
+		ChangeType:   "add",
+		LinesAdded:   42,
+		LinesRemoved: 0,
+		HashBefore:   "",
+		HashAfter:    "newfile",
+	}
+
+	var diffID int64
+	err := db.WithWriteTx(func(tx *sql.Tx) error {
+		var insertErr error
+		diffID, insertErr = store.InsertDiffLog(ctx, tx, entry)
+		return insertErr
+	})
+	if err != nil {
+		t.Fatalf("InsertDiffLog: %v", err)
+	}
+	if diffID <= 0 {
+		t.Fatalf("expected positive diff ID, got %d", diffID)
+	}
+
+	// Insert a second diff and verify IDs are sequential.
+	entry2 := DiffLogEntry{
+		FileID:       fileID,
+		ChangeType:   "delete",
+		LinesAdded:   0,
+		LinesRemoved: 20,
+		HashBefore:   "old",
+		HashAfter:    "",
+	}
+	var diffID2 int64
+	err = db.WithWriteTx(func(tx *sql.Tx) error {
+		var insertErr error
+		diffID2, insertErr = store.InsertDiffLog(ctx, tx, entry2)
+		return insertErr
+	})
+	if err != nil {
+		t.Fatalf("InsertDiffLog second: %v", err)
+	}
+	if diffID2 <= diffID {
+		t.Errorf("expected second diff ID %d > first %d", diffID2, diffID)
+	}
+
+	// Verify both diffs are retrievable.
+	diffs, err := store.GetRecentDiffs(ctx, RecentDiffsInput{
+		Since: time.Now().Add(-1 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("GetRecentDiffs: %v", err)
+	}
+	if len(diffs) != 2 {
+		t.Fatalf("expected 2 diffs, got %d", len(diffs))
+	}
+}
+
+func TestGetDiffSymbols_Empty(t *testing.T) {
+	t.Parallel()
+	db, store := setupTestDB(t)
+	ctx := context.Background()
+
+	fileID, _, _ := insertTestFileChunkSymbol(t, store, "nosyms.go", "NoSymsFunc")
+
+	// Insert a diff log entry but no diff symbols.
+	var diffID int64
+	err := db.WithWriteTx(func(tx *sql.Tx) error {
+		var insertErr error
+		diffID, insertErr = store.InsertDiffLog(ctx, tx, DiffLogEntry{
+			FileID:     fileID,
+			ChangeType: "modify",
+			LinesAdded: 1,
+		})
+		return insertErr
+	})
+	if err != nil {
+		t.Fatalf("InsertDiffLog: %v", err)
+	}
+
+	symbols, err := store.GetDiffSymbols(ctx, diffID)
+	if err != nil {
+		t.Fatalf("GetDiffSymbols: %v", err)
+	}
+	if len(symbols) != 0 {
+		t.Errorf("expected 0 diff symbols, got %d", len(symbols))
+	}
+
+	// Also query a completely nonexistent diff ID.
+	symbols, err = store.GetDiffSymbols(ctx, 999999)
+	if err != nil {
+		t.Fatalf("GetDiffSymbols(nonexistent): %v", err)
+	}
+	if len(symbols) != 0 {
+		t.Errorf("expected 0 diff symbols for nonexistent diff, got %d", len(symbols))
+	}
+}
+
+func TestComputeChangeScores_MixedSymbolAndFileFallback(t *testing.T) {
+	t.Parallel()
+	db, store := setupTestDB(t)
+	ctx := context.Background()
+
+	// Chunk A: has a symbol-level diff (should use symbol path).
+	fileA, chunkA, symA := insertTestFileChunkSymbol(t, store, "sym_score.go", "SymScore")
+
+	// Chunk B: has only a file-level diff (should use file-level fallback).
+	fileB, chunkB, _ := insertTestFileChunkSymbol(t, store, "file_score.go", "FileScore")
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	err := db.WithWriteTx(func(tx *sql.Tx) error {
+		// Diff for file A with symbol-level entry.
+		res, err := tx.ExecContext(ctx, `
+			INSERT INTO diff_log (file_id, timestamp, change_type, lines_added, lines_removed)
+			VALUES (?, ?, 'modify', 30, 10)`, fileA, now)
+		if err != nil {
+			return err
+		}
+		diffID, _ := res.LastInsertId()
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO diff_symbols (diff_id, symbol_id, symbol_name, change_type, chunk_id)
+			VALUES (?, ?, 'SymScore', 'modified', ?)`, diffID, symA, chunkA)
+		if err != nil {
+			return err
+		}
+
+		// Diff for file B, no symbol-level entry.
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO diff_log (file_id, timestamp, change_type, lines_added, lines_removed)
+			VALUES (?, ?, 'modify', 20, 5)`, fileB, now)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("insert diff data: %v", err)
+	}
+
+	scores, err := store.ComputeChangeScores(ctx, []int64{chunkA, chunkB})
+	if err != nil {
+		t.Fatalf("ComputeChangeScores: %v", err)
+	}
+
+	// Both chunks should have scores.
+	if _, ok := scores[chunkA]; !ok {
+		t.Error("expected score for chunkA (symbol path)")
+	}
+	if _, ok := scores[chunkB]; !ok {
+		t.Error("expected score for chunkB (file-level fallback)")
+	}
+
+	// chunkA: 40 lines -> min(40/50, 1.0) = 0.8
+	if s := scores[chunkA]; s < 0.7 || s > 0.9 {
+		t.Errorf("chunkA score = %f, want ~0.8", s)
+	}
+	// chunkB: 25 lines -> min(25/50, 1.0) = 0.5
+	if s := scores[chunkB]; s < 0.4 || s > 0.6 {
+		t.Errorf("chunkB score = %f, want ~0.5", s)
+	}
+}

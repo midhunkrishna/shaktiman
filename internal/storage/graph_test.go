@@ -302,3 +302,265 @@ func TestNeighbors_Incoming(t *testing.T) {
 		}
 	}
 }
+
+func TestDeleteEdgesByFile_RemovesTargetEdges(t *testing.T) {
+	t.Parallel()
+	db, store := setupTestDB(t)
+	ctx := context.Background()
+
+	fileIDA, _, symIDA := insertTestFileChunkSymbol(t, store, "a.go", "FuncA")
+	_, _, symIDB := insertTestFileChunkSymbol(t, store, "b.go", "FuncB")
+	fileIDC, _, symIDC := insertTestFileChunkSymbol(t, store, "c.go", "FuncC")
+
+	// Insert edge A->B (owned by file A) and C->B (owned by file C).
+	if err := db.WithWriteTx(func(tx *sql.Tx) error {
+		if err := store.InsertEdges(ctx, tx, fileIDA, []types.EdgeRecord{
+			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
+		}, map[string]int64{"FuncA": symIDA, "FuncB": symIDB}); err != nil {
+			return err
+		}
+		return store.InsertEdges(ctx, tx, fileIDC, []types.EdgeRecord{
+			{SrcSymbolName: "FuncC", DstSymbolName: "FuncB", Kind: "calls"},
+		}, map[string]int64{"FuncC": symIDC, "FuncB": symIDB})
+	}); err != nil {
+		t.Fatalf("InsertEdges: %v", err)
+	}
+
+	// Delete edges owned by file A.
+	if err := db.WithWriteTx(func(tx *sql.Tx) error {
+		return store.DeleteEdgesByFile(ctx, tx, fileIDA)
+	}); err != nil {
+		t.Fatalf("DeleteEdgesByFile: %v", err)
+	}
+
+	// A->B should be gone: A's outgoing neighbors should be empty.
+	neighborsA, err := store.Neighbors(ctx, symIDA, 1, "outgoing")
+	if err != nil {
+		t.Fatalf("Neighbors(A): %v", err)
+	}
+	if len(neighborsA) != 0 {
+		t.Errorf("expected 0 neighbors for A after delete, got %d", len(neighborsA))
+	}
+
+	// C->B should remain: C's outgoing neighbors should include B.
+	neighborsC, err := store.Neighbors(ctx, symIDC, 1, "outgoing")
+	if err != nil {
+		t.Fatalf("Neighbors(C): %v", err)
+	}
+	if len(neighborsC) != 1 || neighborsC[0] != symIDB {
+		t.Errorf("expected C->B edge to survive, got neighbors %v", neighborsC)
+	}
+}
+
+func TestNeighbors_Both(t *testing.T) {
+	t.Parallel()
+	db, store := setupTestDB(t)
+	ctx := context.Background()
+
+	fileIDA, _, symIDA := insertTestFileChunkSymbol(t, store, "a.go", "FuncA")
+	_, _, symIDB := insertTestFileChunkSymbol(t, store, "b.go", "FuncB")
+	fileIDC, _, symIDC := insertTestFileChunkSymbol(t, store, "c.go", "FuncC")
+
+	// A->B and C->B
+	if err := db.WithWriteTx(func(tx *sql.Tx) error {
+		if err := store.InsertEdges(ctx, tx, fileIDA, []types.EdgeRecord{
+			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
+		}, map[string]int64{"FuncA": symIDA, "FuncB": symIDB}); err != nil {
+			return err
+		}
+		return store.InsertEdges(ctx, tx, fileIDC, []types.EdgeRecord{
+			{SrcSymbolName: "FuncC", DstSymbolName: "FuncB", Kind: "calls"},
+		}, map[string]int64{"FuncC": symIDC, "FuncB": symIDB})
+	}); err != nil {
+		t.Fatalf("InsertEdges: %v", err)
+	}
+
+	// B has incoming from A and C.
+	// direction="both" should return both incoming and outgoing neighbors.
+	neighbors, err := store.Neighbors(ctx, symIDB, 1, "both")
+	if err != nil {
+		t.Fatalf("Neighbors(both): %v", err)
+	}
+
+	// B has callers A and C (incoming), and no callees (outgoing).
+	got := make(map[int64]bool)
+	for _, n := range neighbors {
+		got[n] = true
+	}
+	if !got[symIDA] {
+		t.Error("expected A in B's 'both' neighbors (incoming)")
+	}
+	if !got[symIDC] {
+		t.Error("expected C in B's 'both' neighbors (incoming)")
+	}
+}
+
+func TestNeighbors_InvalidDirection(t *testing.T) {
+	t.Parallel()
+	_, store := setupTestDB(t)
+	ctx := context.Background()
+
+	_, _, symID := insertTestFileChunkSymbol(t, store, "a.go", "Func")
+
+	_, err := store.Neighbors(ctx, symID, 1, "sideways")
+	if err == nil {
+		t.Fatal("expected error for invalid direction")
+	}
+}
+
+func TestNeighbors_DepthClampBelow(t *testing.T) {
+	t.Parallel()
+	db, store := setupTestDB(t)
+	ctx := context.Background()
+
+	fileID, _, symIDA := insertTestFileChunkSymbol(t, store, "a.go", "FuncA")
+	_, _, symIDB := insertTestFileChunkSymbol(t, store, "b.go", "FuncB")
+
+	if err := db.WithWriteTx(func(tx *sql.Tx) error {
+		return store.InsertEdges(ctx, tx, fileID, []types.EdgeRecord{
+			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
+		}, map[string]int64{"FuncA": symIDA, "FuncB": symIDB})
+	}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Depth 0 should be clamped to 1 and still return neighbors.
+	neighbors, err := store.Neighbors(ctx, symIDA, 0, "outgoing")
+	if err != nil {
+		t.Fatalf("Neighbors(depth=0): %v", err)
+	}
+	if len(neighbors) != 1 || neighbors[0] != symIDB {
+		t.Errorf("expected [%d], got %v", symIDB, neighbors)
+	}
+}
+
+func TestNeighbors_DepthClampAbove(t *testing.T) {
+	t.Parallel()
+	db, store := setupTestDB(t)
+	ctx := context.Background()
+
+	fileID, _, symIDA := insertTestFileChunkSymbol(t, store, "a.go", "FuncA")
+	_, _, symIDB := insertTestFileChunkSymbol(t, store, "b.go", "FuncB")
+
+	if err := db.WithWriteTx(func(tx *sql.Tx) error {
+		return store.InsertEdges(ctx, tx, fileID, []types.EdgeRecord{
+			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
+		}, map[string]int64{"FuncA": symIDA, "FuncB": symIDB})
+	}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Depth 99 should be clamped to 10 and still work without error.
+	neighbors, err := store.Neighbors(ctx, symIDA, 99, "outgoing")
+	if err != nil {
+		t.Fatalf("Neighbors(depth=99): %v", err)
+	}
+	if len(neighbors) != 1 || neighbors[0] != symIDB {
+		t.Errorf("expected [%d], got %v", symIDB, neighbors)
+	}
+}
+
+func TestInsertEdges_SkipUnknownSrc(t *testing.T) {
+	t.Parallel()
+	db, store := setupTestDB(t)
+	ctx := context.Background()
+
+	fileID, _, symIDA := insertTestFileChunkSymbol(t, store, "a.go", "FuncA")
+	_, _, symIDB := insertTestFileChunkSymbol(t, store, "b.go", "FuncB")
+
+	// Edge where src is not in symbolIDs map (srcID == 0) -- should be skipped.
+	edges := []types.EdgeRecord{
+		{SrcSymbolName: "UnknownSrc", DstSymbolName: "FuncB", Kind: "calls"},
+		{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
+	}
+	symbolIDs := map[string]int64{
+		"FuncA": symIDA,
+		"FuncB": symIDB,
+	}
+
+	err := db.WithWriteTx(func(tx *sql.Tx) error {
+		return store.InsertEdges(ctx, tx, fileID, edges, symbolIDs)
+	})
+	if err != nil {
+		t.Fatalf("InsertEdges: %v", err)
+	}
+
+	// Only A->B should exist, not UnknownSrc->B.
+	neighbors, err := store.Neighbors(ctx, symIDA, 1, "outgoing")
+	if err != nil {
+		t.Fatalf("Neighbors: %v", err)
+	}
+	if len(neighbors) != 1 || neighbors[0] != symIDB {
+		t.Errorf("expected [%d], got %v", symIDB, neighbors)
+	}
+}
+
+func TestInsertEdges_CrossFileLookup(t *testing.T) {
+	t.Parallel()
+	db, store := setupTestDB(t)
+	ctx := context.Background()
+
+	// FuncA is in file a.go, FuncB is in file b.go.
+	// Insert edge from A->B where B is NOT in the symbolIDs map.
+	// This exercises the lookupSymbolIDTx path (dst lookup via tx).
+	fileIDA, _, symIDA := insertTestFileChunkSymbol(t, store, "a.go", "FuncA")
+	_, _, symIDB := insertTestFileChunkSymbol(t, store, "b.go", "FuncB")
+
+	edges := []types.EdgeRecord{
+		{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
+	}
+	// Only include FuncA in the symbolIDs map -- FuncB must be looked up.
+	symbolIDs := map[string]int64{
+		"FuncA": symIDA,
+	}
+
+	err := db.WithWriteTx(func(tx *sql.Tx) error {
+		return store.InsertEdges(ctx, tx, fileIDA, edges, symbolIDs)
+	})
+	if err != nil {
+		t.Fatalf("InsertEdges: %v", err)
+	}
+
+	// Verify the edge was resolved via cross-file lookup.
+	neighbors, err := store.Neighbors(ctx, symIDA, 1, "outgoing")
+	if err != nil {
+		t.Fatalf("Neighbors: %v", err)
+	}
+	if len(neighbors) != 1 || neighbors[0] != symIDB {
+		t.Errorf("expected [%d], got %v", symIDB, neighbors)
+	}
+}
+
+func TestResolvePendingEdges_NoMatch(t *testing.T) {
+	t.Parallel()
+	db, store := setupTestDB(t)
+	ctx := context.Background()
+
+	fileID, _, symIDA := insertTestFileChunkSymbol(t, store, "a.go", "FuncA")
+
+	// Insert pending edge for FuncZ.
+	err := db.WithWriteTx(func(tx *sql.Tx) error {
+		return store.InsertEdges(ctx, tx, fileID, []types.EdgeRecord{
+			{SrcSymbolName: "FuncA", DstSymbolName: "FuncZ", Kind: "calls"},
+		}, map[string]int64{"FuncA": symIDA})
+	})
+	if err != nil {
+		t.Fatalf("InsertEdges: %v", err)
+	}
+
+	// Resolve with a name that does NOT match any pending edge.
+	err = db.WithWriteTx(func(tx *sql.Tx) error {
+		return store.ResolvePendingEdges(ctx, tx, []string{"FuncNope"})
+	})
+	if err != nil {
+		t.Fatalf("ResolvePendingEdges: %v", err)
+	}
+
+	// Pending edge should still be there.
+	var count int
+	db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pending_edges WHERE dst_symbol_name = 'FuncZ'").Scan(&count)
+	if count != 1 {
+		t.Errorf("expected pending edge to remain, got count=%d", count)
+	}
+}
+
