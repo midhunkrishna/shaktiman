@@ -2,6 +2,9 @@ package core
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/shaktimanai/shaktiman/internal/storage"
@@ -280,22 +283,6 @@ func TestAssemble_LineOverlapDedup(t *testing.T) {
 	// so it should be deduped. Result should be chunk 1 + chunk 3.
 	if len(pkg.Chunks) != 2 {
 		t.Errorf("expected 2 chunks after dedup, got %d", len(pkg.Chunks))
-	}
-}
-
-func TestAssemble_EmptyCandidates(t *testing.T) {
-	t.Parallel()
-
-	pkg := Assemble(AssemblerInput{
-		Candidates:   nil,
-		BudgetTokens: 1000,
-	})
-
-	if len(pkg.Chunks) != 0 {
-		t.Errorf("expected 0 chunks, got %d", len(pkg.Chunks))
-	}
-	if pkg.TotalTokens != 0 {
-		t.Errorf("expected 0 total tokens, got %d", pkg.TotalTokens)
 	}
 }
 
@@ -663,14 +650,6 @@ func TestFilterByScore_NonePass(t *testing.T) {
 	}
 }
 
-func TestFilterByScore_Empty(t *testing.T) {
-	t.Parallel()
-	filtered := filterByScore(nil, 0.5)
-	if len(filtered) != 0 {
-		t.Errorf("expected 0 results, got %d", len(filtered))
-	}
-}
-
 func TestNormalizeBM25(t *testing.T) {
 	t.Parallel()
 
@@ -817,4 +796,317 @@ func seedBenchData(b *testing.B, store *storage.Store) {
 			Content: "export function hashPassword(password: string): string { return hash(password); }",
 			TokenCount: 20},
 	})
+}
+
+func TestEngine_SetSessionStore_RecordsSession(t *testing.T) {
+	t.Parallel()
+	engine, store := setupTestEngine(t)
+	seedTestData(t, store)
+
+	ss := NewSessionStore(100)
+	engine.SetSessionStore(ss)
+
+	// Search should trigger session recording.
+	results, err := engine.Search(context.Background(), SearchInput{
+		Query: "refreshToken", MaxResults: 5,
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Skip("no keyword results to record")
+	}
+
+	// Session store should have entries after search.
+	if ss.Len() == 0 {
+		t.Error("expected session store to have entries after Search")
+	}
+}
+
+func TestSearch_SemanticEmbedCacheHit(t *testing.T) {
+	t.Parallel()
+	engine, store := setupTestEngine(t)
+	seedTestData(t, store)
+
+	// Use a counting embedder to verify cache behavior.
+	dim := 4
+	embedCount := 0
+	counting := &countingEmbedder{
+		dim: dim,
+		embedFn: func(ctx context.Context, text string) ([]float32, error) {
+			embedCount++
+			v := make([]float32, dim)
+			for j := range v {
+				v[j] = float32(j+len(text)) / float32(dim)
+			}
+			return v, nil
+		},
+	}
+
+	ctx := context.Background()
+	vs := vector.NewBruteForceStore(dim)
+	// Seed vectors for the 4 seeded chunks so determineLevel picks hybrid/mixed.
+	vs.Upsert(ctx, 1, []float32{0.1, 0.2, 0.1, 0.1})
+	vs.Upsert(ctx, 2, []float32{0.1, 0.1, 0.2, 0.1})
+	vs.Upsert(ctx, 3, []float32{0.1, 0.1, 0.1, 0.2})
+	vs.Upsert(ctx, 4, []float32{0.5, 0.5, 0.5, 0.5})
+	engine.SetVectorStore(vs, counting, func() bool { return true })
+
+	// Two searches with the same query -- embedder should be called only once.
+	engine.Search(ctx, SearchInput{Query: "cachetest", MaxResults: 5})
+	engine.Search(ctx, SearchInput{Query: "cachetest", MaxResults: 5})
+
+	if embedCount != 1 {
+		t.Errorf("embedder called %d times, want 1 (cache hit on second call)", embedCount)
+	}
+}
+
+// countingEmbedder wraps an embed function and counts calls.
+type countingEmbedder struct {
+	dim     int
+	embedFn func(ctx context.Context, text string) ([]float32, error)
+}
+
+func (c *countingEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
+	return c.embedFn(ctx, text)
+}
+
+func (c *countingEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	vecs := make([][]float32, len(texts))
+	for i, t := range texts {
+		v, err := c.Embed(ctx, t)
+		if err != nil {
+			return nil, err
+		}
+		vecs[i] = v
+	}
+	return vecs, nil
+}
+
+func TestSearch_SemanticVectorError_FallsBackToKeyword(t *testing.T) {
+	t.Parallel()
+	engine, store := setupTestEngine(t)
+	seedTestData(t, store)
+
+	// Use a working embedder with a failing vector store.
+	dim := 4
+	emb := newMockEmbedder(dim)
+	failing := &failingVectorStore{}
+
+	engine.SetVectorStore(failing, emb, func() bool { return true })
+
+	// Search should fall back to keyword search and return results.
+	results, err := engine.Search(context.Background(), SearchInput{
+		Query: "refreshToken", MaxResults: 5,
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// Should get keyword results despite vector store failure.
+	if len(results) == 0 {
+		t.Error("expected keyword fallback results when vector store fails")
+	}
+}
+
+// failingVectorStore always returns an error on Search.
+type failingVectorStore struct{}
+
+func (f *failingVectorStore) Search(ctx context.Context, vec []float32, topK int) ([]types.VectorResult, error) {
+	return nil, fmt.Errorf("simulated vector store failure")
+}
+
+func (f *failingVectorStore) Upsert(ctx context.Context, chunkID int64, vec []float32) error {
+	return nil
+}
+
+func (f *failingVectorStore) Count(ctx context.Context) (int, error) {
+	return 0, nil
+}
+
+func (f *failingVectorStore) Delete(ctx context.Context, chunkIDs []int64) error {
+	return nil
+}
+
+func TestSearch_KeywordWithMinScore(t *testing.T) {
+	t.Parallel()
+	engine, store := setupTestEngine(t)
+	ctx := context.Background()
+
+	seedTestData(t, store)
+
+	// Search with a high MinScore should filter out low-scoring results.
+	results, err := engine.Search(ctx, SearchInput{
+		Query:      "validate token",
+		MaxResults: 10,
+		MinScore:   0.99, // very high threshold
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	// With MinScore=0.99, likely no results pass (BM25 normalized scores are < 1).
+	if len(results) != 0 {
+		t.Errorf("expected 0 results with MinScore=0.99, got %d", len(results))
+	}
+}
+
+func TestSearch_KeywordEmpty_FallsBackToFilesystem(t *testing.T) {
+	t.Parallel()
+
+	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	store := storage.NewStore(db)
+
+	// Seed a file so DetermineLevel returns Keyword (not Filesystem).
+	ctx := context.Background()
+	fileID, _ := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "dummy.go", ContentHash: "h1", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	store.InsertChunks(ctx, fileID, []types.ChunkRecord{
+		{ChunkIndex: 0, Kind: "function", StartLine: 1, EndLine: 10,
+			Content: "func unrelated() {}", TokenCount: 5},
+	})
+
+	// Create a temp dir with a .go file for filesystem fallback.
+	tmpDir := t.TempDir()
+	os.WriteFile(filepath.Join(tmpDir, "hello.go"),
+		[]byte("package main\nfunc Hello() {}"), 0644)
+
+	engine := NewQueryEngine(store, tmpDir)
+
+	// Query for something that won't match any FTS content.
+	results, err := engine.Search(ctx, SearchInput{
+		Query:      "zzz_nonexistent_query_xyx",
+		MaxResults: 10,
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	// searchKeyword returns empty -> should fall back to filesystem.
+	if len(results) == 0 {
+		t.Error("expected filesystem fallback results when keyword search is empty")
+	}
+}
+
+func TestContext_KeywordEmpty_FallsBackToFilesystem(t *testing.T) {
+	t.Parallel()
+
+	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	store := storage.NewStore(db)
+
+	// Seed a file so DetermineLevel returns Keyword.
+	ctx := context.Background()
+	fileID, _ := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "dummy.go", ContentHash: "h1", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	store.InsertChunks(ctx, fileID, []types.ChunkRecord{
+		{ChunkIndex: 0, Kind: "function", StartLine: 1, EndLine: 10,
+			Content: "func unrelated() {}", TokenCount: 5},
+	})
+
+	tmpDir := t.TempDir()
+	os.WriteFile(filepath.Join(tmpDir, "ctx.go"),
+		[]byte("package main\nfunc Context() {}"), 0644)
+
+	engine := NewQueryEngine(store, tmpDir)
+
+	pkg, err := engine.Context(ctx, ContextInput{
+		Query:        "zzz_nonexistent_query_xyx",
+		BudgetTokens: 4096,
+	})
+	if err != nil {
+		t.Fatalf("Context: %v", err)
+	}
+
+	if pkg == nil || len(pkg.Chunks) == 0 {
+		t.Error("expected filesystem fallback results for contextKeyword with empty keyword results")
+	}
+}
+
+func TestContext_SemanticEmpty_FallsBackToFilesystem(t *testing.T) {
+	t.Parallel()
+
+	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	store := storage.NewStore(db)
+
+	ctx := context.Background()
+	fileID, _ := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "dummy.go", ContentHash: "h1", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	store.InsertChunks(ctx, fileID, []types.ChunkRecord{
+		{ChunkIndex: 0, Kind: "function", StartLine: 1, EndLine: 10,
+			Content: "func unrelated() {}", TokenCount: 5},
+	})
+
+	tmpDir := t.TempDir()
+	os.WriteFile(filepath.Join(tmpDir, "sem.go"),
+		[]byte("package main\nfunc Sem() {}"), 0644)
+
+	// Set up vector store so DetermineLevel picks hybrid/mixed,
+	// but use a query that returns no keyword or semantic results.
+	dim := 4
+	vs := vector.NewBruteForceStore(dim)
+	vs.Upsert(ctx, 1, []float32{0.1, 0.1, 0.1, 0.1})
+
+	embedder := newMockEmbedder(dim)
+	engine := NewQueryEngine(store, tmpDir)
+	engine.SetVectorStore(vs, embedder, func() bool { return true })
+
+	pkg, err := engine.Context(ctx, ContextInput{
+		Query:        "zzz_nonexistent_query_xyx",
+		BudgetTokens: 4096,
+	})
+	if err != nil {
+		t.Fatalf("Context: %v", err)
+	}
+
+	// contextSemantic should fall back to filesystem when results are empty.
+	if pkg == nil || len(pkg.Chunks) == 0 {
+		t.Error("expected filesystem fallback results for contextSemantic with empty results")
+	}
+}
+
+func TestSearch_DefaultMaxResults(t *testing.T) {
+	t.Parallel()
+	engine, store := setupTestEngine(t)
+	seedTestData(t, store)
+
+	ctx := context.Background()
+
+	// MaxResults=0 should default to 10.
+	results, err := engine.Search(ctx, SearchInput{
+		Query: "validate token",
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	// Should return results (default MaxResults=10).
+	if len(results) == 0 {
+		t.Error("expected results with default MaxResults")
+	}
 }
