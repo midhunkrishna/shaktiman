@@ -264,6 +264,7 @@ func (ep *EnrichmentPipeline) EnrichFile(ctx context.Context, event FileChangeEv
 		return fmt.Errorf("check file %s: %w", event.Path, err)
 	}
 	if existing != nil && existing.ContentHash == hash {
+		ep.logger.Debug("skip unchanged", "path", event.Path)
 		return nil // no change
 	}
 
@@ -284,6 +285,8 @@ func (ep *EnrichmentPipeline) EnrichFile(ctx context.Context, event FileChangeEv
 	if err != nil {
 		return fmt.Errorf("parse %s: %w", event.Path, err)
 	}
+
+	ep.logger.Debug("parsed", "path", event.Path, "chunks", len(result.Chunks), "symbols", len(result.Symbols))
 
 	info, err := os.Stat(event.AbsPath)
 	if err != nil {
@@ -310,6 +313,7 @@ func (ep *EnrichmentPipeline) EnrichFile(ctx context.Context, event FileChangeEv
 	}); err != nil {
 		return fmt.Errorf("submit enrich job for %s: %w", event.Path, err)
 	}
+	ep.logger.Debug("enrich submitted", "path", event.Path)
 	return nil
 }
 

@@ -162,6 +162,10 @@ func (w *Watcher) flushPending(debounce time.Duration) {
 	}
 	w.mu.Unlock()
 
+	if len(ready) > 0 {
+		w.logger.Debug("flush", "files", len(ready))
+	}
+
 	// Detect likely branch switch: >20 source files changed in one flush
 	if len(ready) > 20 {
 		select {
@@ -182,6 +186,7 @@ func (w *Watcher) flushPending(debounce time.Duration) {
 			changeType = "delete"
 		}
 
+		w.logger.Debug("emit", "path", relPath, "type", changeType)
 		select {
 		case w.eventCh <- FileChangeEvent{
 			Path:       relPath,

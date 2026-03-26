@@ -132,10 +132,11 @@ func (wm *WriterManager) RemoveProducer() { wm.producers.Done() }
 func (wm *WriterManager) Done() <-chan struct{} { return wm.done }
 
 func (wm *WriterManager) processJob(ctx context.Context, job types.WriteJob) {
+	start := time.Now()
 	var staleChunkIDs []int64
 	err := wm.store.DB().WithWriteTx(func(tx *sql.Tx) error {
 		var txErr error
-		staleChunkIDs, txErr = processWriteJob(ctx, tx, wm.store, job)
+		staleChunkIDs, txErr = processWriteJob(ctx, tx, wm.store, wm.logger, job)
 		return txErr
 	})
 	if err != nil {
@@ -157,6 +158,7 @@ func (wm *WriterManager) processJob(ctx context.Context, job types.WriteJob) {
 			wm.logger.Warn("vector cleanup failed", "chunks", len(staleChunkIDs), "err", delErr)
 		}
 	}
+	wm.logger.Debug("job done", "type", job.Type, "file", job.FilePath, "duration_ms", time.Since(start).Milliseconds())
 	if job.Done != nil {
 		job.Done <- err
 	}
@@ -164,10 +166,10 @@ func (wm *WriterManager) processJob(ctx context.Context, job types.WriteJob) {
 
 // processWriteJob executes a single write job within a transaction.
 // Returns IDs of chunks that were deleted (for vector store cleanup).
-func processWriteJob(ctx context.Context, tx *sql.Tx, store *storage.Store, job types.WriteJob) ([]int64, error) {
+func processWriteJob(ctx context.Context, tx *sql.Tx, store *storage.Store, logger *slog.Logger, job types.WriteJob) ([]int64, error) {
 	switch job.Type {
 	case types.WriteJobEnrichment:
-		return processEnrichmentJob(ctx, tx, store, job)
+		return processEnrichmentJob(ctx, tx, store, logger, job)
 	case types.WriteJobFileDelete:
 		stale := collectChunkIDsByPath(ctx, tx, job.FilePath)
 		_, err := tx.ExecContext(ctx, "DELETE FROM files WHERE path = ?", job.FilePath)
@@ -200,7 +202,7 @@ func collectChunkIDsByPath(ctx context.Context, tx *sql.Tx, path string) []int64
 
 // processEnrichmentJob handles an enrichment write: upsert file, replace chunks + symbols.
 // Returns IDs of old chunks that were replaced (for vector store cleanup).
-func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store, job types.WriteJob) ([]int64, error) {
+func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store, logger *slog.Logger, job types.WriteJob) ([]int64, error) {
 	if job.File == nil {
 		return nil, fmt.Errorf("enrichment job for %s has nil file", job.FilePath)
 	}
@@ -212,14 +214,15 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 		err := tx.QueryRowContext(ctx, "SELECT content_hash, indexed_at FROM files WHERE path = ?",
 			job.FilePath).Scan(&currentHash, &indexedAt)
 		if err == nil && currentHash == job.ContentHash {
-			// Already indexed with same content — skip
+			logger.Debug("skip same hash", "file", job.FilePath)
 			return nil, nil
 		}
 		// Stale check: if DB was updated after job was created
 		if err == nil && indexedAt.Valid {
 			dbTime, tErr := time.Parse(time.RFC3339Nano, indexedAt.String)
 			if tErr == nil && dbTime.After(job.Timestamp) {
-				return nil, nil // stale job
+				logger.Debug("skip stale job", "file", job.FilePath)
+				return nil, nil
 			}
 		}
 	}

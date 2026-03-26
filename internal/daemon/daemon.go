@@ -396,11 +396,13 @@ func (d *Daemon) startWatcher(ctx context.Context, pipeline *EnrichmentPipeline)
 	go func() {
 		defer d.writer.RemoveProducer()
 		for event := range w.Events() {
+			start := time.Now()
 			if err := pipeline.EnrichFile(ctx, event); err != nil {
 				d.logger.Warn("incremental enrich failed",
 					"path", event.Path,
 					"err", err)
 			}
+			d.logger.Debug("watcher enrich", "path", event.Path, "type", event.ChangeType, "duration_ms", time.Since(start).Milliseconds())
 		}
 	}()
 
