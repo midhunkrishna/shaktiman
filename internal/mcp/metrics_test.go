@@ -481,3 +481,121 @@ func TestMetricsRecorder_BatchInsert(t *testing.T) {
 	cancel()
 	<-done
 }
+
+func TestInsertToolCall_Success(t *testing.T) {
+	t.Parallel()
+	db := testDB(t)
+	rec := ToolCallRecord{
+		SessionID:  "insert-test",
+		Timestamp:  time.Now(),
+		ToolName:   "search",
+		ArgsJSON:   `{"query":"test"}`,
+		DurationMs: 100,
+		ResultCount: 5,
+	}
+	if err := InsertToolCall(db, rec); err != nil {
+		t.Fatalf("InsertToolCall: %v", err)
+	}
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM tool_calls").Scan(&count); err != nil {
+		t.Fatalf("count query: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("count = %d, want 1", count)
+	}
+}
+
+func TestMetricsRecorder_Pending(t *testing.T) {
+	t.Parallel()
+	db := testDB(t)
+	r := testRecorder(t, db, "pending-test")
+
+	if r.Pending() != 0 {
+		t.Errorf("Pending() = %d, want 0 initially", r.Pending())
+	}
+
+	r.Record(ToolCallRecord{Timestamp: time.Now(), ToolName: "a"})
+	r.Record(ToolCallRecord{Timestamp: time.Now(), ToolName: "b"})
+
+	if r.Pending() != 2 {
+		t.Errorf("Pending() = %d, want 2", r.Pending())
+	}
+}
+
+func TestFlush_BeginTxError(t *testing.T) {
+	t.Parallel()
+	db := testDB(t)
+	r := testRecorder(t, db, "flush-begin-err")
+
+	// Close the DB to force Begin() to fail.
+	db.Close()
+
+	// flush should log the error but not panic.
+	r.flush([]ToolCallRecord{
+		{Timestamp: time.Now(), ToolName: "tool-a", SessionID: "s"},
+	})
+}
+
+func TestFlush_PrepareError(t *testing.T) {
+	t.Parallel()
+	// Create a DB without the tool_calls table to force Prepare to fail.
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	r := testRecorder(t, db, "flush-prepare-err")
+
+	// flush should log the error but not panic.
+	r.flush([]ToolCallRecord{
+		{Timestamp: time.Now(), ToolName: "tool-b", SessionID: "s"},
+	})
+}
+
+func TestInsertToolCall_Error(t *testing.T) {
+	t.Parallel()
+	db := testDB(t)
+	db.Close() // close DB to force error
+
+	err := InsertToolCall(db, ToolCallRecord{
+		SessionID: "err-test",
+		Timestamp: time.Now(),
+		ToolName:  "search",
+	})
+	if err == nil {
+		t.Fatal("expected error from InsertToolCall on closed DB")
+	}
+}
+
+func TestInsertToolCall_IsErrorFlag(t *testing.T) {
+	t.Parallel()
+	db := testDB(t)
+
+	err := InsertToolCall(db, ToolCallRecord{
+		SessionID: "flag-test",
+		Timestamp: time.Now(),
+		ToolName:  "search",
+		IsError:   true,
+	})
+	if err != nil {
+		t.Fatalf("InsertToolCall: %v", err)
+	}
+
+	var isErr int
+	if err := db.QueryRow("SELECT is_error FROM tool_calls WHERE session_id = 'flag-test'").Scan(&isErr); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if isErr != 1 {
+		t.Errorf("is_error = %d, want 1", isErr)
+	}
+}
+
+func TestWithResultCount_Nil(t *testing.T) {
+	t.Parallel()
+	// withResultCount(nil, ...) should not panic.
+	result := withResultCount(nil, 5)
+	if result != nil {
+		t.Errorf("expected nil result, got %v", result)
+	}
+}
