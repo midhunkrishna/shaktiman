@@ -37,10 +37,18 @@ func NewEnrichmentPipeline(store *storage.Store, writer *WriterManager, workers 
 	}
 }
 
+// IndexProgress reports cold indexing progress.
+type IndexProgress struct {
+	Indexed int
+	Errors  int
+	Total   int
+}
+
 // IndexAllInput configures a cold indexing operation.
 type IndexAllInput struct {
 	ProjectRoot string
 	Files       []ScannedFile
+	OnProgress  func(IndexProgress) // optional; nil = no-op
 }
 
 // IndexAll performs cold indexing: parses all files and writes to the database.
@@ -114,10 +122,12 @@ func (ep *EnrichmentPipeline) IndexAll(ctx context.Context, input IndexAllInput)
 
 				mu.Lock()
 				indexed++
-				if indexed%100 == 0 {
-					ep.logger.Info("indexing progress",
-						"indexed", indexed,
-						"total", len(needsIndex))
+				if input.OnProgress != nil {
+					input.OnProgress(IndexProgress{
+						Indexed: indexed,
+						Errors:  errCount,
+						Total:   len(needsIndex),
+					})
 				}
 				mu.Unlock()
 			}

@@ -113,18 +113,27 @@ Create a `.mcp.json` file in the root of your project, and add:
 }
 ```
 
-We also need to tell Claude to use the mcp server. Add this to the projects `CLAUDE.md` file.
+We also need to tell Claude to use the mcp server. Add this to the projects `CLAUDE.md` file. A full template is available at [`docs/reference/sample_claude.md`](docs/reference/sample_claude.md).
 
 ```
 ## MCP Tools (via shaktimand) — MANDATORY
 
-**CRITICAL: Always use shaktiman MCP tools for code search and exploration. This applies to the main agent AND all subagents.** When delegating to any subagent, explicitly instruct it to use `mcp__shaktiman__*` tools instead of Read/Grep/Glob. Subagents do not automatically inherit these instructions.
+**STOP RULE: Before calling Grep, Glob, or Bash grep/find/rg — ask:
+"Can `mcp__shaktiman__*` answer this?" If yes, use MCP. No exceptions.**
+
+This applies to the main agent AND all subagents. When delegating to any subagent,
+explicitly instruct it to use `mcp__shaktiman__*` tools. Subagents do not automatically
+inherit these instructions.
 
 ### Subagent delegation template
 
 When spawning any subagent that needs to read or search code, include this in the prompt:
 
-> **IMPORTANT: Use the MCP tools `mcp__shaktiman__search`, `mcp__shaktiman__context`, `mcp__shaktiman__symbols`, `mcp__shaktiman__dependencies`, `mcp__shaktiman__diff`, and `mcp__shaktiman__summary` for all code search and exploration. Do NOT use Read/Grep/Glob unless MCP tools return no results or insufficient results.**
+> **HARD RULE: Do NOT call Grep or Glob. Use `mcp__shaktiman__search`,
+> `mcp__shaktiman__symbols`, and `mcp__shaktiman__dependencies` for ALL code search,
+> caller tracing, and file discovery. The ONLY exceptions are: reading a file by exact
+> known path (use Read), finding non-code files (.md, .json, .yaml), or when MCP tools
+> return no results.**
 
 ### Tool mapping
 
@@ -133,17 +142,24 @@ When spawning any subagent that needs to read or search code, include this in th
 | Grep, Glob | `mcp__shaktiman__search` | Finding code by keyword or concept |
 | Read (whole files) | `mcp__shaktiman__context` | Getting code context for a task (budget-fitted, ranked, deduplicated) |
 | Grep (definitions) | `mcp__shaktiman__symbols` | Looking up function/class/type definitions by name |
-| (no equivalent) | `mcp__shaktiman__dependencies` | Tracing callers/callees of a symbol |
+| Grep (find callers) | `mcp__shaktiman__dependencies` | Finding all call sites of a function (essential for refactoring) |
 | (no equivalent) | `mcp__shaktiman__diff` | Recent file changes and affected symbols |
 | (no equivalent) | `mcp__shaktiman__enrichment_status` | Checking indexing progress |
 | (no equivalent) | `mcp__shaktiman__summary` | Workspace overview (files, languages, symbols, health) |
 
-### Fallback policy
+### Common mistakes — do NOT do these
 
-Use Read/Grep/Glob ONLY when:
-1. Shaktiman MCP tools return no results or insufficient results
-2. You need to read a specific file by exact path (e.g., go.mod, CLAUDE.md)
-3. You need to write or edit files (MCP tools are read-only)
+| Bad | Good | Why |
+|---|---|---|
+| `Grep ".FuncName("` to find callers | `dependencies symbol:"FuncName" direction:"callers"` | Structured, finds indirect callers |
+| `Grep "mock.*Server"` in test file | `search query:"mock server" path:"internal/"` | Semantic match, fewer tokens |
+| `Glob "*_test.go"` to find tests | `search query:"func Test" path:"pkg/"` | Finds by content, not filename |
+
+### Fallback to Grep/Glob — ONLY when ALL of these are true
+
+- [ ] You tried MCP search/symbols/dependencies first and got insufficient results, OR
+- [ ] The file is non-code (.md, .json, .yaml, .toml) that Shaktiman doesn't index, OR
+- [ ] You need the exact file path for Read/Edit (not searching)
 ```
 
 That's it. Claude Code will now have access to these tools:

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -66,8 +67,29 @@ func indexCmd() *cobra.Command {
 			}
 
 			ctx := context.Background()
-			if err := d.IndexProject(ctx); err != nil {
+			tty := isTTY()
+
+			// Index with progress
+			var lastIndexPct int
+			if err := d.IndexProject(ctx, func(p daemon.IndexProgress) {
+				if p.Total == 0 {
+					return
+				}
+				pct := p.Indexed * 100 / p.Total
+				if tty {
+					fmt.Fprintf(os.Stdout, "\rIndexing: %d/%d files (%d%%)", p.Indexed, p.Total, pct)
+				} else if pct >= lastIndexPct+10 || p.Indexed == p.Total {
+					fmt.Fprintf(os.Stdout, "Indexing: %d/%d files (%d%%)\n", p.Indexed, p.Total, pct)
+					lastIndexPct = pct
+				}
+			}); err != nil {
+				if tty {
+					fmt.Fprintln(os.Stdout)
+				}
 				return fmt.Errorf("index: %w", err)
+			}
+			if tty {
+				fmt.Fprintln(os.Stdout)
 			}
 
 			stats, err := d.Store().GetIndexStats(ctx)
@@ -82,17 +104,61 @@ func indexCmd() *cobra.Command {
 			}
 
 			if embed {
-				count, err := d.EmbedProject(ctx)
-				if err != nil {
-					return fmt.Errorf("embed: %w", err)
+				var lastEmbedPct int
+				var embedTotal int
+				count, err := d.EmbedProject(ctx, func(p types.EmbedProgress) {
+					embedTotal = p.Total
+					if p.Warning != "" {
+						if tty {
+							fmt.Fprintf(os.Stdout, "\r%s%s", p.Warning, strings.Repeat(" ", 20))
+						} else {
+							fmt.Fprintf(os.Stdout, "%s\n", p.Warning)
+						}
+						return
+					}
+					if p.Total == 0 {
+						return
+					}
+					pct := p.Embedded * 100 / p.Total
+					if tty {
+						fmt.Fprintf(os.Stdout, "\rEmbedding: %d/%d chunks (%d%%)", p.Embedded, p.Total, pct)
+					} else if pct >= lastEmbedPct+10 || p.Embedded == p.Total {
+						fmt.Fprintf(os.Stdout, "Embedding: %d/%d chunks (%d%%)\n", p.Embedded, p.Total, pct)
+						lastEmbedPct = pct
+					}
+				})
+				if tty {
+					fmt.Fprintln(os.Stdout)
 				}
-				fmt.Printf("Embedded: %d chunks → %s\n", count, cfg.EmbeddingsPath)
+				if err != nil {
+					// Ollama unreachable: print friendly message and continue
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					fmt.Fprintf(os.Stderr, "Indexing completed without embeddings. Run 'shaktiman index --embed' to retry.\n")
+					if count > 0 {
+						fmt.Printf("Embedded: %d chunks (partial) → %s\n", count, cfg.EmbeddingsPath)
+					}
+				} else {
+					if count < embedTotal && embedTotal > 0 {
+						fmt.Fprintf(os.Stderr, "Warning: %d/%d chunks could not be embedded (Ollama errors).\n", embedTotal-count, embedTotal)
+						fmt.Fprintf(os.Stderr, "Run 'shaktiman index --embed' to retry failed chunks.\n")
+					}
+					fmt.Printf("Embedded: %d chunks → %s\n", count, cfg.EmbeddingsPath)
+				}
 			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&embed, "embed", false, "Also generate embeddings (requires Ollama)")
 	return cmd
+}
+
+// isTTY returns true if stdout is a terminal (not piped or redirected).
+func isTTY() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
 
 func statusCmd() *cobra.Command {

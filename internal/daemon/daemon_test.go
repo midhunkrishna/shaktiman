@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -50,7 +51,7 @@ func TestIntegration_IndexAndSearch(t *testing.T) {
 	ctx := context.Background()
 
 	// Run cold indexing synchronously
-	if err := d.IndexProject(ctx); err != nil {
+	if err := d.IndexProject(ctx, nil); err != nil {
 		t.Fatalf("IndexProject: %v", err)
 	}
 
@@ -484,7 +485,7 @@ func TestIntegration_LanguageCompatibility(t *testing.T) {
 			}
 
 			// Step 2: Index — full cold index through the daemon
-			if err := d.IndexProject(ctx); err != nil {
+			if err := d.IndexProject(ctx, nil); err != nil {
 				t.Fatalf("IndexProject: %v", err)
 			}
 
@@ -714,7 +715,7 @@ export function createClient(url) {
 	}
 
 	// Index everything
-	if err := d.IndexProject(ctx); err != nil {
+	if err := d.IndexProject(ctx, nil); err != nil {
 		t.Fatalf("IndexProject: %v", err)
 	}
 
@@ -792,7 +793,7 @@ func TestIntegration_IncrementalIndex_NewLanguage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New daemon (round 1): %v", err)
 	}
-	if err := d1.IndexProject(ctx); err != nil {
+	if err := d1.IndexProject(ctx, nil); err != nil {
 		t.Fatalf("IndexProject (round 1): %v", err)
 	}
 
@@ -831,7 +832,7 @@ public class App {
 	if err != nil {
 		t.Fatalf("New daemon (round 2): %v", err)
 	}
-	if err := d2.IndexProject(ctx); err != nil {
+	if err := d2.IndexProject(ctx, nil); err != nil {
 		t.Fatalf("IndexProject (round 2): %v", err)
 	}
 
@@ -879,6 +880,11 @@ func newMockOllama(dims int, requestCount *atomic.Int64) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if requestCount != nil {
 			requestCount.Add(1)
+		}
+		// Health check endpoint used by EmbedderHealthy
+		if r.Method == http.MethodGet && r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			return
 		}
 		if r.Method != http.MethodPost || r.URL.Path != "/api/embed" {
 			http.NotFound(w, r)
@@ -990,7 +996,7 @@ func TestEmbedProject_LargeChunkCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New daemon (index): %v", err)
 	}
-	if err := d1.IndexProject(ctx); err != nil {
+	if err := d1.IndexProject(ctx, nil); err != nil {
 		t.Fatalf("IndexProject: %v", err)
 	}
 
@@ -1013,7 +1019,7 @@ func TestEmbedProject_LargeChunkCount(t *testing.T) {
 	}
 
 	// Embed all chunks.
-	count, err := d1.EmbedProject(ctx)
+	count, err := d1.EmbedProject(ctx, nil)
 	if err != nil {
 		t.Fatalf("EmbedProject: %v", err)
 	}
@@ -1071,7 +1077,7 @@ func TestEmbedProject_OllamaDown(t *testing.T) {
 		t.Fatalf("New daemon: %v", err)
 	}
 
-	if err := d.IndexProject(ctx); err != nil {
+	if err := d.IndexProject(ctx, nil); err != nil {
 		t.Fatalf("IndexProject: %v", err)
 	}
 
@@ -1088,7 +1094,7 @@ func TestEmbedProject_OllamaDown(t *testing.T) {
 	// Use a short timeout to avoid 57s of retry backoff starving parallel tests.
 	embedCtx, embedCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer embedCancel()
-	_, embedErr := d.EmbedProject(embedCtx)
+	_, embedErr := d.EmbedProject(embedCtx, nil)
 	if embedErr == nil {
 		t.Fatal("expected EmbedProject to return error when Ollama is down")
 	}
@@ -1142,11 +1148,11 @@ func TestEmbedProject_CrashRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New daemon (phase 1): %v", err)
 	}
-	if err := d1.IndexProject(ctx); err != nil {
+	if err := d1.IndexProject(ctx, nil); err != nil {
 		t.Fatalf("IndexProject (phase 1): %v", err)
 	}
 
-	count1, err := d1.EmbedProject(ctx)
+	count1, err := d1.EmbedProject(ctx, nil)
 	if err != nil {
 		t.Fatalf("EmbedProject (phase 1): %v", err)
 	}
@@ -1201,7 +1207,7 @@ func TestEmbedProject_CrashRecovery(t *testing.T) {
 
 	// EmbedProject should only re-embed the reset chunks (Has() reconciliation
 	// skips chunks that are already in the vector store loaded from disk).
-	count2, err := d2.EmbedProject(ctx)
+	count2, err := d2.EmbedProject(ctx, nil)
 	if err != nil {
 		t.Fatalf("EmbedProject (phase 2): %v", err)
 	}
@@ -1250,11 +1256,11 @@ func TestEmbedProject_IncrementalAfterCold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New daemon (phase 1): %v", err)
 	}
-	if err := d1.IndexProject(ctx); err != nil {
+	if err := d1.IndexProject(ctx, nil); err != nil {
 		t.Fatalf("IndexProject (phase 1): %v", err)
 	}
 
-	count1, err := d1.EmbedProject(ctx)
+	count1, err := d1.EmbedProject(ctx, nil)
 	if err != nil {
 		t.Fatalf("EmbedProject (phase 1): %v", err)
 	}
@@ -1289,7 +1295,7 @@ func TestEmbedProject_IncrementalAfterCold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New daemon (phase 2): %v", err)
 	}
-	if err := d2.IndexProject(ctx); err != nil {
+	if err := d2.IndexProject(ctx, nil); err != nil {
 		t.Fatalf("IndexProject (phase 2): %v", err)
 	}
 
@@ -1314,7 +1320,7 @@ func TestEmbedProject_IncrementalAfterCold(t *testing.T) {
 	}
 	t.Logf("Phase 2: %d chunks need embedding (new files)", needBefore2)
 
-	count2, err := d2.EmbedProject(ctx)
+	count2, err := d2.EmbedProject(ctx, nil)
 	if err != nil {
 		t.Fatalf("EmbedProject (phase 2): %v", err)
 	}
@@ -1335,4 +1341,132 @@ func TestEmbedProject_IncrementalAfterCold(t *testing.T) {
 	t.Logf("Phase 2: vector count increased from %d to %d", count1, count2)
 
 	d2.Stop()
+}
+
+// ── Phase 2: Progress Reporting Tests ──
+
+func TestIndexProgress_Callback(t *testing.T) {
+	t.Parallel()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	testdataRoot := filepath.Join(cwd, "..", "..", "testdata", "typescript_project")
+	if _, err := os.Stat(testdataRoot); os.IsNotExist(err) {
+		t.Skipf("testdata not found at %s", testdataRoot)
+	}
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	cfg := types.Config{
+		ProjectRoot:       testdataRoot,
+		DBPath:            dbPath,
+		EnrichmentWorkers: 2,
+		WriterChannelSize: 100,
+	}
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon: %v", err)
+	}
+	defer d.Stop()
+
+	ctx := context.Background()
+
+	var lastProgress IndexProgress
+	var callCount int
+	if err := d.IndexProject(ctx, func(p IndexProgress) {
+		callCount++
+		lastProgress = p
+	}); err != nil {
+		t.Fatalf("IndexProject: %v", err)
+	}
+
+	if callCount == 0 {
+		t.Fatal("expected OnProgress callback to fire at least once")
+	}
+	if lastProgress.Total == 0 {
+		t.Fatal("expected Total > 0 in last progress update")
+	}
+	if lastProgress.Indexed != lastProgress.Total {
+		t.Errorf("final progress: Indexed=%d, Total=%d — expected equal",
+			lastProgress.Indexed, lastProgress.Total)
+	}
+	t.Logf("IndexProgress: %d callbacks, final Indexed=%d Total=%d",
+		callCount, lastProgress.Indexed, lastProgress.Total)
+}
+
+func TestIndexProgress_NilCallback(t *testing.T) {
+	t.Parallel()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	testdataRoot := filepath.Join(cwd, "..", "..", "testdata", "typescript_project")
+	if _, err := os.Stat(testdataRoot); os.IsNotExist(err) {
+		t.Skipf("testdata not found at %s", testdataRoot)
+	}
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	cfg := types.Config{
+		ProjectRoot:       testdataRoot,
+		DBPath:            dbPath,
+		EnrichmentWorkers: 2,
+		WriterChannelSize: 100,
+	}
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon: %v", err)
+	}
+	defer d.Stop()
+
+	// nil callback should not panic.
+	if err := d.IndexProject(context.Background(), nil); err != nil {
+		t.Fatalf("IndexProject with nil callback: %v", err)
+	}
+}
+
+func TestEmbedProject_OllamaHealthCheck(t *testing.T) {
+	t.Parallel()
+
+	// Create and immediately close server to get an unreachable URL.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	unreachableURL := srv.URL
+	srv.Close()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeGoFiles(t, projectDir, 2, 2)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	embPath := filepath.Join(tmpDir, "embeddings.bin")
+	cfg := embedCfg(projectDir, dbPath, embPath, unreachableURL)
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon: %v", err)
+	}
+	defer d.Stop()
+
+	ctx := context.Background()
+	if err := d.IndexProject(ctx, nil); err != nil {
+		t.Fatalf("IndexProject: %v", err)
+	}
+
+	_, embedErr := d.EmbedProject(ctx, nil)
+	if embedErr == nil {
+		t.Fatal("expected EmbedProject to return error when Ollama is unreachable")
+	}
+	if !strings.Contains(embedErr.Error(), "not reachable") {
+		t.Errorf("expected 'not reachable' in error, got: %v", embedErr)
+	}
 }

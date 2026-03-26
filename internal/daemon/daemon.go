@@ -160,7 +160,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 
 		// Embed chunks after cold index using pull-based cursor
 		if d.embedWorker != nil {
-			if _, err := d.embedFromDB(ctx); err != nil {
+			if _, err := d.embedFromDB(ctx, nil); err != nil {
 				d.logger.Warn("cold-index embedding failed", "err", err)
 			}
 		}
@@ -235,7 +235,7 @@ func (d *Daemon) queueEmbeddings(ctx context.Context) {
 // It uses cursor-based DB pagination instead of the channel-based Submit path,
 // ensuring zero data loss regardless of chunk count.
 // Serialized via embedMu to prevent concurrent runs from cold-index and branch-switch.
-func (d *Daemon) embedFromDB(ctx context.Context) (int, error) {
+func (d *Daemon) embedFromDB(ctx context.Context, onProgress func(types.EmbedProgress)) (int, error) {
 	d.embedMu.Lock()
 	defer d.embedMu.Unlock()
 
@@ -250,34 +250,46 @@ func (d *Daemon) embedFromDB(ctx context.Context) (int, error) {
 		}
 	}
 
-	if err := d.embedWorker.RunFromDB(ctx, d.store, func(p types.EmbedProgress) {
-		d.logger.Info("embedding progress",
-			"embedded", p.Embedded, "total", p.Total)
-	}); err != nil {
-		return 0, fmt.Errorf("RunFromDB: %w", err)
+	if onProgress == nil {
+		onProgress = func(p types.EmbedProgress) {
+			d.logger.Info("embedding progress",
+				"embedded", p.Embedded, "total", p.Total)
+		}
 	}
 
+	err := d.embedWorker.RunFromDB(ctx, d.store, onProgress)
+
+	// Return vector count even on partial failure so callers can report progress.
 	count, _ := d.vectorStore.Count(ctx)
+	if err != nil {
+		return count, fmt.Errorf("RunFromDB: %w", err)
+	}
 	return count, nil
 }
 
 // EmbedProject runs the embedding pipeline synchronously. Used by CLI --embed.
 // Uses pull-based DB cursor (RunFromDB) for zero data loss at any scale.
-// Saves embeddings to disk on completion.
-func (d *Daemon) EmbedProject(ctx context.Context) (int, error) {
+// Saves embeddings to disk on completion (including partial failure).
+func (d *Daemon) EmbedProject(ctx context.Context, onProgress func(types.EmbedProgress)) (int, error) {
 	if d.embedWorker == nil {
 		return 0, fmt.Errorf("embedding not initialized (check Ollama is running at %s)", d.cfg.OllamaURL)
 	}
 
-	count, err := d.embedFromDB(ctx)
-	if err != nil {
-		return count, err
+	if !d.embedWorker.EmbedderHealthy(ctx) {
+		return 0, fmt.Errorf("Ollama is not reachable at %s", d.cfg.OllamaURL)
 	}
 
+	count, err := d.embedFromDB(ctx, onProgress)
+
+	// Save embeddings even on partial failure (crash safety).
 	if count > 0 {
-		if err := d.vectorStore.SaveToDisk(d.cfg.EmbeddingsPath); err != nil {
-			return count, fmt.Errorf("save embeddings: %w", err)
+		if saveErr := d.vectorStore.SaveToDisk(d.cfg.EmbeddingsPath); saveErr != nil {
+			d.logger.Warn("save embeddings failed", "err", saveErr)
 		}
+	}
+
+	if err != nil {
+		return count, err
 	}
 	return count, nil
 }
@@ -427,7 +439,7 @@ func (d *Daemon) startWatcher(ctx context.Context, pipeline *EnrichmentPipeline)
 					continue
 				}
 				if d.embedWorker != nil {
-					if _, err := d.embedFromDB(ctx); err != nil {
+					if _, err := d.embedFromDB(ctx, nil); err != nil {
 						d.logger.Warn("branch-switch embedding failed", "err", err)
 					}
 				}
@@ -443,7 +455,7 @@ func (d *Daemon) startWatcher(ctx context.Context, pipeline *EnrichmentPipeline)
 }
 
 // IndexProject runs cold indexing synchronously. Used by CLI.
-func (d *Daemon) IndexProject(ctx context.Context) error {
+func (d *Daemon) IndexProject(ctx context.Context, onProgress func(IndexProgress)) error {
 	writerCtx, writerCancel := context.WithCancel(ctx)
 	defer writerCancel()
 	go d.writer.Run(writerCtx)
@@ -457,6 +469,7 @@ func (d *Daemon) IndexProject(ctx context.Context) error {
 	if err := pipeline.IndexAll(ctx, IndexAllInput{
 		ProjectRoot: d.cfg.ProjectRoot,
 		Files:       scanResult.Files,
+		OnProgress:  onProgress,
 	}); err != nil {
 		return fmt.Errorf("index all: %w", err)
 	}

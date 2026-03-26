@@ -108,7 +108,7 @@ func (wm *WriterManager) Submit(job types.WriteJob) error {
 		wm.mu.Unlock()
 	}
 
-	wm.logger.Warn("writer channel full, blocking",
+	wm.logger.Debug("writer channel full, blocking",
 		"queue_len", len(wm.ch),
 		"queue_cap", cap(wm.ch),
 		"file", job.FilePath)

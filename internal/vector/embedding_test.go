@@ -934,3 +934,94 @@ func TestRunFromDB_HasReconciliation(t *testing.T) {
 		t.Error("embedder received 0 texts, expected some for non-prepopulated chunks")
 	}
 }
+
+// ── EmbedderHealthy Tests ──
+
+func TestEmbedderHealthy_Reachable(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	store := NewBruteForceStore(4)
+	worker := newTestWorker(t, srv, store, 32)
+
+	if !worker.EmbedderHealthy(context.Background()) {
+		t.Error("expected EmbedderHealthy to return true for reachable server")
+	}
+}
+
+func TestEmbedderHealthy_Unreachable(t *testing.T) {
+	t.Parallel()
+
+	// Create and immediately close server to get an unreachable URL.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+
+	client := NewOllamaClient(OllamaClientInput{
+		BaseURL: url,
+		Model:   "test-model",
+		Timeout: 1 * time.Second,
+	})
+	store := NewBruteForceStore(4)
+	worker := NewEmbedWorker(EmbedWorkerInput{
+		Store:    store,
+		Embedder: client,
+	})
+
+	if worker.EmbedderHealthy(context.Background()) {
+		t.Error("expected EmbedderHealthy to return false for unreachable server")
+	}
+}
+
+// ── EmbedProgress Warning Tests ──
+
+func TestEmbedProgress_Warning(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+
+	// Server that always fails — forces circuit breaker retries.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Error(w, "fail", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	store := NewBruteForceStore(dims)
+	worker := newTestWorker(t, srv, store, 32)
+
+	jobs := makeJobs(5)
+	source := newMockEmbedSource(jobs, 5)
+
+	var warnings []string
+	var mu sync.Mutex
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_ = worker.RunFromDB(ctx, source, func(p types.EmbedProgress) {
+		if p.Warning != "" {
+			mu.Lock()
+			warnings = append(warnings, p.Warning)
+			mu.Unlock()
+		}
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(warnings) == 0 {
+		t.Error("expected at least one warning from progress callback during retries")
+	}
+	for _, w := range warnings {
+		if len(w) == 0 {
+			t.Error("warning string should not be empty")
+		}
+	}
+}

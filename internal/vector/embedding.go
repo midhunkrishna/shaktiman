@@ -315,6 +315,11 @@ func NewEmbedWorker(input EmbedWorkerInput) *EmbedWorker {
 	}
 }
 
+// EmbedderHealthy returns true if the underlying Ollama API is reachable.
+func (w *EmbedWorker) EmbedderHealthy(ctx context.Context) bool {
+	return w.embedder.Healthy(ctx)
+}
+
 // Submit enqueues an embedding job. Non-blocking; drops if queue is full.
 func (w *EmbedWorker) Submit(job EmbedJob) bool {
 	select {
@@ -502,6 +507,12 @@ func (w *EmbedWorker) RunFromDB(ctx context.Context, source types.EmbedSource, o
 					w.logger.Debug("circuit breaker open, waiting to retry batch",
 						"batch_size", len(needEmbed), "retry", retries)
 					retries++
+					if onProgress != nil {
+						onProgress(types.EmbedProgress{
+							Embedded: embedded, Total: total,
+							Warning: fmt.Sprintf("Ollama connection issues. Retrying... (attempt %d/%d)", retries, maxRetries),
+						})
+					}
 					select {
 					case <-time.After(2 * time.Second):
 						continue
@@ -516,6 +527,12 @@ func (w *EmbedWorker) RunFromDB(ctx context.Context, source types.EmbedSource, o
 					retries++
 					w.logger.Warn("embed batch failed, retrying",
 						"size", len(needEmbed), "retry", retries, "err", err)
+					if onProgress != nil {
+						onProgress(types.EmbedProgress{
+							Embedded: embedded, Total: total,
+							Warning: fmt.Sprintf("Ollama connection issues. Retrying... (attempt %d/%d)", retries, maxRetries),
+						})
+					}
 					select {
 					case <-time.After(1 * time.Second):
 						continue

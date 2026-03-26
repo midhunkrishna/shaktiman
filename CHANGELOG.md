@@ -67,7 +67,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Contributing guide** (`docs/reference/contributing_guide.md`) — test
   commands for unit, integration, benchmark, and coverage runs.
 
+- **Indexing progress callback** (`internal/daemon/enrichment.go`) —
+  `IndexProgress` type with `Indexed`, `Errors`, `Total` fields.
+  `IndexAllInput.OnProgress` callback fires after each file indexed.
+  `IndexProject` now accepts `onProgress func(IndexProgress)` parameter.
+- **Embedding progress warnings** (`internal/types/interfaces.go`) —
+  `EmbedProgress.Warning` string field populated during circuit breaker
+  retries with attempt count. CLI displays warnings inline with progress.
+- **Ollama health check** (`internal/vector/embedding.go`) —
+  `EmbedWorker.EmbedderHealthy()` delegates to `OllamaClient.Healthy()`.
+  `EmbedProject` calls it before starting embedding and returns a clear
+  error when Ollama is unreachable.
+- **TTY-aware CLI progress** (`cmd/shaktiman/main.go`) — `isTTY()`
+  detection via `os.Stdout.Stat()`. TTY mode: `\r`-overwriting single
+  line with percentage. Pipe mode: periodic log lines every 10%.
+  Indexing and embedding progress displayed during `shaktiman index`.
+- **Partial embedding failure handling** (`internal/daemon/daemon.go`) —
+  `EmbedProject` now accepts `onProgress func(EmbedProgress)`, returns
+  vector count even on error, saves embeddings to disk on partial failure.
+  CLI prints warning with retry instructions when embedded < total.
+- **Embedding progress tests** (`internal/vector/embedding_test.go`) —
+  `TestEmbedderHealthy_Reachable`, `TestEmbedderHealthy_Unreachable`,
+  `TestEmbedProgress_Warning`.
+- **Indexing progress tests** (`internal/daemon/daemon_test.go`) —
+  `TestIndexProgress_Callback`, `TestIndexProgress_NilCallback`,
+  `TestEmbedProject_OllamaHealthCheck`.
+- **Writer log test** (`internal/daemon/writer_test.go`) —
+  `TestWriterChannelFull_LogsAtDebug` verifies channel-full messages
+  log at Debug level.
+- **CLAUDE.md MCP instructions** — STOP RULE gate before Grep/Glob,
+  common mistakes table with negative examples, workflow recipes for
+  refactoring (find callers, check tests, trace dependencies), strengthened
+  subagent delegation template, checklist-style fallback policy.
+
 ### Changed
+
+- `internal/daemon/daemon.go` — `IndexProject` signature changed from
+  `(ctx)` to `(ctx, onProgress func(IndexProgress))`. `EmbedProject`
+  changed from `(ctx)` to `(ctx, onProgress func(EmbedProgress))`.
+  `embedFromDB` passes through progress callback instead of inline logging.
+- `internal/daemon/writer.go` — "writer channel full, blocking" log level
+  changed from `Warn` to `Debug`. Expected backpressure behavior under load,
+  not a problem requiring user attention.
+- `internal/daemon/daemon_test.go` — mock Ollama server now handles
+  `GET /` health check endpoint (returns 200 OK).
+- `docs/reference/sample_claude.md` — rewritten with STOP RULE, negative
+  examples, workflow recipes, and checklist fallback policy.
+- `README.md` — inline CLAUDE.md template updated to match sample_claude.md.
+  Added link to full template file.
 
 - `internal/mcp/format.go` — functions replaced with thin delegates to
   `internal/format`. No behavior change.

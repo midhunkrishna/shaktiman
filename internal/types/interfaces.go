@@ -108,4 +108,5 @@ type EmbedSource interface {
 type EmbedProgress struct {
 	Embedded int
 	Total    int
+	Warning  string // non-empty during transient issues (e.g., circuit breaker retry)
 }
