@@ -19,4 +19,11 @@ jobs:
 
       - run: go vet -tags sqlite_fts5 ./...
 
-      - run: go test -race -tags sqlite_fts5 ./...
+      - run: go test -race -tags sqlite_fts5 -coverprofile=coverage.out ./...
+
+      - run: go tool cover -func=coverage.out
+
+      - uses: codecov/codecov-action@v5
+        with:
+          files: coverage.out
+          token: ${{ secrets.CODECOV_TOKEN }}
