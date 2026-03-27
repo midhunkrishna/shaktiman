@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/shaktimanai/shaktiman/internal/core"
 	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
@@ -340,6 +341,172 @@ func TestWriterManager_ProcessJob(t *testing.T) {
 
 	cancel()
 	<-wm.Done()
+}
+
+// ── Daemon Start Test ──
+
+func TestDaemon_Start(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Create a Go file so cold indexing has work to do
+	if err := os.WriteFile(filepath.Join(projectDir, "main.go"),
+		[]byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	cfg := types.Config{
+		ProjectRoot:       projectDir,
+		DBPath:            dbPath,
+		EnrichmentWorkers: 1,
+		WriterChannelSize: 100,
+		WatcherEnabled:    true,
+		WatcherDebounceMs: 50,
+	}
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Inject a serveFunc that blocks until cancelled (simulates real MCP server)
+	ctx, cancel := context.WithCancel(context.Background())
+	d.serveFunc = func(s *mcpserver.MCPServer) error {
+		<-ctx.Done()
+		return nil
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- d.Start(ctx)
+	}()
+
+	// Give the cold indexing goroutine time to complete (scan + index + startWatcher)
+	time.Sleep(500 * time.Millisecond)
+
+	// Cancel context to unblock serveFunc and stop Start
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Start returned error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Start did not return within 10s")
+	}
+
+	d.Stop()
+}
+
+func TestDaemon_Start_WithEmbedding(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	srv := newMockOllama(dims, nil)
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeGoFiles(t, projectDir, 2, 2)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	embPath := filepath.Join(tmpDir, "embeddings.bin")
+	cfg := embedCfg(projectDir, dbPath, embPath, srv.URL)
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Non-blocking serveFunc
+	d.serveFunc = func(s *mcpserver.MCPServer) error { return nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := d.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	d.Stop()
+}
+
+func TestPeriodicEmbeddingSave(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	srv := newMockOllama(dims, nil)
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeGoFiles(t, projectDir, 3, 3)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	embPath := filepath.Join(tmpDir, "embeddings.bin")
+	cfg := embedCfg(projectDir, dbPath, embPath, srv.URL)
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Index and embed to populate the vector store
+	if err := d.IndexProject(ctx, nil); err != nil {
+		t.Fatalf("IndexProject: %v", err)
+	}
+	if _, err := d.EmbedProject(ctx, nil); err != nil {
+		t.Fatalf("EmbedProject: %v", err)
+	}
+
+	// Remove any previously saved file
+	os.Remove(embPath)
+
+	// Set short intervals so the periodic save fires quickly
+	d.savePollInterval = 5 * time.Millisecond
+	d.saveActiveInterval = 1 * time.Millisecond
+	d.saveIdleInterval = 1 * time.Millisecond
+
+	// Simulate active embedding
+	d.embeddingActive.Store(true)
+
+	saveCtx, saveCancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		d.periodicEmbeddingSave(saveCtx)
+		close(done)
+	}()
+
+	// Wait for save to happen
+	time.Sleep(50 * time.Millisecond)
+
+	// Switch to idle
+	d.embeddingActive.Store(false)
+	time.Sleep(50 * time.Millisecond)
+
+	saveCancel()
+	<-done
+
+	// Verify the embeddings file was created
+	if _, err := os.Stat(embPath); os.IsNotExist(err) {
+		t.Error("expected embeddings file to be created by periodicEmbeddingSave")
+	}
+
+	d.Stop()
 }
 
 // ── Language Compatibility Integration Tests ──
@@ -1471,5 +1638,641 @@ func TestEmbedProject_OllamaHealthCheck(t *testing.T) {
 	}
 	if !strings.Contains(embedErr.Error(), "not reachable") {
 		t.Errorf("expected 'not reachable' in error, got: %v", embedErr)
+	}
+}
+
+// ── ScanRepo Edge Case Tests ──
+
+func TestScanRepo_GitignoreFiltering(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	// Create a .gitignore that excludes generated files
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("generated/\n*.gen.go\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a normal Go file
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a file matching gitignore pattern
+	if err := os.WriteFile(filepath.Join(dir, "output.gen.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a file in a gitignored directory
+	genDir := filepath.Join(dir, "generated")
+	if err := os.MkdirAll(genDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(genDir, "types.go"), []byte("package gen\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ScanRepo(context.Background(), ScanInput{ProjectRoot: dir})
+	if err != nil {
+		t.Fatalf("ScanRepo: %v", err)
+	}
+
+	// Only main.go should be scanned
+	if len(result.Files) != 1 {
+		names := make([]string, len(result.Files))
+		for i, f := range result.Files {
+			names[i] = f.Path
+		}
+		t.Fatalf("expected 1 file (main.go), got %d: %v", len(result.Files), names)
+	}
+	if result.Files[0].Path != "main.go" {
+		t.Errorf("expected main.go, got %s", result.Files[0].Path)
+	}
+}
+
+func TestScanRepo_BinaryFileSkipped(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	// Create a normal Go file
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a binary .go file (contains null bytes)
+	binaryContent := []byte("package main\n\x00\x00\x00binary content")
+	if err := os.WriteFile(filepath.Join(dir, "binary.go"), binaryContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ScanRepo(context.Background(), ScanInput{ProjectRoot: dir})
+	if err != nil {
+		t.Fatalf("ScanRepo: %v", err)
+	}
+
+	// Only main.go should be scanned (binary.go skipped)
+	if len(result.Files) != 1 {
+		names := make([]string, len(result.Files))
+		for i, f := range result.Files {
+			names[i] = f.Path
+		}
+		t.Fatalf("expected 1 file (main.go), got %d: %v", len(result.Files), names)
+	}
+}
+
+func TestScanRepo_ContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	// Create several files so the walk has something to do
+	for i := 0; i < 10; i++ {
+		f := filepath.Join(dir, fmt.Sprintf("file%d.go", i))
+		if err := os.WriteFile(f, []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	_, err := ScanRepo(ctx, ScanInput{ProjectRoot: dir})
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+}
+
+// ── Writer Edge Case Tests ──
+
+func TestSubmit_AfterClose(t *testing.T) {
+	t.Parallel()
+
+	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	defer db.Close()
+
+	store := storage.NewStore(db)
+	wm := NewWriterManager(store, 10)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go wm.Run(ctx)
+
+	// Shut down writer
+	cancel()
+	<-wm.Done()
+
+	// Submit after close should return ErrWriterClosed
+	err = wm.Submit(types.WriteJob{
+		Type:     types.WriteJobEnrichment,
+		FilePath: "test.go",
+		File: &types.FileRecord{
+			Path:            "test.go",
+			ContentHash:     "abc",
+			EmbeddingStatus: "pending",
+			ParseQuality:    "full",
+		},
+	})
+	if err != ErrWriterClosed {
+		t.Errorf("expected ErrWriterClosed, got %v", err)
+	}
+}
+
+// ── Re-index with Changed Symbols (covers fetchOldSymbols + computeAndRecordDiff) ──
+
+func TestWriterManager_ReindexWithChangedSymbols(t *testing.T) {
+	t.Parallel()
+
+	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	store := storage.NewStore(db)
+	wm := NewWriterManager(store, 100)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go wm.Run(ctx)
+
+	// Phase 1: Index file with original symbols
+	done1 := make(chan error, 1)
+	wm.AddProducer()
+	if err := wm.Submit(types.WriteJob{
+		Type:     types.WriteJobEnrichment,
+		FilePath: "app.go",
+		File: &types.FileRecord{
+			Path:            "app.go",
+			ContentHash:     "hash_v1",
+			Mtime:           1.0,
+			Size:            100,
+			Language:        "go",
+			EmbeddingStatus: "pending",
+			ParseQuality:    "full",
+		},
+		Chunks: []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: "OldFunc",
+				StartLine: 1, EndLine: 10,
+				Content: "func OldFunc() {}", TokenCount: 5},
+			{ChunkIndex: 1, Kind: "function", SymbolName: "StableFunc",
+				StartLine: 12, EndLine: 20,
+				Content: "func StableFunc() {}", TokenCount: 5},
+		},
+		Symbols: []types.SymbolRecord{
+			{Name: "OldFunc", Kind: "function", Line: 1, IsExported: true, Visibility: "exported"},
+			{Name: "StableFunc", Kind: "function", Line: 12, IsExported: true, Visibility: "exported"},
+		},
+		ContentHash: "hash_v1",
+		Timestamp:   time.Now(),
+		Done:        done1,
+	}); err != nil {
+		t.Fatalf("Submit phase 1: %v", err)
+	}
+	if err := <-done1; err != nil {
+		t.Fatalf("phase 1 job failed: %v", err)
+	}
+	wm.RemoveProducer()
+
+	// Phase 2: Re-index with changed symbols (OldFunc → NewFunc, StableFunc remains)
+	done2 := make(chan error, 1)
+	wm.AddProducer()
+	if err := wm.Submit(types.WriteJob{
+		Type:     types.WriteJobEnrichment,
+		FilePath: "app.go",
+		File: &types.FileRecord{
+			Path:            "app.go",
+			ContentHash:     "hash_v2",
+			Mtime:           2.0,
+			Size:            120,
+			Language:        "go",
+			EmbeddingStatus: "pending",
+			ParseQuality:    "full",
+		},
+		Chunks: []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: "NewFunc",
+				StartLine: 1, EndLine: 10,
+				Content: "func NewFunc() {}", TokenCount: 5},
+			{ChunkIndex: 1, Kind: "function", SymbolName: "StableFunc",
+				StartLine: 12, EndLine: 20,
+				Content: "func StableFunc() { updated }", TokenCount: 6},
+		},
+		Symbols: []types.SymbolRecord{
+			{Name: "NewFunc", Kind: "function", Line: 1, IsExported: true, Visibility: "exported"},
+			{Name: "StableFunc", Kind: "function", Line: 12, IsExported: true, Visibility: "exported"},
+		},
+		ContentHash: "hash_v2",
+		Timestamp:   time.Now(),
+		Done:        done2,
+	}); err != nil {
+		t.Fatalf("Submit phase 2: %v", err)
+	}
+	if err := <-done2; err != nil {
+		t.Fatalf("phase 2 job failed: %v", err)
+	}
+	wm.RemoveProducer()
+
+	cancel()
+	<-wm.Done()
+
+	// Verify: file has updated content hash
+	f, err := store.GetFileByPath(context.Background(), "app.go")
+	if err != nil {
+		t.Fatalf("GetFileByPath: %v", err)
+	}
+	if f == nil {
+		t.Fatal("expected file record")
+	}
+	if f.ContentHash != "hash_v2" {
+		t.Errorf("ContentHash = %q, want hash_v2", f.ContentHash)
+	}
+
+	// Verify: diff records exist
+	diffs, err := store.GetRecentDiffs(context.Background(), storage.RecentDiffsInput{
+		Since: time.Now().Add(-1 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("GetRecentDiffs: %v", err)
+	}
+	if len(diffs) == 0 {
+		t.Error("expected diff records after re-index with changed symbols")
+	}
+}
+
+// ── IndexAll with Progress Callback ──
+
+func TestIndexAll_WithProgress(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	// Create multiple Go files
+	for i := 0; i < 5; i++ {
+		f := filepath.Join(dir, fmt.Sprintf("file%d.go", i))
+		content := fmt.Sprintf("package main\n\nfunc Func%d() string {\n\treturn \"hello\"\n}\n", i)
+		if err := os.WriteFile(f, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	store := storage.NewStore(db)
+	wm := NewWriterManager(store, 100)
+	ctx, cancel := context.WithCancel(context.Background())
+	go wm.Run(ctx)
+
+	pipeline := NewEnrichmentPipeline(store, wm, 2)
+
+	// Scan files
+	scanResult, err := ScanRepo(context.Background(), ScanInput{ProjectRoot: dir})
+	if err != nil {
+		t.Fatalf("ScanRepo: %v", err)
+	}
+
+	// Track progress
+	var progressCalls int
+	if err := pipeline.IndexAll(context.Background(), IndexAllInput{
+		ProjectRoot: dir,
+		Files:       scanResult.Files,
+		OnProgress: func(p IndexProgress) {
+			progressCalls++
+		},
+	}); err != nil {
+		t.Fatalf("IndexAll: %v", err)
+	}
+
+	cancel()
+	<-wm.Done()
+
+	if progressCalls == 0 {
+		t.Error("expected OnProgress to be called")
+	}
+
+	// Verify files were indexed
+	stats, err := store.GetIndexStats(context.Background())
+	if err != nil {
+		t.Fatalf("GetIndexStats: %v", err)
+	}
+	if stats.TotalFiles < 5 {
+		t.Errorf("expected >= 5 files, got %d", stats.TotalFiles)
+	}
+}
+
+// ── ScanRepo with .shaktimanignore ──
+
+func TestScanRepo_ShaktimanIgnore(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	// Create a .shaktimanignore file
+	if err := os.WriteFile(filepath.Join(dir, ".shaktimanignore"), []byte("vendor/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a normal file
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a file in ignored vendor dir
+	vendorDir := filepath.Join(dir, "vendor")
+	if err := os.MkdirAll(vendorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vendorDir, "lib.go"), []byte("package vendor\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ScanRepo(context.Background(), ScanInput{ProjectRoot: dir})
+	if err != nil {
+		t.Fatalf("ScanRepo: %v", err)
+	}
+
+	// Only main.go should be found
+	if len(result.Files) != 1 {
+		names := make([]string, len(result.Files))
+		for i, f := range result.Files {
+			names[i] = f.Path
+		}
+		t.Fatalf("expected 1 file, got %d: %v", len(result.Files), names)
+	}
+}
+
+// ── Writer Delete Job ──
+
+func TestWriterManager_DeleteJob(t *testing.T) {
+	t.Parallel()
+
+	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	store := storage.NewStore(db)
+	wm := NewWriterManager(store, 10)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go wm.Run(ctx)
+
+	// First, create a file
+	done1 := make(chan error, 1)
+	wm.AddProducer()
+	if err := wm.Submit(types.WriteJob{
+		Type:     types.WriteJobEnrichment,
+		FilePath: "del_target.go",
+		File: &types.FileRecord{
+			Path:            "del_target.go",
+			ContentHash:     "abc",
+			Mtime:           1.0,
+			Language:        "go",
+			EmbeddingStatus: "pending",
+			ParseQuality:    "full",
+		},
+		Chunks: []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: "Foo",
+				StartLine: 1, EndLine: 5, Content: "func Foo() {}", TokenCount: 5},
+		},
+		ContentHash: "abc",
+		Timestamp:   time.Now(),
+		Done:        done1,
+	}); err != nil {
+		t.Fatalf("Submit create: %v", err)
+	}
+	if err := <-done1; err != nil {
+		t.Fatalf("create job failed: %v", err)
+	}
+
+	// Then delete it
+	done2 := make(chan error, 1)
+	if err := wm.Submit(types.WriteJob{
+		Type:     types.WriteJobFileDelete,
+		FilePath: "del_target.go",
+		Done:     done2,
+	}); err != nil {
+		t.Fatalf("Submit delete: %v", err)
+	}
+	if err := <-done2; err != nil {
+		t.Fatalf("delete job failed: %v", err)
+	}
+	wm.RemoveProducer()
+
+	cancel()
+	<-wm.Done()
+
+	// Verify file is gone
+	f, err := store.GetFileByPath(context.Background(), "del_target.go")
+	if err != nil {
+		t.Fatalf("GetFileByPath: %v", err)
+	}
+	if f != nil {
+		t.Error("expected file to be deleted")
+	}
+}
+
+// ── IndexAll: all files up-to-date ──
+
+func TestIndexAll_AllUpToDate(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"),
+		[]byte("package main\n\nfunc Main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	store := storage.NewStore(db)
+	wm := NewWriterManager(store, 100)
+	ctx, cancel := context.WithCancel(context.Background())
+	go wm.Run(ctx)
+
+	pipeline := NewEnrichmentPipeline(store, wm, 1)
+
+	scanResult, err := ScanRepo(context.Background(), ScanInput{ProjectRoot: dir})
+	if err != nil {
+		t.Fatalf("ScanRepo: %v", err)
+	}
+
+	// First index
+	if err := pipeline.IndexAll(context.Background(), IndexAllInput{
+		ProjectRoot: dir,
+		Files:       scanResult.Files,
+	}); err != nil {
+		t.Fatalf("IndexAll first: %v", err)
+	}
+
+	// Second index with same files — should hit "all files up to date" path
+	if err := pipeline.IndexAll(context.Background(), IndexAllInput{
+		ProjectRoot: dir,
+		Files:       scanResult.Files,
+	}); err != nil {
+		t.Fatalf("IndexAll second: %v", err)
+	}
+
+	cancel()
+	<-wm.Done()
+}
+
+// ── IndexAll: enrich error path ──
+
+func TestIndexAll_EnrichError(t *testing.T) {
+	t.Parallel()
+
+	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	store := storage.NewStore(db)
+	wm := NewWriterManager(store, 100)
+	ctx, cancel := context.WithCancel(context.Background())
+	go wm.Run(ctx)
+
+	pipeline := NewEnrichmentPipeline(store, wm, 1)
+
+	// Pass a file with non-existent AbsPath — enrichFile will fail on readFileContent
+	badFiles := []ScannedFile{{
+		Path:        "missing.go",
+		AbsPath:     "/nonexistent/path/missing.go",
+		ContentHash: "abc123",
+		Language:    "go",
+	}}
+
+	// IndexAll should succeed despite enrich errors (they're logged, not fatal)
+	if err := pipeline.IndexAll(context.Background(), IndexAllInput{
+		ProjectRoot: "/tmp",
+		Files:       badFiles,
+	}); err != nil {
+		t.Fatalf("IndexAll: %v", err)
+	}
+
+	cancel()
+	<-wm.Done()
+}
+
+// ── Watcher Start: processes real fsnotify events ──
+
+func TestWatcher_Start_ProcessesFileChange(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	w, err := NewWatcher(dir, 10) // short debounce
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- w.Start(ctx)
+	}()
+
+	// Give watcher time to set up
+	time.Sleep(100 * time.Millisecond)
+
+	// Create a Go file — triggers fsnotify Create event
+	goFile := filepath.Join(dir, "new.go")
+	if err := os.WriteFile(goFile, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the event to arrive through the pipeline
+	select {
+	case event := <-w.Events():
+		if event.ChangeType != "modify" {
+			t.Errorf("expected 'modify', got %q", event.ChangeType)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for file change event")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not exit")
+	}
+}
+
+// ── FlushPending: event channel full triggers drop ──
+
+func TestFlushPending_EventChannelDrop(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	// Create files so stat works during flush
+	for i := 0; i < 5; i++ {
+		f := filepath.Join(dir, fmt.Sprintf("drop%d.go", i))
+		os.WriteFile(f, []byte("package main\n"), 0o644)
+	}
+
+	w, err := NewWatcher(dir, 100)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer w.fsw.Close()
+
+	// Fill the event channel completely (capacity 100)
+	for i := 0; i < 100; i++ {
+		w.eventCh <- FileChangeEvent{Path: fmt.Sprintf("fill%d.go", i)}
+	}
+
+	// Populate pending with files — flush will try to emit but channel is full
+	w.mu.Lock()
+	for i := 0; i < 5; i++ {
+		f := filepath.Join(dir, fmt.Sprintf("drop%d.go", i))
+		absF, _ := filepath.EvalSymlinks(f)
+		w.pending[absF] = time.Now().Add(-time.Second)
+	}
+	w.mu.Unlock()
+
+	// Flush with zero debounce — all entries are ready
+	// This will hit the time.After(1s) drop path since eventCh is full
+	w.flushPending(0)
+
+	// Check that drops were counted
+	drops := w.dropCount.Load()
+	if drops == 0 {
+		t.Error("expected drop count > 0 when event channel is full")
 	}
 }

@@ -41,42 +41,39 @@ func (p *Parser) walkForSymbols(node *sitter.Node, source []byte, exported bool,
 
 	kind, isSymbol := cfg.SymbolKindMap[nodeType]
 	if isSymbol {
-		name := extractName(node, source)
-		if name == "" {
-			// TypeScript variable declarations may have multiple declarators
-			if nodeType == "lexical_declaration" || nodeType == "variable_declaration" {
-				p.extractVariableSymbols(node, source, exported, chunks, symbols)
-				return
+		// Multi-declarator types: dispatch to specialized extractors that
+		// handle each spec/declarator child individually. extractName would
+		// only return the first child's name, losing subsequent declarations.
+		switch nodeType {
+		case "lexical_declaration", "variable_declaration":
+			p.extractVariableSymbols(node, source, exported, chunks, symbols)
+			return
+		case "var_declaration", "const_declaration":
+			p.extractGoVarSymbols(node, source, chunks, symbols, cfg)
+			return
+		case "type_declaration":
+			p.extractGoTypeSymbols(node, source, chunks, symbols, cfg)
+			return
+		default:
+			name := extractName(node, source)
+			if name != "" {
+				line := int(node.StartPoint().Row) + 1
+				isExp := exported || isGoExported(name, cfg)
+				sym := types.SymbolRecord{
+					Name:       name,
+					Kind:       kind,
+					Line:       line,
+					Signature:  extractSignature(node, source),
+					IsExported: isExp,
+				}
+				if isExp {
+					sym.Visibility = "exported"
+				} else {
+					sym.Visibility = "internal"
+				}
+				sym.ChunkID = findContainingChunk(line, chunks)
+				*symbols = append(*symbols, sym)
 			}
-			// Go var/const declarations have spec children
-			if nodeType == "var_declaration" || nodeType == "const_declaration" {
-				p.extractGoVarSymbols(node, source, chunks, symbols, cfg)
-				return
-			}
-			// Go type_declaration may have multiple type_spec children
-			if nodeType == "type_declaration" {
-				p.extractGoTypeSymbols(node, source, chunks, symbols, cfg)
-				return
-			}
-		}
-
-		if name != "" {
-			line := int(node.StartPoint().Row) + 1
-			isExp := exported || isGoExported(name, cfg)
-			sym := types.SymbolRecord{
-				Name:       name,
-				Kind:       kind,
-				Line:       line,
-				Signature:  extractSignature(node, source),
-				IsExported: isExp,
-			}
-			if isExp {
-				sym.Visibility = "exported"
-			} else {
-				sym.Visibility = "internal"
-			}
-			sym.ChunkID = findContainingChunk(line, chunks)
-			*symbols = append(*symbols, sym)
 		}
 	}
 
