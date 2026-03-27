@@ -475,6 +475,51 @@ func writeBadHeader(t *testing.T, path string, version, dim, count uint32) {
 	}
 }
 
+func TestBruteForceStore_Close(t *testing.T) {
+	t.Parallel()
+	s := NewBruteForceStore(3)
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close() = %v, want nil", err)
+	}
+}
+
+func TestBruteForceStore_SaveToDisk_EmptyStore(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.bin")
+
+	s1 := NewBruteForceStore(3)
+	if err := s1.SaveToDisk(path); err != nil {
+		t.Fatalf("SaveToDisk empty store: %v", err)
+	}
+
+	s2 := NewBruteForceStore(3)
+	if err := s2.LoadFromDisk(path); err != nil {
+		t.Fatalf("LoadFromDisk: %v", err)
+	}
+	got, err := s2.Count(ctx)
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("Count = %d, want 0", got)
+	}
+}
+
+func TestBruteForceStore_SaveToDisk_BadPath(t *testing.T) {
+	t.Parallel()
+	s := NewBruteForceStore(3)
+	if err := s.Upsert(context.Background(), 1, []float32{1, 2, 3}); err != nil {
+		t.Fatal(err)
+	}
+	// /dev/null is a file, not a directory — MkdirAll will fail
+	err := s.SaveToDisk("/dev/null/sub/embeddings.bin")
+	if err == nil {
+		t.Fatal("expected error for bad path, got nil")
+	}
+}
+
 func TestCosineSimilarity(t *testing.T) {
 	t.Parallel()
 

@@ -31,6 +31,12 @@ type Daemon struct {
 	sessionID        string
 	embeddingActive  atomic.Bool
 	embedMu          sync.Mutex
+	serveFunc        func(*mcpserver.MCPServer) error // injectable for testing; defaults to mcpserver.ServeStdio
+
+	// Configurable intervals for periodicEmbeddingSave (tests use short values).
+	saveActiveInterval time.Duration
+	saveIdleInterval   time.Duration
+	savePollInterval   time.Duration
 }
 
 // New creates a new Daemon, opening the database and running migrations.
@@ -61,6 +67,10 @@ func New(cfg types.Config) (*Daemon, error) {
 		engine:    engine,
 		logger:    slog.Default().With("component", "daemon"),
 		sessionID: fmt.Sprintf("%d", time.Now().UnixNano()),
+		serveFunc:          func(s *mcpserver.MCPServer) error { return mcpserver.ServeStdio(s) },
+		saveActiveInterval: 30 * time.Second,
+		saveIdleInterval:   5 * time.Minute,
+		savePollInterval:   10 * time.Second,
 	}
 
 	// Initialize vector store + embedding pipeline
@@ -193,45 +203,13 @@ func (d *Daemon) Start(ctx context.Context) error {
 	})
 	d.logger.Info("MCP server starting on stdio", "session_id", d.sessionID)
 
-	if err := mcpserver.ServeStdio(s); err != nil {
+	if err := d.serveFunc(s); err != nil {
 		return fmt.Errorf("MCP server: %w", err)
 	}
 
 	return nil
 }
 
-// queueEmbeddings queues chunks that need embedding, filtering by both DB flag
-// (files.embedding_status != 'complete') and vector store contents (reconciliation).
-func (d *Daemon) queueEmbeddings(ctx context.Context) {
-	records, err := d.store.GetChunksNeedingEmbedding(ctx, d.vectorStore)
-	if err != nil {
-		d.logger.Warn("failed to query chunks for embedding", "err", err)
-		return
-	}
-
-	// Option A filter: also skip chunks already in vector store (reconciliation
-	// for crash-before-save scenario where DB says 'complete' but vectors are lost)
-	jobs := make([]vector.EmbedJob, 0, len(records))
-	for _, r := range records {
-		has, _ := d.vectorStore.Has(ctx, r.ChunkID)
-		if has {
-			continue
-		}
-		jobs = append(jobs, vector.EmbedJob{
-			ChunkID: r.ChunkID,
-			Content: r.Content,
-		})
-	}
-
-	if len(jobs) == 0 {
-		d.logger.Info("no chunks need embedding")
-		return
-	}
-
-	submitted := d.embedWorker.SubmitBatch(jobs)
-	d.logger.Info("queued chunks for embedding",
-		"candidates", len(records), "filtered", len(jobs), "submitted", submitted)
-}
 
 // embedFromDB runs the pull-based embedding pipeline to completion.
 // It uses cursor-based DB pagination instead of the channel-based Submit path,
@@ -300,9 +278,9 @@ func (d *Daemon) EmbedProject(ctx context.Context, onProgress func(types.EmbedPr
 // active embedding (crash safety) and 5min interval otherwise. A short poll
 // interval detects embedding-active transitions without waiting for a full 5min tick.
 func (d *Daemon) periodicEmbeddingSave(ctx context.Context) {
-	const activeInterval = 30 * time.Second
-	const idleInterval = 5 * time.Minute
-	const pollInterval = 10 * time.Second // how often to check if embedding started
+	activeInterval := d.saveActiveInterval
+	idleInterval := d.saveIdleInterval
+	pollInterval := d.savePollInterval
 
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()

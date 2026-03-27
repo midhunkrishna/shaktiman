@@ -687,6 +687,248 @@ type Config struct {
 	}
 }
 
+// ── Rust tests ──
+
+func TestParse_RustFunction(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`use std::collections::HashMap;
+
+fn add(a: i32, b: i32) -> i32 {
+    let result = a + b;
+    println!("sum = {}", result);
+    result
+}
+
+pub fn greet(name: &str) -> String {
+    let greeting = format!("Hello, {}!", name);
+    println!("{}", greeting);
+    greeting
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "test.rs",
+		Content:  src,
+		Language: "rust",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	if len(result.Chunks) == 0 {
+		t.Fatal("expected at least one chunk")
+	}
+
+	funcs := map[string]bool{}
+	for _, s := range result.Symbols {
+		if s.Kind == "function" {
+			funcs[s.Name] = true
+		}
+	}
+	for _, name := range []string{"add", "greet"} {
+		if !funcs[name] {
+			t.Errorf("expected function symbol %q", name)
+		}
+	}
+}
+
+func TestParse_RustStruct(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`pub struct Point {
+    x: f64,
+    y: f64,
+}
+
+impl Point {
+    pub fn new(x: f64, y: f64) -> Self {
+        Point { x, y }
+    }
+
+    pub fn distance(&self, other: &Point) -> f64 {
+        let dx = self.x - other.x;
+        let dy = self.y - other.y;
+        (dx * dx + dy * dy).sqrt()
+    }
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "test.rs",
+		Content:  src,
+		Language: "rust",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	if len(result.Chunks) == 0 {
+		t.Fatal("expected at least one chunk")
+	}
+
+	// Should have type symbol for Point
+	foundType := false
+	for _, s := range result.Symbols {
+		if s.Name == "Point" && s.Kind == "type" {
+			foundType = true
+			break
+		}
+	}
+	if !foundType {
+		t.Error("expected type symbol 'Point'")
+	}
+}
+
+// ── Python decorated definitions ──
+
+func TestParse_PythonDecoratedFunction(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	// Module-level decorated functions (not inside a class)
+	src := []byte(`@staticmethod
+def static_method(x, y, z):
+    """A decorated static method."""
+    result = x + y + z
+    validated = result > 0
+    return validated
+
+@property
+def name(self):
+    """A decorated property."""
+    value = self._name
+    processed = value.strip()
+    return processed
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "test.py",
+		Content:  src,
+		Language: "python",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Should have chunks for the decorated functions
+	funcChunks := 0
+	for _, c := range result.Chunks {
+		if c.Kind == "function" {
+			funcChunks++
+		}
+	}
+	if funcChunks < 2 {
+		t.Errorf("expected at least 2 function chunks for decorated definitions, got %d", funcChunks)
+	}
+
+	// Should have symbols for the decorated functions
+	methods := map[string]bool{}
+	for _, s := range result.Symbols {
+		if s.Kind == "function" {
+			methods[s.Name] = true
+		}
+	}
+	for _, name := range []string{"static_method", "name"} {
+		if !methods[name] {
+			t.Errorf("expected symbol %q for decorated definition", name)
+		}
+	}
+}
+
+func TestParse_PythonDecoratedClass(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`from dataclasses import dataclass
+
+@dataclass
+class Config:
+    """Application configuration."""
+    host: str = "localhost"
+    port: int = 8080
+    debug: bool = False
+    max_connections: int = 100
+    timeout_seconds: float = 30.0
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "test.py",
+		Content:  src,
+		Language: "python",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	foundClass := false
+	for _, s := range result.Symbols {
+		if s.Name == "Config" && s.Kind == "class" {
+			foundClass = true
+			break
+		}
+	}
+	if !foundClass {
+		t.Error("expected class symbol 'Config' for decorated class")
+	}
+}
+
+// ── SupportedLanguage ──
+
+func TestSupportedLanguage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		lang string
+		want bool
+	}{
+		{"go", true},
+		{"python", true},
+		{"typescript", true},
+		{"rust", true},
+		{"java", true},
+		{"groovy", true},
+		{"bash", true},
+		{"javascript", true},
+		{"ruby", false},
+		{"", false},
+		{"c++", false},
+		{"csharp", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.lang, func(t *testing.T) {
+			t.Parallel()
+			got := SupportedLanguage(tc.lang)
+			if got != tc.want {
+				t.Errorf("SupportedLanguage(%q) = %v, want %v", tc.lang, got, tc.want)
+			}
+		})
+	}
+}
+
 // ── Java tests ──
 
 func TestParse_JavaClassWithMethods(t *testing.T) {
@@ -953,5 +1195,51 @@ export function createServer(port) {
 	}
 	if !foundInherits {
 		t.Error("expected inherits edge for 'EventEmitter'")
+	}
+}
+
+func TestParse_LargeFunction_SplitsChunks(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	// Generate a Go function with >1024 tokens to trigger splitLargeChunks.
+	// Each line is ~5 tokens, so ~250 lines should exceed the threshold.
+	var src string
+	src += "package main\n\nfunc BigFunc() {\n"
+	for i := 0; i < 300; i++ {
+		src += "\t_ = fmt.Sprintf(\"line %d value %d result %d output %d data %d\")\n"
+	}
+	src += "}\n"
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "big.go",
+		Content:  []byte(src),
+		Language: "go",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// The large function should be split into multiple chunks
+	funcChunks := 0
+	for _, c := range result.Chunks {
+		if c.Kind == "function" {
+			funcChunks++
+		}
+	}
+	if funcChunks < 2 {
+		t.Errorf("expected large function to be split into >= 2 chunks, got %d", funcChunks)
+	}
+
+	// Each chunk should be ≤ maxChunkTokens
+	for _, c := range result.Chunks {
+		if c.TokenCount > 1200 { // allow some margin over 1024
+			t.Errorf("chunk %q has %d tokens, expected ≤ ~1024", c.SymbolName, c.TokenCount)
+		}
 	}
 }

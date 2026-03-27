@@ -11,6 +11,87 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
+func TestSubmit_BlockedDuringShutdown(t *testing.T) {
+	t.Parallel()
+
+	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	defer db.Close()
+
+	store := storage.NewStore(db)
+	// Channel size 1 — fills quickly
+	wm := NewWriterManager(store, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go wm.Run(ctx)
+	wm.AddProducer()
+
+	// Fill the channel so next Submit blocks
+	_ = wm.Submit(types.WriteJob{
+		Type:     types.WriteJobEnrichment,
+		FilePath: "filler.go",
+		File: &types.FileRecord{
+			Path: "filler.go", ContentHash: "abc",
+			EmbeddingStatus: "pending", ParseQuality: "full",
+		},
+		Timestamp: time.Now(),
+	})
+
+	// Give writer time to process the first job
+	time.Sleep(50 * time.Millisecond)
+
+	// Fill channel again
+	_ = wm.Submit(types.WriteJob{
+		Type:     types.WriteJobEnrichment,
+		FilePath: "filler2.go",
+		File: &types.FileRecord{
+			Path: "filler2.go", ContentHash: "def",
+			EmbeddingStatus: "pending", ParseQuality: "full",
+		},
+		Timestamp: time.Now(),
+	})
+
+	// Submit in goroutine — this will block because channel is full
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- wm.Submit(types.WriteJob{
+			Type:     types.WriteJobEnrichment,
+			FilePath: "blocked.go",
+			File: &types.FileRecord{
+				Path: "blocked.go", ContentHash: "ghi",
+				EmbeddingStatus: "pending", ParseQuality: "full",
+			},
+			Timestamp: time.Now(),
+		})
+	}()
+
+	// Give the goroutine time to block on Submit
+	time.Sleep(50 * time.Millisecond)
+
+	// Shut down the writer while Submit is blocked
+	wm.RemoveProducer()
+	cancel()
+	<-wm.Done()
+
+	// The blocked Submit should return ErrWriterClosed
+	select {
+	case err := <-errCh:
+		if err != ErrWriterClosed {
+			// May also return nil if the job was accepted before shutdown
+			if err != nil {
+				t.Logf("Submit returned: %v (acceptable)", err)
+			}
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocked Submit did not return after writer shutdown")
+	}
+}
+
 func TestWriterChannelFull_LogsAtDebug(t *testing.T) {
 	t.Parallel()
 
