@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -87,10 +88,14 @@ func New(cfg types.Config) (*Daemon, error) {
 }
 
 func (d *Daemon) initEmbedding() {
-	vs := vector.NewBruteForceStore(d.cfg.EmbeddingDims)
+	vs, err := d.newVectorStore()
+	if err != nil {
+		d.logger.Error("create vector store failed", "err", err)
+		return
+	}
 	d.vectorStore = vs
 
-	if err := d.loadVectors(d.cfg.EmbeddingsPath); err != nil {
+	if err := d.loadVectors(d.embeddingsPath()); err != nil {
 		d.logger.Warn("load embeddings from disk failed", "err", err)
 	} else {
 		count, _ := vs.Count(context.Background())
@@ -225,7 +230,7 @@ func (d *Daemon) embedFromDB(ctx context.Context, onProgress func(types.EmbedPro
 	// Trigger an immediate save checkpoint so the periodic saver switches to
 	// 30s intervals on its next tick (instead of waiting up to 5 minutes).
 	if count, _ := d.vectorStore.Count(ctx); count > 0 {
-		if err := d.saveVectors(d.cfg.EmbeddingsPath); err != nil {
+		if err := d.saveVectors(d.embeddingsPath()); err != nil {
 			d.logger.Warn("pre-embed save failed", "err", err)
 		}
 	}
@@ -263,7 +268,7 @@ func (d *Daemon) EmbedProject(ctx context.Context, onProgress func(types.EmbedPr
 
 	// Save embeddings even on partial failure (crash safety).
 	if count > 0 {
-		if saveErr := d.saveVectors(d.cfg.EmbeddingsPath); saveErr != nil {
+		if saveErr := d.saveVectors(d.embeddingsPath()); saveErr != nil {
 			d.logger.Warn("save embeddings failed", "err", saveErr)
 		}
 	}
@@ -307,7 +312,7 @@ func (d *Daemon) periodicEmbeddingSave(ctx context.Context) {
 
 			count, _ := d.vectorStore.Count(ctx)
 			if count > 0 {
-				if err := d.saveVectors(d.cfg.EmbeddingsPath); err != nil {
+				if err := d.saveVectors(d.embeddingsPath()); err != nil {
 					d.logger.Error("periodic embedding save failed", "err", err)
 				} else {
 					d.logger.Info("periodic embedding checkpoint", "count", count)
@@ -345,7 +350,7 @@ func (d *Daemon) Stop() error {
 	if d.vectorStore != nil {
 		count, _ := d.vectorStore.Count(context.Background())
 		if count > 0 {
-			if err := d.saveVectors(d.cfg.EmbeddingsPath); err != nil {
+			if err := d.saveVectors(d.embeddingsPath()); err != nil {
 				d.logger.Error("save embeddings failed", "err", err)
 			} else {
 				d.logger.Info("saved embeddings to disk", "count", count)
@@ -376,6 +381,32 @@ func (d *Daemon) loadVectors(path string) error {
 		return p.LoadFromDisk(path)
 	}
 	return nil
+}
+
+// newVectorStore creates a vector store based on the configured backend.
+func (d *Daemon) newVectorStore() (types.VectorStore, error) {
+	switch d.cfg.VectorBackend {
+	case "hnsw":
+		return vector.NewHNSWStore(vector.HNSWStoreInput{
+			Dim: d.cfg.EmbeddingDims,
+		})
+	default:
+		return vector.NewBruteForceStore(d.cfg.EmbeddingDims), nil
+	}
+}
+
+// embeddingsPath returns the persistence file path for the active vector backend.
+// HNSW and BruteForce use incompatible binary formats, so each gets a distinct path.
+func (d *Daemon) embeddingsPath() string {
+	if d.cfg.VectorBackend == "hnsw" {
+		base := d.cfg.EmbeddingsPath
+		ext := filepath.Ext(base)
+		if ext != "" {
+			return base[:len(base)-len(ext)] + ".hnsw"
+		}
+		return base + ".hnsw"
+	}
+	return d.cfg.EmbeddingsPath
 }
 
 // Engine returns the query engine.

@@ -38,6 +38,9 @@ type Config struct {
 	// MCP context tool configuration
 	ContextEnabled      bool // whether to register the context tool
 	ContextBudgetTokens int  // 256-32768, default 4096
+
+	// Vector backend configuration
+	VectorBackend string // "brute_force" (default) or "hnsw"
 }
 
 // DefaultConfig returns a Config with sane defaults for the given project root.
@@ -65,6 +68,8 @@ func DefaultConfig(projectRoot string) Config {
 
 		ContextEnabled:      true,
 		ContextBudgetTokens: 4096,
+
+		VectorBackend: "brute_force",
 	}
 }
 
@@ -73,6 +78,11 @@ func DefaultConfig(projectRoot string) Config {
 type tomlConfig struct {
 	Search  tomlSearch  `toml:"search"`
 	Context tomlContext `toml:"context"`
+	Vector  tomlVector  `toml:"vector"`
+}
+
+type tomlVector struct {
+	Backend *string `toml:"backend"`
 }
 
 type tomlSearch struct {
@@ -134,6 +144,12 @@ func LoadConfigFromFile(cfg Config) (Config, error) {
 		cfg.ContextBudgetTokens = *v
 		cfg.MaxBudgetTokens = *v
 	}
+	if v := tc.Vector.Backend; v != nil {
+		if *v != "brute_force" && *v != "hnsw" {
+			return cfg, fmt.Errorf("config: vector.backend must be 'brute_force' or 'hnsw', got %q", *v)
+		}
+		cfg.VectorBackend = *v
+	}
 
 	return cfg, nil
 }
@@ -149,6 +165,9 @@ const sampleConfig = `# Shaktiman configuration
 [context]
 # enabled = true           # Set false to disable the context tool entirely
 # budget_tokens = 4096     # Default token budget for context assembly (256-32768)
+
+[vector]
+# backend = "brute_force"  # "brute_force" or "hnsw"
 `
 
 // WriteSampleConfig creates a sample shaktiman.toml with commented-out defaults.
