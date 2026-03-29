@@ -339,11 +339,14 @@ func (d *Daemon) Stop() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// Wait for writer to finish draining (with timeout)
-	select {
-	case <-d.writer.Done():
-	case <-shutdownCtx.Done():
-		d.logger.Warn("writer drain timeout")
+	// Wait for writer to finish draining (with timeout).
+	// Skip if Run() was never called (e.g. CLI-only use of IndexProject/EmbedProject).
+	if d.writer.Started() {
+		select {
+		case <-d.writer.Done():
+		case <-shutdownCtx.Done():
+			d.logger.Warn("writer drain timeout")
+		}
 	}
 
 	// Persist embeddings

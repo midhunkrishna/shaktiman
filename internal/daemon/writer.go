@@ -27,6 +27,7 @@ type WriterManager struct {
 	store         *storage.Store
 	logger        *slog.Logger
 	closed        atomic.Bool
+	started       atomic.Bool         // true after Run() is called
 	mu            sync.Mutex          // protects close sequence
 	vectorDeleter types.VectorDeleter // nil if embeddings disabled
 }
@@ -50,6 +51,7 @@ func NewWriterManager(store *storage.Store, chanSize int) *WriterManager {
 // Run processes write jobs until ctx is cancelled, then drains remaining jobs.
 // This method blocks — run it in a goroutine.
 func (wm *WriterManager) Run(ctx context.Context) {
+	wm.started.Store(true)
 	defer close(wm.done)
 
 	for {
@@ -130,6 +132,9 @@ func (wm *WriterManager) RemoveProducer() { wm.producers.Done() }
 
 // Done returns a channel that is closed when the writer has finished.
 func (wm *WriterManager) Done() <-chan struct{} { return wm.done }
+
+// Started reports whether Run has been called.
+func (wm *WriterManager) Started() bool { return wm.started.Load() }
 
 func (wm *WriterManager) processJob(ctx context.Context, job types.WriteJob) {
 	start := time.Now()
