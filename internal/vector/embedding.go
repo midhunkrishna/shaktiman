@@ -20,7 +20,34 @@ import (
 var (
 	ErrOllamaUnreachable = errors.New("ollama is unreachable")
 	ErrCircuitOpen       = errors.New("circuit breaker is open")
+	ErrPermanentEmbed    = errors.New("permanent embedding failure")
 )
+
+// EmbedHTTPError wraps non-200 responses from the embedding API with
+// the HTTP status code for error classification (permanent vs transient).
+type EmbedHTTPError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *EmbedHTTPError) Error() string {
+	return fmt.Sprintf("ollama embed returned %d: %s", e.StatusCode, e.Body)
+}
+
+// Unwrap returns ErrPermanentEmbed for 4xx errors (client errors that retrying
+// won't fix), nil for 5xx (transient server errors).
+func (e *EmbedHTTPError) Unwrap() error {
+	if e.StatusCode >= 400 && e.StatusCode < 500 {
+		return ErrPermanentEmbed
+	}
+	return nil
+}
+
+// deferredJob tracks a chunk that failed transiently during Phase 1 and
+// should be retried after all normal processing completes.
+type deferredJob struct {
+	job types.EmbedJob
+}
 
 // ── Ollama HTTP Client ──
 
@@ -110,7 +137,7 @@ func (c *OllamaClient) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("ollama embed returned %d: %s", resp.StatusCode, respBody)
+		return nil, &EmbedHTTPError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	const maxEmbedResponseSize = 50 * 1024 * 1024 // 50MB
@@ -448,9 +475,12 @@ func (w *EmbedWorker) RunFromDB(ctx context.Context, source types.EmbedSource, o
 	}
 
 	embedded := 0
+	skipped := 0
 	lastID := int64(0)
 	activeBatchSz := w.batchSz // adaptive: halves on error, restores on success
+	var deferred []deferredJob
 
+	// ── Phase 1: Process all pages ──
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -495,7 +525,6 @@ func (w *EmbedWorker) RunFromDB(ctx context.Context, source types.EmbedSource, o
 			}
 
 			if len(needEmbed) == 0 {
-				// All chunks already in store — just mark them in DB.
 				if err := source.MarkChunksEmbedded(ctx, batchIDs); err != nil {
 					return fmt.Errorf("mark already-embedded chunks: %w", err)
 				}
@@ -507,7 +536,6 @@ func (w *EmbedWorker) RunFromDB(ctx context.Context, source types.EmbedSource, o
 				continue
 			}
 
-			// Embed the chunks that need it, with circuit breaker retry.
 			texts := make([]string, len(needEmbed))
 			needIDs := make([]int64, len(needEmbed))
 			for j, job := range needEmbed {
@@ -516,26 +544,17 @@ func (w *EmbedWorker) RunFromDB(ctx context.Context, source types.EmbedSource, o
 			}
 
 			var vectors [][]float32
-			const maxRetries = 30
+			const quickRetries = 3
 			retries := 0
-			shrunk := false // set if batch size shrunk during retries
-			for {
+			shrunk := false
+			batchOK := false
+
+			for retries < quickRetries {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
-				if retries >= maxRetries {
-					return fmt.Errorf("embed batch failed after %d retries: %w", retries, ErrCircuitOpen)
-				}
 				if !w.cb.Allow() {
-					w.logger.Debug("circuit breaker open, waiting to retry batch",
-						"batch_size", len(needEmbed), "retry", retries)
 					retries++
-					if onProgress != nil {
-						onProgress(types.EmbedProgress{
-							Embedded: embedded, Total: total,
-							Warning: fmt.Sprintf("Ollama connection issues. Retrying... (attempt %d/%d)", retries, maxRetries),
-						})
-					}
 					select {
 					case <-time.After(2 * time.Second):
 						continue
@@ -546,65 +565,176 @@ func (w *EmbedWorker) RunFromDB(ctx context.Context, source types.EmbedSource, o
 
 				vectors, err = w.embedder.EmbedBatch(ctx, texts)
 				if err != nil {
+					// Permanent errors (4xx) are not retryable.
+					if errors.Is(err, ErrPermanentEmbed) {
+						w.logger.Warn("permanent embed error, skipping batch",
+							"size", len(needEmbed), "err", err)
+						skipped += len(needEmbed)
+						break
+					}
+
 					w.cb.RecordFailure()
 					retries++
 
-					// Adaptive: halve batch size and re-slice from same position.
+					// Adaptive: halve batch size and re-slice.
 					if newSz := activeBatchSz / 2; newSz >= 1 && newSz < activeBatchSz {
 						w.logger.Info("shrinking batch size after error",
 							"from", activeBatchSz, "to", newSz)
 						activeBatchSz = newSz
 						shrunk = true
-						break // break retry loop to re-slice with smaller batch
+						break
 					}
 
 					w.logger.Warn("embed batch failed, retrying",
 						"size", len(needEmbed), "retry", retries, "err", err)
-					if onProgress != nil {
-						onProgress(types.EmbedProgress{
-							Embedded: embedded, Total: total,
-							Warning: fmt.Sprintf("Ollama connection issues. Retrying... (attempt %d/%d)", retries, maxRetries),
-						})
-					}
 					select {
 					case <-time.After(1 * time.Second):
-						continue
 					case <-ctx.Done():
 						return ctx.Err()
 					}
+					continue
 				}
 				w.cb.RecordSuccess()
-
-				// Restore original batch size on success.
 				if activeBatchSz != w.batchSz {
 					w.logger.Info("restoring batch size after success",
 						"from", activeBatchSz, "to", w.batchSz)
 					activeBatchSz = w.batchSz
 				}
+				batchOK = true
 				break
 			}
 
-			// If batch size shrunk, retry from the same position with smaller batch.
 			if shrunk {
+				continue // re-slice from same position
+			}
+
+			// If permanent error already counted as skipped, advance cursor.
+			if errors.Is(err, ErrPermanentEmbed) {
+				if err := source.MarkChunksEmbedded(ctx, batchIDs); err != nil {
+					return fmt.Errorf("mark skipped chunks: %w", err)
+				}
+				embedded += len(batch)
+				if onProgress != nil {
+					onProgress(types.EmbedProgress{Embedded: embedded, Total: total, Skipped: skipped})
+				}
+				i = end
+				continue
+			}
+
+			// Transient failure after quick retries → defer for Phase 2.
+			if !batchOK {
+				for _, job := range needEmbed {
+					deferred = append(deferred, deferredJob{job: job})
+				}
+				w.logger.Warn("batch deferred for retry",
+					"size", len(needEmbed), "deferred_total", len(deferred))
+				if onProgress != nil {
+					onProgress(types.EmbedProgress{
+						Embedded: embedded, Total: total, Skipped: skipped,
+						Warning: fmt.Sprintf("Ollama connection issues. %d chunks deferred for retry.", len(deferred)),
+					})
+				}
+				// Mark in DB so cursor advances; deferred chunks retry in Phase 2.
+				if err := source.MarkChunksEmbedded(ctx, batchIDs); err != nil {
+					return fmt.Errorf("mark deferred chunks: %w", err)
+				}
+				embedded += len(batch)
+				if onProgress != nil {
+					onProgress(types.EmbedProgress{Embedded: embedded, Total: total, Skipped: skipped})
+				}
+				i = end
 				continue
 			}
 
 			if err := w.store.UpsertBatch(ctx, needIDs, vectors); err != nil {
 				return fmt.Errorf("upsert batch: %w", err)
 			}
-
 			if err := source.MarkChunksEmbedded(ctx, batchIDs); err != nil {
 				return fmt.Errorf("mark chunks embedded: %w", err)
 			}
 
 			embedded += len(batch)
 			if onProgress != nil {
-				onProgress(types.EmbedProgress{Embedded: embedded, Total: total})
+				onProgress(types.EmbedProgress{Embedded: embedded, Total: total, Skipped: skipped})
 			}
 			i = end
 		}
 
 		lastID = page[len(page)-1].ChunkID
+	}
+
+	// ── Phase 2: Retry deferred chunks ──
+	if len(deferred) > 0 {
+		w.logger.Info("processing deferred chunks", "count", len(deferred))
+		if onProgress != nil {
+			onProgress(types.EmbedProgress{
+				Embedded: embedded, Total: total, Skipped: skipped,
+				Warning: fmt.Sprintf("Retrying %d deferred chunks...", len(deferred)),
+			})
+		}
+
+		const maxPasses = 3
+		for pass := 0; pass < maxPasses && len(deferred) > 0; pass++ {
+			var stillFailing []deferredJob
+
+			for _, dc := range deferred {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+
+				if !w.cb.Allow() {
+					stillFailing = append(stillFailing, dc)
+					continue
+				}
+
+				vecs, err := w.embedder.EmbedBatch(ctx, []string{dc.job.Content})
+				if err != nil {
+					if errors.Is(err, ErrPermanentEmbed) {
+						skipped++
+						w.logger.Warn("deferred chunk permanently skipped",
+							"chunk_id", dc.job.ChunkID, "err", err)
+						continue
+					}
+					w.cb.RecordFailure()
+					stillFailing = append(stillFailing, dc)
+					continue
+				}
+				w.cb.RecordSuccess()
+
+				if err := w.store.Upsert(ctx, dc.job.ChunkID, vecs[0]); err != nil {
+					return fmt.Errorf("upsert deferred chunk %d: %w", dc.job.ChunkID, err)
+				}
+			}
+
+			deferred = stillFailing
+
+			if len(deferred) > 0 {
+				w.logger.Info("deferred retry pass complete",
+					"pass", pass+1, "remaining", len(deferred))
+				select {
+				case <-time.After(2 * time.Second):
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		}
+
+		// Remaining deferred chunks after all passes are skipped.
+		if len(deferred) > 0 {
+			skipped += len(deferred)
+			for _, dc := range deferred {
+				w.logger.Warn("chunk skipped after all retries",
+					"chunk_id", dc.job.ChunkID)
+			}
+		}
+	}
+
+	if skipped > 0 {
+		w.logger.Warn("embedding completed with skipped chunks",
+			"embedded", embedded, "skipped", skipped, "total", total)
+		if onProgress != nil {
+			onProgress(types.EmbedProgress{Embedded: embedded, Total: total, Skipped: skipped})
+		}
 	}
 
 	return nil

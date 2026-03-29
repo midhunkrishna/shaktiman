@@ -120,5 +120,6 @@ type EmbedSource interface {
 type EmbedProgress struct {
 	Embedded int
 	Total    int
+	Skipped  int    // chunks that could not be embedded after retries
 	Warning  string // non-empty during transient issues (e.g., circuit breaker retry)
 }

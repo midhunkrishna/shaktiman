@@ -3,6 +3,7 @@ package vector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1095,6 +1096,299 @@ func TestRunFromDB_LargeBatchSuccess(t *testing.T) {
 		t.Errorf("embed API calls = %d, expected <= 8 for batch size 128", calls)
 	}
 	t.Logf("embed API calls: %d (512 chunks at batch size 128)", calls)
+}
+
+// ── Error Classification Tests ──
+
+func TestEmbedHTTPError_PermanentClassification(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		statusCode int
+		permanent  bool
+	}{
+		{"400 is permanent", 400, true},
+		{"404 is permanent", 404, true},
+		{"422 is permanent", 422, true},
+		{"500 is transient", 500, false},
+		{"502 is transient", 502, false},
+		{"503 is transient", 503, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := &EmbedHTTPError{StatusCode: tc.statusCode, Body: "test"}
+			got := errors.Is(err, ErrPermanentEmbed)
+			if got != tc.permanent {
+				t.Errorf("errors.Is(EmbedHTTPError{%d}, ErrPermanentEmbed) = %v, want %v",
+					tc.statusCode, got, tc.permanent)
+			}
+		})
+	}
+}
+
+func TestEmbedHTTPError_ErrorMessage(t *testing.T) {
+	t.Parallel()
+	err := &EmbedHTTPError{StatusCode: 400, Body: "bad request"}
+	msg := err.Error()
+	if msg != "ollama embed returned 400: bad request" {
+		t.Errorf("Error() = %q, want %q", msg, "ollama embed returned 400: bad request")
+	}
+}
+
+func TestEmbedBatch_ReturnsHTTPError(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Error(w, "context length exceeded", http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewOllamaClient(OllamaClientInput{
+		BaseURL: srv.URL, Model: "test", Timeout: 5 * time.Second,
+	})
+	_, err := client.EmbedBatch(context.Background(), []string{"hello"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrPermanentEmbed) {
+		t.Errorf("expected ErrPermanentEmbed, got %v", err)
+	}
+	var httpErr *EmbedHTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected *EmbedHTTPError, got %T", err)
+	}
+	if httpErr.StatusCode != 400 {
+		t.Errorf("StatusCode = %d, want 400", httpErr.StatusCode)
+	}
+}
+
+// ── Deferred Retry Queue Tests ──
+
+func TestRunFromDB_TransientDeferredRetry(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	const totalJobs = 16
+
+	jobs := makeJobs(totalJobs)
+	source := newMockEmbedSource(jobs, totalJobs)
+	store := NewBruteForceStore(dims)
+
+	// Server fails first 6 requests (500), then succeeds.
+	// Phase 1 quick retries (3) will fail, chunks get deferred.
+	// Phase 2 retries should succeed.
+	failCount := &atomic.Int32{}
+	failCount.Store(6)
+	srv := newMockOllamaServer(t, failCount, dims)
+	worker := newTestWorker(t, srv, store, 32)
+	worker.cb.baseCooldown = time.Millisecond
+	worker.cb.currentCooldown = time.Millisecond
+
+	err := worker.RunFromDB(context.Background(), source, nil)
+	if err != nil {
+		t.Fatalf("RunFromDB returned error: %v", err)
+	}
+
+	// All chunks should be embedded (some via Phase 2).
+	count, _ := store.Count(context.Background())
+	if count != totalJobs {
+		t.Errorf("store count = %d, want %d", count, totalJobs)
+	}
+}
+
+func TestRunFromDB_PermanentErrorSkipped(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	const totalJobs = 16
+
+	jobs := makeJobs(totalJobs)
+	source := newMockEmbedSource(jobs, totalJobs)
+	store := NewBruteForceStore(dims)
+
+	// Server returns 400 for all requests (permanent error).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Error(w, "input length exceeds context length", http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+
+	worker := newTestWorker(t, srv, store, 32)
+
+	var lastProgress types.EmbedProgress
+	onProgress := func(p types.EmbedProgress) {
+		lastProgress = p
+	}
+
+	err := worker.RunFromDB(context.Background(), source, onProgress)
+	if err != nil {
+		t.Fatalf("RunFromDB should not return error for permanent skips, got: %v", err)
+	}
+
+	// No chunks should be in the store (all permanently skipped).
+	count, _ := store.Count(context.Background())
+	if count != 0 {
+		t.Errorf("store count = %d, want 0 (all permanent errors)", count)
+	}
+
+	// Skipped count should equal total jobs.
+	if lastProgress.Skipped != totalJobs {
+		t.Errorf("skipped = %d, want %d", lastProgress.Skipped, totalJobs)
+	}
+}
+
+func TestRunFromDB_PermanentErrorNoCBTrip(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	const totalJobs = 8
+
+	jobs := makeJobs(totalJobs)
+	source := newMockEmbedSource(jobs, totalJobs)
+	store := NewBruteForceStore(dims)
+
+	// Server returns 400 (permanent) for all requests.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+
+	worker := newTestWorker(t, srv, store, 32)
+
+	_ = worker.RunFromDB(context.Background(), source, nil)
+
+	// Circuit breaker should still be closed (permanent errors don't trip it).
+	if worker.cb.State() != StateClosed {
+		t.Errorf("CB state = %d, want StateClosed (permanent errors should not trip CB)",
+			worker.cb.State())
+	}
+}
+
+func TestRunFromDB_DeferredExhaustsRetries(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	const totalJobs = 8
+
+	jobs := makeJobs(totalJobs)
+	source := newMockEmbedSource(jobs, totalJobs)
+	store := NewBruteForceStore(dims)
+
+	// Server always returns 500 (transient but never recovers).
+	failCount := &atomic.Int32{}
+	failCount.Store(100000)
+	srv := newMockOllamaServer(t, failCount, dims)
+	worker := newTestWorker(t, srv, store, 32)
+	worker.cb.baseCooldown = time.Millisecond
+	worker.cb.currentCooldown = time.Millisecond
+
+	var lastProgress types.EmbedProgress
+	err := worker.RunFromDB(context.Background(), source, func(p types.EmbedProgress) {
+		lastProgress = p
+	})
+
+	// Should NOT return a hard error — deferred chunks are skipped.
+	if err != nil {
+		t.Fatalf("RunFromDB should not return error, got: %v", err)
+	}
+
+	// All chunks should be skipped.
+	if lastProgress.Skipped != totalJobs {
+		t.Errorf("skipped = %d, want %d", lastProgress.Skipped, totalJobs)
+	}
+
+	// Store should be empty.
+	count, _ := store.Count(context.Background())
+	if count != 0 {
+		t.Errorf("store count = %d, want 0", count)
+	}
+}
+
+func TestRunFromDB_MixedErrors(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	const totalJobs = 16
+
+	jobs := makeJobs(totalJobs)
+	source := newMockEmbedSource(jobs, totalJobs)
+	store := NewBruteForceStore(dims)
+
+	// First 2 requests: 400 (permanent). Next 2: 500 (transient). Rest: success.
+	var callCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		n := callCount.Add(1)
+		if n <= 2 {
+			http.Error(w, "input too large", http.StatusBadRequest)
+			return
+		}
+		if n <= 4 {
+			http.Error(w, "server error", http.StatusInternalServerError)
+			return
+		}
+		// Success path
+		var req ollamaEmbedRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		var inputs []string
+		switch v := req.Input.(type) {
+		case string:
+			inputs = []string{v}
+		case []interface{}:
+			for _, s := range v {
+				inputs = append(inputs, fmt.Sprintf("%v", s))
+			}
+		}
+		embeddings := make([][]float32, len(inputs))
+		for i := range embeddings {
+			vec := make([]float32, dims)
+			for d := range vec {
+				vec[d] = float32(i+1) * 0.1
+			}
+			embeddings[i] = vec
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ollamaEmbedResponse{Embeddings: embeddings})
+	}))
+	t.Cleanup(srv.Close)
+
+	worker := newTestWorker(t, srv, store, 32)
+	worker.cb.baseCooldown = time.Millisecond
+	worker.cb.currentCooldown = time.Millisecond
+
+	var lastProgress types.EmbedProgress
+	err := worker.RunFromDB(context.Background(), source, func(p types.EmbedProgress) {
+		lastProgress = p
+	})
+	if err != nil {
+		t.Fatalf("RunFromDB returned error: %v", err)
+	}
+
+	// Some chunks should be skipped (permanent) and some embedded.
+	if lastProgress.Skipped == 0 {
+		t.Error("expected some chunks to be skipped")
+	}
+	t.Logf("embedded: %d, skipped: %d, total: %d",
+		lastProgress.Embedded, lastProgress.Skipped, lastProgress.Total)
 }
 
 // ── Context-Length Safety Tests ──
