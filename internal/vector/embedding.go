@@ -54,9 +54,15 @@ func NewOllamaClient(input OllamaClientInput) *OllamaClient {
 }
 
 type ollamaEmbedRequest struct {
-	Model string `json:"model"`
-	Input any    `json:"input"` // string or []string
+	Model    string `json:"model"`
+	Input    any    `json:"input"`    // string or []string
+	Truncate bool   `json:"truncate"` // truncate input to fit model context window
 }
+
+// maxSafeEmbedChars is a conservative client-side limit for warning about
+// oversized inputs. nomic-embed-text has 8192 token context; ~4 chars/token
+// = ~32K chars. We warn at 28K to leave headroom.
+const maxSafeEmbedChars = 28000
 
 type ollamaEmbedResponse struct {
 	Embeddings [][]float32 `json:"embeddings"`
@@ -75,8 +81,17 @@ func (c *OllamaClient) Embed(ctx context.Context, text string) ([]float32, error
 }
 
 // EmbedBatch produces embedding vectors for multiple texts in one HTTP call.
+// Sends truncate=true so Ollama clips oversized inputs to the model's context
+// window instead of returning an error.
 func (c *OllamaClient) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
-	body, err := json.Marshal(ollamaEmbedRequest{Model: c.model, Input: texts})
+	for i, t := range texts {
+		if len(t) > maxSafeEmbedChars {
+			c.logger.Warn("oversized input will be truncated by Ollama",
+				"index", i, "chars", len(t), "limit", maxSafeEmbedChars)
+		}
+	}
+
+	body, err := json.Marshal(ollamaEmbedRequest{Model: c.model, Input: texts, Truncate: true})
 	if err != nil {
 		return nil, fmt.Errorf("marshal embed request: %w", err)
 	}

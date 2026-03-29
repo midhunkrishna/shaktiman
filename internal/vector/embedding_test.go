@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -1094,6 +1095,108 @@ func TestRunFromDB_LargeBatchSuccess(t *testing.T) {
 		t.Errorf("embed API calls = %d, expected <= 8 for batch size 128", calls)
 	}
 	t.Logf("embed API calls: %d (512 chunks at batch size 128)", calls)
+}
+
+// ── Context-Length Safety Tests ──
+
+func TestEmbedBatch_TruncateFieldSent(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		capturedBody, _ = io.ReadAll(r.Body)
+		// Parse and respond with correct number of embeddings.
+		var req struct {
+			Input []string `json:"input"`
+		}
+		json.Unmarshal(capturedBody, &req)
+		embeddings := make([][]float32, len(req.Input))
+		for i := range embeddings {
+			embeddings[i] = []float32{0.1, 0.2, 0.3, 0.4}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ollamaEmbedResponse{Embeddings: embeddings})
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewOllamaClient(OllamaClientInput{
+		BaseURL: srv.URL,
+		Model:   "test",
+		Timeout: 5 * time.Second,
+	})
+
+	_, err := client.EmbedBatch(context.Background(), []string{"hello"})
+	if err != nil {
+		t.Fatalf("EmbedBatch: %v", err)
+	}
+
+	// Verify the request body contains "truncate":true.
+	var parsed map[string]any
+	if err := json.Unmarshal(capturedBody, &parsed); err != nil {
+		t.Fatalf("unmarshal captured body: %v", err)
+	}
+	truncate, ok := parsed["truncate"]
+	if !ok {
+		t.Fatal("request body missing 'truncate' field")
+	}
+	if truncate != true {
+		t.Errorf("truncate = %v, want true", truncate)
+	}
+}
+
+func TestEmbedBatch_OversizedInputHandled(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+
+	// Create a text larger than maxSafeEmbedChars.
+	oversized := make([]byte, maxSafeEmbedChars+1000)
+	for i := range oversized {
+		oversized[i] = 'a'
+	}
+
+	srv := newMockOllamaServer(t, nil, dims)
+	client := NewOllamaClient(OllamaClientInput{
+		BaseURL: srv.URL,
+		Model:   "test",
+		Timeout: 5 * time.Second,
+	})
+
+	// Should succeed (server truncates) — no error returned.
+	vecs, err := client.EmbedBatch(context.Background(), []string{string(oversized)})
+	if err != nil {
+		t.Fatalf("EmbedBatch with oversized input: %v", err)
+	}
+	if len(vecs) != 1 {
+		t.Fatalf("expected 1 embedding, got %d", len(vecs))
+	}
+	if len(vecs[0]) != dims {
+		t.Fatalf("expected %d dims, got %d", dims, len(vecs[0]))
+	}
+}
+
+func TestEmbedBatch_NormalInputSucceeds(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	srv := newMockOllamaServer(t, nil, dims)
+	client := NewOllamaClient(OllamaClientInput{
+		BaseURL: srv.URL,
+		Model:   "test",
+		Timeout: 5 * time.Second,
+	})
+
+	vecs, err := client.EmbedBatch(context.Background(), []string{"short text"})
+	if err != nil {
+		t.Fatalf("EmbedBatch: %v", err)
+	}
+	if len(vecs) != 1 || len(vecs[0]) != dims {
+		t.Fatalf("unexpected result: %d vecs, %d dims", len(vecs), len(vecs[0]))
+	}
 }
 
 // ── EmbedderHealthy Tests ──
