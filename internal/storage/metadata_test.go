@@ -427,6 +427,128 @@ func TestCountChunksNeedingEmbedding(t *testing.T) {
 	}
 }
 
+func TestCountChunksEmbedded(t *testing.T) {
+	t.Parallel()
+	store := setupTestStore(t)
+	ctx := context.Background()
+
+	_, chunkIDs := insertTestFileWithChunks(t, store, "test.go", 50)
+
+	// Initially no chunks are embedded.
+	count, err := store.CountChunksEmbedded(ctx)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0", count)
+	}
+
+	// Mark 20 as embedded.
+	if err := store.MarkChunksEmbedded(ctx, chunkIDs[:20]); err != nil {
+		t.Fatalf("MarkChunksEmbedded: %v", err)
+	}
+	count, err = store.CountChunksEmbedded(ctx)
+	if err != nil {
+		t.Fatalf("count after mark 20: %v", err)
+	}
+	if count != 20 {
+		t.Fatalf("count = %d, want 20", count)
+	}
+
+	// Mark remaining 30 — should be complementary to CountChunksNeedingEmbedding.
+	if err := store.MarkChunksEmbedded(ctx, chunkIDs[20:]); err != nil {
+		t.Fatalf("MarkChunksEmbedded: %v", err)
+	}
+	count, err = store.CountChunksEmbedded(ctx)
+	if err != nil {
+		t.Fatalf("count after mark all: %v", err)
+	}
+	if count != 50 {
+		t.Fatalf("count = %d, want 50", count)
+	}
+	need, err := store.CountChunksNeedingEmbedding(ctx)
+	if err != nil {
+		t.Fatalf("CountChunksNeedingEmbedding: %v", err)
+	}
+	if need != 0 {
+		t.Fatalf("need = %d, want 0", need)
+	}
+}
+
+// TestResetAllEmbeddedFlags verifies that ResetAllEmbeddedFlags sets all chunks
+// to embedded=0 and all files to embedding_status='pending'.
+func TestResetAllEmbeddedFlags(t *testing.T) {
+	t.Parallel()
+	store := setupTestStore(t)
+	ctx := context.Background()
+
+	// Insert two files with chunks.
+	_, chunkIDs1 := insertTestFileWithChunks(t, store, "a.go", 30)
+	_, chunkIDs2 := insertTestFileWithChunks(t, store, "b.go", 20)
+	allIDs := append(chunkIDs1, chunkIDs2...)
+
+	// Mark all as embedded → files become 'complete'.
+	if err := store.MarkChunksEmbedded(ctx, allIDs); err != nil {
+		t.Fatalf("MarkChunksEmbedded: %v", err)
+	}
+	embedded, _ := store.CountChunksEmbedded(ctx)
+	if embedded != 50 {
+		t.Fatalf("embedded = %d, want 50", embedded)
+	}
+	for _, path := range []string{"a.go", "b.go"} {
+		f, _ := store.GetFileByPath(ctx, path)
+		if f.EmbeddingStatus != "complete" {
+			t.Fatalf("%s status = %q, want 'complete'", path, f.EmbeddingStatus)
+		}
+	}
+
+	// Reset all flags.
+	if err := store.ResetAllEmbeddedFlags(ctx); err != nil {
+		t.Fatalf("ResetAllEmbeddedFlags: %v", err)
+	}
+
+	// All chunks back to embedded=0.
+	embedded, _ = store.CountChunksEmbedded(ctx)
+	if embedded != 0 {
+		t.Fatalf("embedded after reset = %d, want 0", embedded)
+	}
+	need, _ := store.CountChunksNeedingEmbedding(ctx)
+	if need != 50 {
+		t.Fatalf("need after reset = %d, want 50", need)
+	}
+
+	// All files back to 'pending'.
+	for _, path := range []string{"a.go", "b.go"} {
+		f, _ := store.GetFileByPath(ctx, path)
+		if f.EmbeddingStatus != "pending" {
+			t.Fatalf("%s status after reset = %q, want 'pending'", path, f.EmbeddingStatus)
+		}
+	}
+}
+
+// TestResetAllEmbeddedFlags_NoOp verifies that ResetAllEmbeddedFlags is safe
+// when no chunks are embedded.
+func TestResetAllEmbeddedFlags_NoOp(t *testing.T) {
+	t.Parallel()
+	store := setupTestStore(t)
+	ctx := context.Background()
+
+	_, _ = insertTestFileWithChunks(t, store, "clean.go", 10)
+
+	if err := store.ResetAllEmbeddedFlags(ctx); err != nil {
+		t.Fatalf("ResetAllEmbeddedFlags: %v", err)
+	}
+
+	need, _ := store.CountChunksNeedingEmbedding(ctx)
+	if need != 10 {
+		t.Fatalf("need = %d, want 10", need)
+	}
+	embedded, _ := store.CountChunksEmbedded(ctx)
+	if embedded != 0 {
+		t.Fatalf("embedded = %d, want 0", embedded)
+	}
+}
+
 func TestMarkChunksEmbedded_Cumulative(t *testing.T) {
 	t.Parallel()
 	store := setupTestStore(t)

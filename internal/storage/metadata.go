@@ -434,6 +434,32 @@ func (s *Store) CountChunksNeedingEmbedding(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// CountChunksEmbedded returns the number of chunks with embedded = 1.
+func (s *Store) CountChunksEmbedded(ctx context.Context) (int, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chunks WHERE embedded = 1`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count embedded chunks: %w", err)
+	}
+	return count, nil
+}
+
+// ResetAllEmbeddedFlags sets all chunks to embedded = 0 and all files to
+// embedding_status = 'pending'. Used when the vector store is out of sync
+// with the DB (e.g. embeddings.bin was deleted).
+func (s *Store) ResetAllEmbeddedFlags(ctx context.Context) error {
+	return s.db.WithWriteTx(func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE chunks SET embedded = 0 WHERE embedded = 1`); err != nil {
+			return fmt.Errorf("reset embedded flags: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE files SET embedding_status = 'pending' WHERE embedding_status != 'pending'`); err != nil {
+			return fmt.Errorf("reset file embedding status: %w", err)
+		}
+		return nil
+	})
+}
+
 // MarkChunksEmbedded marks individual chunks as embedded and updates the parent
 // file's embedding_status based on cumulative progress. Files where all chunks
 // are now embedded get status 'complete'; files with some embedded get 'partial'.

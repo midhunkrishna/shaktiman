@@ -105,9 +105,7 @@ func indexCmd() *cobra.Command {
 
 			if embed {
 				var lastEmbedPct int
-				var embedTotal int
 				count, err := d.EmbedProject(ctx, func(p types.EmbedProgress) {
-					embedTotal = p.Total
 					if p.Warning != "" {
 						if tty {
 							fmt.Fprintf(os.Stdout, "\r%s%s", p.Warning, strings.Repeat(" ", 20))
@@ -135,14 +133,14 @@ func indexCmd() *cobra.Command {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					fmt.Fprintf(os.Stderr, "Indexing completed without embeddings. Run 'shaktiman index --embed' to retry.\n")
 					if count > 0 {
-						fmt.Printf("Embedded: %d chunks (partial) → %s\n", count, cfg.EmbeddingsPath)
+						fmt.Printf("Embedded: %d/%d chunks (partial) → %s\n", count, stats.TotalChunks, cfg.EmbeddingsPath)
 					}
 				} else {
-					if count < embedTotal && embedTotal > 0 {
-						fmt.Fprintf(os.Stderr, "Warning: %d/%d chunks could not be embedded (Ollama errors).\n", embedTotal-count, embedTotal)
+					if count < stats.TotalChunks && stats.TotalChunks > 0 {
+						fmt.Fprintf(os.Stderr, "Warning: %d/%d chunks could not be embedded (Ollama errors).\n", stats.TotalChunks-count, stats.TotalChunks)
 						fmt.Fprintf(os.Stderr, "Run 'shaktiman index --embed' to retry failed chunks.\n")
 					}
-					fmt.Printf("Embedded: %d chunks → %s\n", count, cfg.EmbeddingsPath)
+					fmt.Printf("Embedded: %d/%d chunks → %s\n", count, stats.TotalChunks, cfg.EmbeddingsPath)
 				}
 			}
 			return nil
