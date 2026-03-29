@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **HNSW vector store backend** (`internal/vector/hnsw.go`) — `HNSWStore`
+  adapter implementing `VectorStore` + `VectorPersister` interfaces, backed by
+  hnswlib C++ via `midhunkrishna/hnswgo` CGo bindings. O(log n) approximate
+  nearest-neighbor search as a config-selectable alternative to `BruteForceStore`.
+  Cosine space with score conversion (`1.0 - distance`), automatic capacity
+  growth via `ResizeIndex`, soft delete via `MarkDeleted`, atomic persistence
+  with temp-file rename. 25 tests covering search, upsert, batch, delete,
+  persistence round-trip, recall, concurrency (`-race` clean), and capacity
+  growth.
+- **`vector.backend` config** (`internal/types/config.go`) — `VectorBackend`
+  field accepting `"brute_force"` (default) or `"hnsw"`. TOML parsing with
+  validation in `[vector]` section. Sample config updated.
+- **Vector store factory** (`internal/daemon/daemon.go`) — `newVectorStore()`
+  selects backend based on config. `embeddingsPath()` returns backend-specific
+  persistence path (`.hnsw` extension for HNSW, `.bin` for brute force) to
+  avoid format conflicts.
+
+### Changed
+
+- MCP server version bumped to `0.6.0`.
+- `internal/daemon/daemon.go` — `initEmbedding()` uses factory method instead
+  of hardcoded `NewBruteForceStore`. Five `EmbeddingsPath` call sites updated
+  to use `embeddingsPath()` helper.
+
+### Dependencies
+
+- Added `github.com/midhunkrishna/hnswgo v1.0.0` — CGo bindings to hnswlib
+  C++ (fork of oligo/hnswgo with proper error propagation, idempotent `Free()`
+  with finalizer safety net, `ErrIndexClosed` sentinel, `sync.RWMutex` on all
+  methods).
+
 - **`--format` CLI flag** (`cmd/shaktiman/main.go`) — persistent flag on root
   command accepting `json` (default, backward-compatible) or `text` (MCP-style
   plain text). Applied to all query subcommands: `search`, `context`, `symbols`,

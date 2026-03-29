@@ -23,6 +23,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.ContextBudgetTokens != 4096 {
 		t.Errorf("ContextBudgetTokens = %d, want 4096", cfg.ContextBudgetTokens)
 	}
+	if cfg.VectorBackend != "brute_force" {
+		t.Errorf("VectorBackend = %q, want brute_force", cfg.VectorBackend)
+	}
 }
 
 func TestLoadConfigFromFile_NoFile(t *testing.T) {
@@ -61,6 +64,9 @@ min_score = 0.30
 [context]
 enabled = false
 budget_tokens = 2048
+
+[vector]
+backend = "hnsw"
 `
 	os.WriteFile(filepath.Join(cfgDir, "shaktiman.toml"), []byte(toml), 0o644)
 
@@ -91,6 +97,9 @@ budget_tokens = 2048
 	}
 	if loaded.MaxBudgetTokens != 2048 {
 		t.Errorf("MaxBudgetTokens = %d, want 2048", loaded.MaxBudgetTokens)
+	}
+	if loaded.VectorBackend != "hnsw" {
+		t.Errorf("VectorBackend = %q, want hnsw", loaded.VectorBackend)
 	}
 }
 
@@ -125,6 +134,10 @@ max_results = 5
 	if loaded.SearchDefaultMode != "locate" {
 		t.Errorf("SearchDefaultMode = %q, want locate", loaded.SearchDefaultMode)
 	}
+	// VectorBackend should retain default when [vector] section absent
+	if loaded.VectorBackend != "brute_force" {
+		t.Errorf("VectorBackend = %q, want brute_force", loaded.VectorBackend)
+	}
 }
 
 func TestLoadConfigFromFile_InvalidValues(t *testing.T) {
@@ -139,6 +152,7 @@ func TestLoadConfigFromFile_InvalidValues(t *testing.T) {
 		{"min_score negative", `[search]` + "\n" + `min_score = -0.1`},
 		{"budget too low", `[context]` + "\n" + `budget_tokens = 100`},
 		{"budget too high", `[context]` + "\n" + `budget_tokens = 99999`},
+		{"invalid backend", `[vector]` + "\n" + `backend = "faiss"`},
 	}
 
 	for _, tt := range tests {
@@ -190,6 +204,9 @@ func TestWriteSampleConfig(t *testing.T) {
 	}
 	if !contains(content, "# budget_tokens") {
 		t.Error("expected commented budget_tokens")
+	}
+	if !contains(content, "# backend") {
+		t.Error("expected commented backend")
 	}
 
 	// Loading the sample should produce default config (all commented out)

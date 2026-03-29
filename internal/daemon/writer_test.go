@@ -11,6 +11,93 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
+func TestWriterManager_Started_FalseBeforeRun(t *testing.T) {
+	t.Parallel()
+
+	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	defer db.Close()
+
+	store := storage.NewStore(db)
+	wm := NewWriterManager(store, 10)
+
+	if wm.Started() {
+		t.Error("Started() should be false before Run is called")
+	}
+}
+
+func TestWriterManager_Started_TrueAfterRun(t *testing.T) {
+	t.Parallel()
+
+	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	defer db.Close()
+
+	store := storage.NewStore(db)
+	wm := NewWriterManager(store, 10)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go wm.Run(ctx)
+
+	// Poll until Run sets the flag (avoids flaky fixed sleep).
+	deadline := time.After(2 * time.Second)
+	for !wm.Started() {
+		select {
+		case <-deadline:
+			t.Fatal("Started() not set within 2s after Run was called")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	cancel()
+	<-wm.Done()
+
+	// Started remains true after shutdown.
+	if !wm.Started() {
+		t.Error("Started() should remain true after writer shuts down")
+	}
+}
+
+func TestStop_WriterNeverStarted_NoTimeout(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/test.db"
+
+	cfg := types.Config{
+		ProjectRoot:       tmpDir,
+		DBPath:            dbPath,
+		WriterChannelSize: 10,
+	}
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Stop without ever calling Start or IndexProject.
+	// Before the fix, this would block for 15 seconds.
+	start := time.Now()
+	if err := d.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("Stop took %v; expected < 2s when writer was never started", elapsed)
+	}
+}
+
 func TestSubmit_BlockedDuringShutdown(t *testing.T) {
 	t.Parallel()
 

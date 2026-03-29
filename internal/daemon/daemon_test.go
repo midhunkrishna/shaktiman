@@ -17,6 +17,7 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/core"
 	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
+	"github.com/shaktimanai/shaktiman/internal/vector"
 )
 
 func TestIntegration_IndexAndSearch(t *testing.T) {
@@ -2275,4 +2276,213 @@ func TestFlushPending_EventChannelDrop(t *testing.T) {
 	if drops == 0 {
 		t.Error("expected drop count > 0 when event channel is full")
 	}
+}
+
+func TestEmbeddingsPath_BruteForce(t *testing.T) {
+	t.Parallel()
+	d := &Daemon{
+		cfg: types.Config{
+			VectorBackend:  "brute_force",
+			EmbeddingsPath: "/data/.shaktiman/embeddings.bin",
+		},
+	}
+	got := d.embeddingsPath()
+	if got != "/data/.shaktiman/embeddings.bin" {
+		t.Errorf("embeddingsPath() = %q, want /data/.shaktiman/embeddings.bin", got)
+	}
+}
+
+func TestEmbeddingsPath_HNSW_WithExtension(t *testing.T) {
+	t.Parallel()
+	d := &Daemon{
+		cfg: types.Config{
+			VectorBackend:  "hnsw",
+			EmbeddingsPath: "/data/.shaktiman/embeddings.bin",
+		},
+	}
+	got := d.embeddingsPath()
+	want := "/data/.shaktiman/embeddings.hnsw"
+	if got != want {
+		t.Errorf("embeddingsPath() = %q, want %q", got, want)
+	}
+}
+
+func TestEmbeddingsPath_HNSW_NoExtension(t *testing.T) {
+	t.Parallel()
+	d := &Daemon{
+		cfg: types.Config{
+			VectorBackend:  "hnsw",
+			EmbeddingsPath: "/data/.shaktiman/embeddings",
+		},
+	}
+	got := d.embeddingsPath()
+	want := "/data/.shaktiman/embeddings.hnsw"
+	if got != want {
+		t.Errorf("embeddingsPath() = %q, want %q", got, want)
+	}
+}
+
+func TestEmbeddingsPath_EmptyBackend(t *testing.T) {
+	t.Parallel()
+	d := &Daemon{
+		cfg: types.Config{
+			VectorBackend:  "",
+			EmbeddingsPath: "/data/embeddings.bin",
+		},
+	}
+	got := d.embeddingsPath()
+	if got != "/data/embeddings.bin" {
+		t.Errorf("embeddingsPath() = %q, want /data/embeddings.bin (default path)", got)
+	}
+}
+
+func TestNewVectorStore_BruteForce(t *testing.T) {
+	t.Parallel()
+	d := &Daemon{
+		cfg: types.Config{
+			VectorBackend: "brute_force",
+			EmbeddingDims: 4,
+		},
+	}
+	vs, err := d.newVectorStore()
+	if err != nil {
+		t.Fatalf("newVectorStore: %v", err)
+	}
+	if _, ok := vs.(*vector.BruteForceStore); !ok {
+		t.Errorf("expected *BruteForceStore, got %T", vs)
+	}
+}
+
+func TestNewVectorStore_HNSW(t *testing.T) {
+	t.Parallel()
+	d := &Daemon{
+		cfg: types.Config{
+			VectorBackend: "hnsw",
+			EmbeddingDims: 4,
+		},
+	}
+	vs, err := d.newVectorStore()
+	if err != nil {
+		t.Fatalf("newVectorStore: %v", err)
+	}
+	if _, ok := vs.(*vector.HNSWStore); !ok {
+		t.Errorf("expected *HNSWStore, got %T", vs)
+	}
+	vs.Close()
+}
+
+func TestNewVectorStore_EmptyBackendDefaultsBruteForce(t *testing.T) {
+	t.Parallel()
+	d := &Daemon{
+		cfg: types.Config{
+			VectorBackend: "",
+			EmbeddingDims: 4,
+		},
+	}
+	vs, err := d.newVectorStore()
+	if err != nil {
+		t.Fatalf("newVectorStore: %v", err)
+	}
+	if _, ok := vs.(*vector.BruteForceStore); !ok {
+		t.Errorf("expected *BruteForceStore for empty backend, got %T", vs)
+	}
+}
+
+func TestDaemon_New_WithHNSWBackend(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	srv := newMockOllama(dims, nil)
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	os.MkdirAll(projectDir, 0o755)
+	writeGoFiles(t, projectDir, 2, 2)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	embPath := filepath.Join(tmpDir, "embeddings.bin")
+	cfg := embedCfg(projectDir, dbPath, embPath, srv.URL)
+	cfg.VectorBackend = "hnsw"
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon with HNSW backend: %v", err)
+	}
+
+	// Verify the vector store is HNSW type
+	if _, ok := d.vectorStore.(*vector.HNSWStore); !ok {
+		t.Errorf("expected *HNSWStore, got %T", d.vectorStore)
+	}
+
+	// Verify embeddingsPath uses .hnsw extension
+	got := d.embeddingsPath()
+	if !strings.HasSuffix(got, ".hnsw") {
+		t.Errorf("embeddingsPath() = %q, expected .hnsw suffix", got)
+	}
+
+	d.Stop()
+}
+
+func TestEmbedProject_HNSWBackend(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	srv := newMockOllama(dims, nil)
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	os.MkdirAll(projectDir, 0o755)
+	writeGoFiles(t, projectDir, 3, 3)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	embPath := filepath.Join(tmpDir, "embeddings.bin")
+	cfg := embedCfg(projectDir, dbPath, embPath, srv.URL)
+	cfg.VectorBackend = "hnsw"
+
+	ctx := context.Background()
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := d.IndexProject(ctx, nil); err != nil {
+		t.Fatalf("IndexProject: %v", err)
+	}
+
+	count, err := d.EmbedProject(ctx, nil)
+	if err != nil {
+		t.Fatalf("EmbedProject: %v", err)
+	}
+	if count == 0 {
+		t.Fatal("expected non-zero vector count")
+	}
+
+	// Verify persistence file uses .hnsw extension
+	hnswPath := d.embeddingsPath()
+	if _, err := os.Stat(hnswPath); os.IsNotExist(err) {
+		t.Errorf("expected HNSW persistence file at %s", hnswPath)
+	}
+
+	// Verify the .bin file was NOT created
+	if _, err := os.Stat(embPath); !os.IsNotExist(err) {
+		t.Errorf("did not expect brute-force persistence file at %s", embPath)
+	}
+
+	d.Stop()
+
+	// Phase 2: Re-create daemon, verify vectors load from disk
+	d2, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon (reload): %v", err)
+	}
+
+	count2, _ := d2.vectorStore.Count(ctx)
+	if count2 != count {
+		t.Errorf("vector count after reload = %d, want %d", count2, count)
+	}
+
+	d2.Stop()
 }
