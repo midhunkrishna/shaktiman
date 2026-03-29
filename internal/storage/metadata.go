@@ -460,6 +460,102 @@ func (s *Store) ResetAllEmbeddedFlags(ctx context.Context) error {
 	})
 }
 
+// GetEmbeddedChunkIDs returns up to limit chunk IDs where embedded = 1 and
+// id > afterID, ordered by id. Used for cursor-based reconciliation against
+// the vector store.
+func (s *Store) GetEmbeddedChunkIDs(ctx context.Context, afterID int64, limit int) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM chunks WHERE embedded = 1 AND id > ? ORDER BY id LIMIT ?`,
+		afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("get embedded chunk IDs: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan embedded chunk ID: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// ResetEmbeddedFlags sets embedded = 0 for the given chunk IDs and recalculates
+// file embedding_status for affected files. Used for targeted reconciliation
+// when only some vectors are missing from the store.
+func (s *Store) ResetEmbeddedFlags(ctx context.Context, chunkIDs []int64) error {
+	if len(chunkIDs) == 0 {
+		return nil
+	}
+
+	return s.db.WithWriteTx(func(tx *sql.Tx) error {
+		const batchLimit = 500
+		for start := 0; start < len(chunkIDs); start += batchLimit {
+			end := start + batchLimit
+			if end > len(chunkIDs) {
+				end = len(chunkIDs)
+			}
+			batch := chunkIDs[start:end]
+
+			placeholders := make([]string, len(batch))
+			args := make([]any, len(batch))
+			for i, id := range batch {
+				placeholders[i] = "?"
+				args[i] = id
+			}
+			ph := strings.Join(placeholders, ",")
+
+			if _, err := tx.ExecContext(ctx,
+				fmt.Sprintf("UPDATE chunks SET embedded = 0 WHERE id IN (%s)", ph),
+				args...); err != nil {
+				return fmt.Errorf("reset embedded flags: %w", err)
+			}
+
+			rows, err := tx.QueryContext(ctx,
+				fmt.Sprintf("SELECT DISTINCT file_id FROM chunks WHERE id IN (%s)", ph),
+				args...)
+			if err != nil {
+				return fmt.Errorf("get affected file IDs: %w", err)
+			}
+			var fileIDs []int64
+			for rows.Next() {
+				var fid int64
+				if err := rows.Scan(&fid); err != nil {
+					rows.Close()
+					return fmt.Errorf("scan file ID: %w", err)
+				}
+				fileIDs = append(fileIDs, fid)
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("iterate file IDs: %w", err)
+			}
+
+			for _, fid := range fileIDs {
+				var embeddedCount int
+				if err := tx.QueryRowContext(ctx,
+					"SELECT COUNT(*) FROM chunks WHERE file_id = ? AND embedded = 1", fid,
+				).Scan(&embeddedCount); err != nil {
+					return fmt.Errorf("count embedded for file %d: %w", fid, err)
+				}
+				status := "pending"
+				if embeddedCount > 0 {
+					status = "partial"
+				}
+				if _, err := tx.ExecContext(ctx,
+					"UPDATE files SET embedding_status = ? WHERE id = ?",
+					status, fid); err != nil {
+					return fmt.Errorf("update file %d embedding status: %w", fid, err)
+				}
+			}
+		}
+		return nil
+	})
+}
+
 // MarkChunksEmbedded marks individual chunks as embedded and updates the parent
 // file's embedding_status based on cumulative progress. Files where all chunks
 // are now embedded get status 'complete'; files with some embedded get 'partial'.

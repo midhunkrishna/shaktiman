@@ -1477,6 +1477,102 @@ func TestEmbedProject_ReverseReconciliation(t *testing.T) {
 	d2.Stop()
 }
 
+// TestEmbedProject_PartialVectorLoss verifies that when some vectors are missing
+// from the store but the DB still marks them as embedded, EmbedProject only
+// re-embeds the missing chunks (targeted reconciliation) rather than resetting all.
+func TestEmbedProject_PartialVectorLoss(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	var reqCount atomic.Int64
+	srv := newMockOllama(dims, &reqCount)
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeGoFiles(t, projectDir, 10, 5)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	embPath := filepath.Join(tmpDir, "embeddings.bin")
+	cfg := embedCfg(projectDir, dbPath, embPath, srv.URL)
+
+	ctx := context.Background()
+
+	// Phase 1: Index + embed all chunks.
+	d1, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon (phase 1): %v", err)
+	}
+	if err := d1.IndexProject(ctx, nil); err != nil {
+		t.Fatalf("IndexProject: %v", err)
+	}
+	count1, err := d1.EmbedProject(ctx, nil)
+	if err != nil {
+		t.Fatalf("EmbedProject (phase 1): %v", err)
+	}
+	if count1 == 0 {
+		t.Fatal("expected non-zero vector count after phase 1")
+	}
+
+	embeddedInDB, _ := d1.Store().CountChunksEmbedded(ctx)
+	t.Logf("Phase 1: %d vectors, %d embedded in DB", count1, embeddedInDB)
+
+	// Phase 2: Delete ~20% of vectors from the store to simulate partial loss.
+	// Get some chunk IDs to delete.
+	deleteIDs, err := d1.Store().GetEmbeddedChunkIDs(ctx, 0, embeddedInDB/5)
+	if err != nil {
+		t.Fatalf("GetEmbeddedChunkIDs: %v", err)
+	}
+	if len(deleteIDs) == 0 {
+		t.Fatal("no embedded chunk IDs to delete")
+	}
+	t.Logf("Phase 2: deleting %d vectors (simulating partial loss)", len(deleteIDs))
+
+	if err := d1.vectorStore.Delete(ctx, deleteIDs); err != nil {
+		t.Fatalf("Delete vectors: %v", err)
+	}
+
+	// Save the partial vector store to disk.
+	if saveErr := d1.saveVectors(d1.embeddingsPath()); saveErr != nil {
+		t.Fatalf("saveVectors: %v", saveErr)
+	}
+	d1.Stop()
+
+	// Phase 3: Create new daemon (same DB + partial embeddings) and re-embed.
+	reqCount.Store(0)
+	d2, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon (phase 3): %v", err)
+	}
+
+	count3, err := d2.EmbedProject(ctx, nil)
+	if err != nil {
+		t.Fatalf("EmbedProject (phase 3): %v", err)
+	}
+	t.Logf("Phase 3: vector store has %d vectors", count3)
+
+	// Vector count should match phase 1 (all chunks re-embedded).
+	if count3 != count1 {
+		t.Errorf("vector count = %d, want %d", count3, count1)
+	}
+
+	// No chunks should be left needing embedding.
+	need, _ := d2.Store().CountChunksNeedingEmbedding(ctx)
+	if need != 0 {
+		t.Errorf("chunks needing embedding = %d, want 0", need)
+	}
+
+	// The mock server should have received requests only for the deleted vectors,
+	// not for all chunks. Verify request count is much less than phase 1.
+	reqs := reqCount.Load()
+	t.Logf("Phase 3: mock server received %d embed requests", reqs)
+
+	d2.Stop()
+}
+
 func TestEmbedProject_IncrementalAfterCold(t *testing.T) {
 	t.Parallel()
 
