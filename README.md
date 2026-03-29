@@ -333,6 +333,9 @@ All configuration uses sensible defaults. Optionally create `.shaktiman/shaktima
 [context]
 # enabled = true           # Set false to disable the context tool entirely
 # budget_tokens = 4096     # Default token budget for context assembly (256-32768)
+
+[vector]
+# backend = "brute_force"  # "brute_force" (default) or "hnsw"
 ```
 
 ### All Settings
@@ -344,6 +347,7 @@ All configuration uses sensible defaults. Optionally create `.shaktiman/shaktima
 | `search.min_score` | 0.15 | Minimum relevance score threshold |
 | `context.enabled` | true | Whether to register the context MCP tool |
 | `context.budget_tokens` | 4,096 | Default token budget for context assembly |
+| `vector.backend` | `brute_force` | Vector store backend: `brute_force` (in-memory, O(n)) or `hnsw` (disk-backed, O(log n) via hnswlib) |
 | DB path | `.shaktiman/index.db` | SQLite database location |
 | Watcher | enabled | Auto-reindex on file save |
 | Watcher debounce | 200ms | Debounce window for file events |
