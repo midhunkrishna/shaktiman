@@ -264,6 +264,19 @@ func (d *Daemon) EmbedProject(ctx context.Context, onProgress func(types.EmbedPr
 		return 0, fmt.Errorf("Ollama is not reachable at %s", d.cfg.OllamaURL)
 	}
 
+	// Reverse reconciliation: if vector store has fewer vectors than DB claims
+	// are embedded, reset all embedded flags. This handles deleted/corrupted
+	// embeddings.bin where the DB is out of sync with the actual vectors.
+	embeddedInDB, _ := d.store.CountChunksEmbedded(ctx)
+	vectorCount, _ := d.vectorStore.Count(ctx)
+	if embeddedInDB > 0 && vectorCount < embeddedInDB {
+		d.logger.Info("vector store out of sync with DB, resetting embedded flags",
+			"db_embedded", embeddedInDB, "vector_count", vectorCount)
+		if err := d.store.ResetAllEmbeddedFlags(ctx); err != nil {
+			return 0, fmt.Errorf("reset embedded flags: %w", err)
+		}
+	}
+
 	count, err := d.embedFromDB(ctx, onProgress)
 
 	// Save embeddings even on partial failure (crash safety).

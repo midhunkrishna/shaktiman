@@ -1398,6 +1398,85 @@ func TestEmbedProject_CrashRecovery(t *testing.T) {
 	d2.Stop()
 }
 
+// TestEmbedProject_ReverseReconciliation verifies that when embeddings.bin is
+// deleted but the DB still has chunks marked embedded=1, EmbedProject detects
+// the mismatch and re-embeds all chunks.
+//
+// Invariant: the embedded column in SQLite must stay in sync with the actual
+// vector store contents. If vectors are lost, the DB must be corrected.
+func TestEmbedProject_ReverseReconciliation(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	srv := newMockOllama(dims, nil)
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeGoFiles(t, projectDir, 3, 3)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	embPath := filepath.Join(tmpDir, "embeddings.bin")
+	cfg := embedCfg(projectDir, dbPath, embPath, srv.URL)
+
+	ctx := context.Background()
+
+	// Phase 1: Index + embed all chunks.
+	d1, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon (phase 1): %v", err)
+	}
+	if err := d1.IndexProject(ctx, nil); err != nil {
+		t.Fatalf("IndexProject (phase 1): %v", err)
+	}
+	count1, err := d1.EmbedProject(ctx, nil)
+	if err != nil {
+		t.Fatalf("EmbedProject (phase 1): %v", err)
+	}
+	if count1 == 0 {
+		t.Fatal("expected non-zero vector count after phase 1")
+	}
+	need, _ := d1.Store().CountChunksNeedingEmbedding(ctx)
+	if need != 0 {
+		t.Fatalf("expected 0 chunks needing embedding after phase 1, got %d", need)
+	}
+	t.Logf("Phase 1: embedded %d vectors", count1)
+	d1.Stop()
+
+	// Phase 2: Delete embeddings.bin (simulate user deleting the file).
+	if err := os.Remove(embPath); err != nil {
+		t.Fatalf("Remove embeddings.bin: %v", err)
+	}
+
+	// Phase 3: Re-create daemon (same DB, no embeddings.bin) and re-embed.
+	d2, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon (phase 3): %v", err)
+	}
+
+	count2, err := d2.EmbedProject(ctx, nil)
+	if err != nil {
+		t.Fatalf("EmbedProject (phase 3): %v", err)
+	}
+	t.Logf("Phase 3: embedded %d vectors (expected %d)", count2, count1)
+
+	// All chunks must be re-embedded — vector count should match phase 1.
+	if count2 != count1 {
+		t.Errorf("vector count after re-embed = %d, want %d (all chunks re-embedded)", count2, count1)
+	}
+
+	// No chunks should be left needing embedding.
+	need, _ = d2.Store().CountChunksNeedingEmbedding(ctx)
+	if need != 0 {
+		t.Errorf("chunks needing embedding after re-embed = %d, want 0", need)
+	}
+
+	d2.Stop()
+}
+
 func TestEmbedProject_IncrementalAfterCold(t *testing.T) {
 	t.Parallel()
 
