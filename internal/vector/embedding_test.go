@@ -935,6 +935,167 @@ func TestRunFromDB_HasReconciliation(t *testing.T) {
 	}
 }
 
+// ── Adaptive Batch Sizing Tests ──
+
+func TestRunFromDB_AdaptiveBatchShrink(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	const totalJobs = 128
+	const maxAccepted = 32 // server rejects batches larger than this
+
+	jobs := makeJobs(totalJobs)
+	source := newMockEmbedSource(jobs, totalJobs)
+	store := NewBruteForceStore(dims)
+
+	// Server returns 500 for batches > maxAccepted, 200 otherwise.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		var req ollamaEmbedRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		var inputs []string
+		switch v := req.Input.(type) {
+		case string:
+			inputs = []string{v}
+		case []interface{}:
+			for _, s := range v {
+				inputs = append(inputs, fmt.Sprintf("%v", s))
+			}
+		}
+		if len(inputs) > maxAccepted {
+			http.Error(w, "batch too large", http.StatusInternalServerError)
+			return
+		}
+		embeddings := make([][]float32, len(inputs))
+		for i := range embeddings {
+			vec := make([]float32, dims)
+			for d := range vec {
+				vec[d] = float32(i+1) * 0.1
+			}
+			embeddings[i] = vec
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ollamaEmbedResponse{Embeddings: embeddings})
+	}))
+	t.Cleanup(srv.Close)
+
+	// Worker starts at batchSize=128, should shrink to <= 32.
+	worker := newTestWorker(t, srv, store, 128)
+	worker.cb.baseCooldown = time.Millisecond
+	worker.cb.currentCooldown = time.Millisecond
+
+	err := worker.RunFromDB(context.Background(), source, nil)
+	if err != nil {
+		t.Fatalf("RunFromDB returned error: %v", err)
+	}
+
+	// All chunks should be embedded despite batch shrinking.
+	count, _ := store.Count(context.Background())
+	if count != totalJobs {
+		t.Errorf("store count = %d, want %d", count, totalJobs)
+	}
+}
+
+func TestRunFromDB_AdaptiveBatchRestore(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	const totalJobs = 64
+
+	jobs := makeJobs(totalJobs)
+	source := newMockEmbedSource(jobs, totalJobs)
+	store := NewBruteForceStore(dims)
+
+	// Server fails first 3 requests, then succeeds.
+	failCount := &atomic.Int32{}
+	failCount.Store(3)
+	srv := newMockOllamaServer(t, failCount, dims)
+	worker := newTestWorker(t, srv, store, 64)
+	worker.cb.baseCooldown = time.Millisecond
+	worker.cb.currentCooldown = time.Millisecond
+
+	err := worker.RunFromDB(context.Background(), source, nil)
+	if err != nil {
+		t.Fatalf("RunFromDB returned error: %v", err)
+	}
+
+	count, _ := store.Count(context.Background())
+	if count != totalJobs {
+		t.Errorf("store count = %d, want %d", count, totalJobs)
+	}
+}
+
+func TestRunFromDB_LargeBatchSuccess(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	const totalJobs = 512
+
+	jobs := makeJobs(totalJobs)
+	source := newMockEmbedSource(jobs, totalJobs)
+	store := NewBruteForceStore(dims)
+
+	var embedCalls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		embedCalls.Add(1)
+		var req ollamaEmbedRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		var inputs []string
+		switch v := req.Input.(type) {
+		case string:
+			inputs = []string{v}
+		case []interface{}:
+			for _, s := range v {
+				inputs = append(inputs, fmt.Sprintf("%v", s))
+			}
+		}
+		embeddings := make([][]float32, len(inputs))
+		for i := range embeddings {
+			vec := make([]float32, dims)
+			for d := range vec {
+				vec[d] = float32(i+1) * 0.1
+			}
+			embeddings[i] = vec
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ollamaEmbedResponse{Embeddings: embeddings})
+	}))
+	t.Cleanup(srv.Close)
+
+	worker := newTestWorker(t, srv, store, 128)
+
+	err := worker.RunFromDB(context.Background(), source, nil)
+	if err != nil {
+		t.Fatalf("RunFromDB returned error: %v", err)
+	}
+
+	count, _ := store.Count(context.Background())
+	if count != totalJobs {
+		t.Errorf("store count = %d, want %d", count, totalJobs)
+	}
+
+	// With batch size 128 and 512 jobs, we expect ~4 embed calls (512/128).
+	// With batch size 32 it would be ~16. Verify fewer calls.
+	calls := embedCalls.Load()
+	if calls > 8 {
+		t.Errorf("embed API calls = %d, expected <= 8 for batch size 128", calls)
+	}
+	t.Logf("embed API calls: %d (512 chunks at batch size 128)", calls)
+}
+
 // ── EmbedderHealthy Tests ──
 
 func TestEmbedderHealthy_Reachable(t *testing.T) {

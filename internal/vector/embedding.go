@@ -43,7 +43,7 @@ type OllamaClientInput struct {
 func NewOllamaClient(input OllamaClientInput) *OllamaClient {
 	timeout := input.Timeout
 	if timeout == 0 {
-		timeout = 30 * time.Second
+		timeout = 120 * time.Second
 	}
 	return &OllamaClient{
 		baseURL: input.BaseURL,
@@ -302,7 +302,7 @@ type EmbedWorker struct {
 func NewEmbedWorker(input EmbedWorkerInput) *EmbedWorker {
 	batchSz := input.BatchSize
 	if batchSz <= 0 {
-		batchSz = 32
+		batchSz = 128
 	}
 	return &EmbedWorker{
 		store:       input.Store,
@@ -434,6 +434,7 @@ func (w *EmbedWorker) RunFromDB(ctx context.Context, source types.EmbedSource, o
 
 	embedded := 0
 	lastID := int64(0)
+	activeBatchSz := w.batchSz // adaptive: halves on error, restores on success
 
 	for {
 		if ctx.Err() != nil {
@@ -448,9 +449,10 @@ func (w *EmbedWorker) RunFromDB(ctx context.Context, source types.EmbedSource, o
 			break
 		}
 
-		// Process page in batches of w.batchSz.
-		for i := 0; i < len(page); i += w.batchSz {
-			end := i + w.batchSz
+		// Process page in adaptive batches. Index is advanced manually so
+		// that a batch-size shrink re-slices from the same position.
+		for i := 0; i < len(page); {
+			end := i + activeBatchSz
 			if end > len(page) {
 				end = len(page)
 			}
@@ -486,6 +488,7 @@ func (w *EmbedWorker) RunFromDB(ctx context.Context, source types.EmbedSource, o
 				if onProgress != nil {
 					onProgress(types.EmbedProgress{Embedded: embedded, Total: total})
 				}
+				i = end
 				continue
 			}
 
@@ -498,8 +501,9 @@ func (w *EmbedWorker) RunFromDB(ctx context.Context, source types.EmbedSource, o
 			}
 
 			var vectors [][]float32
-			const maxRetries = 30 // ~1-2 min of retries before giving up on a batch
+			const maxRetries = 30
 			retries := 0
+			shrunk := false // set if batch size shrunk during retries
 			for {
 				if ctx.Err() != nil {
 					return ctx.Err()
@@ -529,6 +533,16 @@ func (w *EmbedWorker) RunFromDB(ctx context.Context, source types.EmbedSource, o
 				if err != nil {
 					w.cb.RecordFailure()
 					retries++
+
+					// Adaptive: halve batch size and re-slice from same position.
+					if newSz := activeBatchSz / 2; newSz >= 1 && newSz < activeBatchSz {
+						w.logger.Info("shrinking batch size after error",
+							"from", activeBatchSz, "to", newSz)
+						activeBatchSz = newSz
+						shrunk = true
+						break // break retry loop to re-slice with smaller batch
+					}
+
 					w.logger.Warn("embed batch failed, retrying",
 						"size", len(needEmbed), "retry", retries, "err", err)
 					if onProgress != nil {
@@ -545,7 +559,19 @@ func (w *EmbedWorker) RunFromDB(ctx context.Context, source types.EmbedSource, o
 					}
 				}
 				w.cb.RecordSuccess()
+
+				// Restore original batch size on success.
+				if activeBatchSz != w.batchSz {
+					w.logger.Info("restoring batch size after success",
+						"from", activeBatchSz, "to", w.batchSz)
+					activeBatchSz = w.batchSz
+				}
 				break
+			}
+
+			// If batch size shrunk, retry from the same position with smaller batch.
+			if shrunk {
+				continue
 			}
 
 			if err := w.store.UpsertBatch(ctx, needIDs, vectors); err != nil {
@@ -560,6 +586,7 @@ func (w *EmbedWorker) RunFromDB(ctx context.Context, source types.EmbedSource, o
 			if onProgress != nil {
 				onProgress(types.EmbedProgress{Embedded: embedded, Total: total})
 			}
+			i = end
 		}
 
 		lastID = page[len(page)-1].ChunkID

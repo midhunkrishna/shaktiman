@@ -59,7 +59,7 @@ func DefaultConfig(projectRoot string) Config {
 		EmbeddingModel:    "nomic-embed-text",
 		EmbeddingDims:     768,
 		EmbeddingsPath:    filepath.Join(projectRoot, ".shaktiman", "embeddings.bin"),
-		EmbedBatchSize:    32,
+		EmbedBatchSize:    128,
 		EmbedEnabled:      true,
 
 		SearchMaxResults:  10,
