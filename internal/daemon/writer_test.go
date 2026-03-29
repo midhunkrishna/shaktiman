@@ -49,11 +49,15 @@ func TestWriterManager_Started_TrueAfterRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
 
-	// Wait for Run to set the flag.
-	time.Sleep(20 * time.Millisecond)
-
-	if !wm.Started() {
-		t.Error("Started() should be true after Run is called")
+	// Poll until Run sets the flag (avoids flaky fixed sleep).
+	deadline := time.After(2 * time.Second)
+	for !wm.Started() {
+		select {
+		case <-deadline:
+			t.Fatal("Started() not set within 2s after Run was called")
+		default:
+			time.Sleep(time.Millisecond)
+		}
 	}
 
 	cancel()
