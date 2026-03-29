@@ -693,3 +693,215 @@ func TestHNSWStore_SaveToDisk_CreatesDir(t *testing.T) {
 		t.Fatalf("file should exist after save: %v", err)
 	}
 }
+
+func TestHNSWStore_NewHNSWStore_CustomParams(t *testing.T) {
+	t.Parallel()
+	s, err := NewHNSWStore(HNSWStoreInput{
+		Dim:            4,
+		M:              32,
+		EfConstruction: 400,
+		MaxElements:    500,
+	})
+	if err != nil {
+		t.Fatalf("NewHNSWStore with custom params: %v", err)
+	}
+	defer s.Close()
+
+	if s.Dim() != 4 {
+		t.Errorf("Dim = %d, want 4", s.Dim())
+	}
+	if s.max != 500 {
+		t.Errorf("max = %d, want 500", s.max)
+	}
+}
+
+func TestHNSWStore_Search_AfterClose(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := NewHNSWStore(HNSWStoreInput{Dim: 3})
+	if err != nil {
+		t.Fatalf("NewHNSWStore: %v", err)
+	}
+	if err := s.Upsert(ctx, 1, []float32{1, 0, 0}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	s.Close()
+
+	// Operations on a closed store should return errors
+	_, err = s.Search(ctx, []float32{1, 0, 0}, 1)
+	if err == nil {
+		t.Error("expected error for Search on closed store, got nil")
+	}
+
+	_, err = s.Count(ctx)
+	if err == nil {
+		t.Error("expected error for Count on closed store, got nil")
+	}
+}
+
+func TestHNSWStore_Search_SoftDeleteFallback(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := newTestHNSWStore(t, 2)
+
+	// Insert 3 vectors, delete all 3, then search.
+	// This triggers the "Cannot return the results" error path.
+	for i := int64(1); i <= 3; i++ {
+		if err := s.Upsert(ctx, i, []float32{float32(i), 0}); err != nil {
+			t.Fatalf("Upsert(%d): %v", i, err)
+		}
+	}
+	for i := int64(1); i <= 3; i++ {
+		if err := s.Delete(ctx, []int64{i}); err != nil {
+			t.Fatalf("Delete(%d): %v", i, err)
+		}
+	}
+
+	// Search should return nil (graceful fallback), not error
+	results, err := s.Search(ctx, []float32{1, 0}, 3)
+	if err != nil {
+		t.Fatalf("Search after all deleted: expected nil error, got %v", err)
+	}
+	if results != nil {
+		t.Errorf("expected nil results after all deleted, got %v", results)
+	}
+}
+
+func TestHNSWStore_LoadFromDisk_CorruptFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "corrupt.hnsw")
+
+	// Write garbage to simulate a corrupt index file
+	if err := os.WriteFile(path, []byte("this is not an hnsw index"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	s := newTestHNSWStore(t, 3)
+	err := s.LoadFromDisk(path)
+	if err == nil {
+		t.Fatal("expected error for corrupt file, got nil")
+	}
+
+	// Store should still be usable after failed load (recovery path)
+	if err := s.Upsert(context.Background(), 1, []float32{1, 0, 0}); err != nil {
+		t.Fatalf("Upsert after failed load should work: %v", err)
+	}
+	got, _ := s.Count(context.Background())
+	if got != 1 {
+		t.Fatalf("Count = %d, want 1 after recovery", got)
+	}
+}
+
+func TestHNSWStore_LoadFromDisk_UpdatesMax(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dense.hnsw")
+
+	// Create store with small capacity, fill it, save
+	s1, err := NewHNSWStore(HNSWStoreInput{Dim: 3, MaxElements: 50})
+	if err != nil {
+		t.Fatalf("NewHNSWStore: %v", err)
+	}
+	for i := int64(1); i <= 50; i++ {
+		if err := s1.Upsert(ctx, i, []float32{float32(i), 0, 0}); err != nil {
+			t.Fatalf("Upsert(%d): %v", i, err)
+		}
+	}
+	if err := s1.SaveToDisk(path); err != nil {
+		t.Fatalf("SaveToDisk: %v", err)
+	}
+	s1.Close()
+
+	// Load into store with smaller initial max — hnswlib will expand to fit
+	s2, err := NewHNSWStore(HNSWStoreInput{Dim: 3, MaxElements: 10})
+	if err != nil {
+		t.Fatalf("NewHNSWStore: %v", err)
+	}
+	defer s2.Close()
+
+	if err := s2.LoadFromDisk(path); err != nil {
+		t.Fatalf("LoadFromDisk: %v", err)
+	}
+
+	// max should be updated to match the loaded index's capacity (>= 50)
+	if s2.max < 50 {
+		t.Errorf("max after load = %d, expected >= 50", s2.max)
+	}
+
+	// Verify all 50 elements are present
+	got, _ := s2.Count(ctx)
+	if got != 50 {
+		t.Errorf("Count = %d after load, want 50", got)
+	}
+}
+
+func TestHNSWStore_EnsureCapacity_LargeNeeded(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dim := 4
+	// Capacity = 5, insert 5, then batch insert 20 more.
+	// This triggers the newMax < count+needed branch (doubling isn't enough).
+	s, err := NewHNSWStore(HNSWStoreInput{Dim: dim, MaxElements: 5})
+	if err != nil {
+		t.Fatalf("NewHNSWStore: %v", err)
+	}
+	defer s.Close()
+
+	// Fill to capacity
+	for i := int64(1); i <= 5; i++ {
+		vec := make([]float32, dim)
+		vec[0] = float32(i)
+		if err := s.Upsert(ctx, i, vec); err != nil {
+			t.Fatalf("Upsert(%d): %v", i, err)
+		}
+	}
+
+	// Batch insert 20 at once — doubling from 5→10 isn't enough, needs 25
+	ids := make([]int64, 20)
+	vecs := make([][]float32, 20)
+	for i := 0; i < 20; i++ {
+		ids[i] = int64(100 + i)
+		vecs[i] = make([]float32, dim)
+		vecs[i][0] = float32(100 + i)
+	}
+
+	if err := s.UpsertBatch(ctx, ids, vecs); err != nil {
+		t.Fatalf("UpsertBatch: %v", err)
+	}
+
+	got, _ := s.Count(ctx)
+	if got != 25 {
+		t.Fatalf("Count = %d, want 25", got)
+	}
+}
+
+func TestHNSWStore_SaveToDisk_RenameFail(t *testing.T) {
+	t.Parallel()
+
+	s := newTestHNSWStore(t, 3)
+	if err := s.Upsert(context.Background(), 1, []float32{1, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Save to a path where the dir exists but the final rename target is a directory,
+	// causing os.Rename to fail.
+	dir := t.TempDir()
+	target := filepath.Join(dir, "index.hnsw")
+	// Create target as a non-empty directory — rename file→dir fails
+	if err := os.MkdirAll(filepath.Join(target, "blocker"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := s.SaveToDisk(target)
+	if err == nil {
+		t.Fatal("expected error when rename target is a directory, got nil")
+	}
+
+	// Temp file should be cleaned up
+	tmpPath := target + ".tmp"
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		t.Errorf("temp file should have been cleaned up, stat err: %v", err)
+	}
+}
