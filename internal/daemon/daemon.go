@@ -265,15 +265,22 @@ func (d *Daemon) EmbedProject(ctx context.Context, onProgress func(types.EmbedPr
 	}
 
 	// Reverse reconciliation: if vector store has fewer vectors than DB claims
-	// are embedded, reset all embedded flags. This handles deleted/corrupted
-	// embeddings.bin where the DB is out of sync with the actual vectors.
+	// are embedded, reconcile. Two cases:
+	//   vectorCount == 0: embeddings.bin deleted entirely → nuclear reset
+	//   vectorCount > 0:  partial loss (e.g. crash mid-save) → targeted reset
 	embeddedInDB, _ := d.store.CountChunksEmbedded(ctx)
 	vectorCount, _ := d.vectorStore.Count(ctx)
-	if embeddedInDB > 0 && vectorCount < embeddedInDB {
-		d.logger.Info("vector store out of sync with DB, resetting embedded flags",
-			"db_embedded", embeddedInDB, "vector_count", vectorCount)
+	if embeddedInDB > 0 && vectorCount == 0 {
+		d.logger.Info("vector store empty but DB has embedded chunks, resetting all flags",
+			"db_embedded", embeddedInDB)
 		if err := d.store.ResetAllEmbeddedFlags(ctx); err != nil {
 			return 0, fmt.Errorf("reset embedded flags: %w", err)
+		}
+	} else if embeddedInDB > 0 && vectorCount < embeddedInDB {
+		d.logger.Info("vector store partially out of sync with DB, reconciling",
+			"db_embedded", embeddedInDB, "vector_count", vectorCount)
+		if err := d.reconcileEmbeddedFlags(ctx); err != nil {
+			return 0, fmt.Errorf("reconcile embedded flags: %w", err)
 		}
 	}
 
@@ -290,6 +297,44 @@ func (d *Daemon) EmbedProject(ctx context.Context, onProgress func(types.EmbedPr
 		return count, err
 	}
 	return count, nil
+}
+
+// reconcileEmbeddedFlags finds chunks marked embedded in the DB whose vectors
+// are missing from the store, and resets only those flags. This handles partial
+// vector loss (e.g. process killed between periodic saves) without re-embedding
+// chunks whose vectors are still intact.
+func (d *Daemon) reconcileEmbeddedFlags(ctx context.Context) error {
+	const pageSize = 256
+	var missing []int64
+	afterID := int64(0)
+
+	for {
+		ids, err := d.store.GetEmbeddedChunkIDs(ctx, afterID, pageSize)
+		if err != nil {
+			return fmt.Errorf("get embedded chunk IDs after %d: %w", afterID, err)
+		}
+		if len(ids) == 0 {
+			break
+		}
+		for _, id := range ids {
+			has, err := d.vectorStore.Has(ctx, id)
+			if err != nil {
+				return fmt.Errorf("check vector store for chunk %d: %w", id, err)
+			}
+			if !has {
+				missing = append(missing, id)
+			}
+		}
+		afterID = ids[len(ids)-1]
+	}
+
+	if len(missing) == 0 {
+		return nil
+	}
+
+	d.logger.Info("resetting embedded flags for missing vectors",
+		"missing_count", len(missing))
+	return d.store.ResetEmbeddedFlags(ctx, missing)
 }
 
 // periodicEmbeddingSave checkpoints embeddings to disk. Uses 30s interval during
