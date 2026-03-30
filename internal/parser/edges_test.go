@@ -325,3 +325,80 @@ func TestEdges_GoCalls(t *testing.T) {
 		t.Error("expected a 'calls' edge targeting 'helper'")
 	}
 }
+
+// ── Rust import tests ──
+
+func TestEdges_RustImports(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`use std::collections::HashMap;
+use std::io;
+
+fn main() {
+    let map: HashMap<String, String> = HashMap::new();
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "main.rs",
+		Content:  src,
+		Language: "rust",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	imports := map[string]bool{}
+	for _, e := range result.Edges {
+		if e.Kind == "imports" {
+			imports[e.DstSymbolName] = true
+		}
+	}
+	for _, name := range []string{"HashMap", "io"} {
+		if !imports[name] {
+			t.Errorf("expected import edge for %q, got imports: %v", name, imports)
+		}
+	}
+}
+
+func TestEdges_RustUseList(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`use std::{fs, io};
+
+fn process() {}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "lib.rs",
+		Content:  src,
+		Language: "rust",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	imports := map[string]bool{}
+	for _, e := range result.Edges {
+		if e.Kind == "imports" {
+			imports[e.DstSymbolName] = true
+		}
+	}
+	for _, name := range []string{"fs", "io"} {
+		if !imports[name] {
+			t.Errorf("expected import edge for %q, got imports: %v", name, imports)
+		}
+	}
+}

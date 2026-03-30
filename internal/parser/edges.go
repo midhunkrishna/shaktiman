@@ -149,6 +149,8 @@ func (p *Parser) extractImportEdgesFrom(node *sitter.Node, owner string, ctx *ed
 		p.javaImportEdges(node, owner, ctx)
 	case "groovy":
 		p.groovyImportEdges(node, owner, ctx)
+	case "rust":
+		p.rustImportEdges(node, owner, ctx)
 	// bash has no imports
 	}
 }
@@ -264,6 +266,42 @@ func (p *Parser) groovyImportEdges(node *sitter.Node, owner string, ctx *edgeCon
 			content := n.Content(ctx.source)
 			parts := strings.Split(content, ".")
 			ctx.addEdge(owner, parts[len(parts)-1], "imports")
+			return
+		}
+		for i := 0; i < int(n.NamedChildCount()); i++ {
+			walk(n.NamedChild(i))
+		}
+	}
+	walk(node)
+}
+
+func (p *Parser) rustImportEdges(node *sitter.Node, owner string, ctx *edgeContext) {
+	// Rust: use std::collections::HashMap; → extract "HashMap"
+	// Also handles: use std::{io, fs}; (use_list) and use foo as bar (use_as_clause)
+	var walk func(n *sitter.Node)
+	walk = func(n *sitter.Node) {
+		switch n.Type() {
+		case "use_as_clause":
+			// use foo::Bar as Baz → extract the alias "Baz"
+			alias := n.ChildByFieldName("alias")
+			if alias != nil {
+				ctx.addEdge(owner, alias.Content(ctx.source), "imports")
+				return
+			}
+			// No alias field, fall through to extract the path's last component
+		case "scoped_identifier":
+			name := n.ChildByFieldName("name")
+			if name != nil {
+				ctx.addEdge(owner, name.Content(ctx.source), "imports")
+			}
+			return
+		case "identifier":
+			ctx.addEdge(owner, n.Content(ctx.source), "imports")
+			return
+		case "scoped_use_list":
+			// use std::{io, fs}; → recurse into the use_list child
+		case "use_wildcard":
+			// use foo::*; → skip, no specific name to extract
 			return
 		}
 		for i := 0; i < int(n.NamedChildCount()); i++ {
