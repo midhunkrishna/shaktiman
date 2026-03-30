@@ -68,20 +68,30 @@ No manual setup is needed. Shaktiman initializes automatically on first run.
 **With the CLI:**
 
 ```bash
-# Index a project manually
+# Option 1: Initialize config first, then index
+./shaktiman init /path/to/your/project    # creates .shaktiman/shaktiman.toml
+# Edit .shaktiman/shaktiman.toml to set vector.backend = "hnsw" etc.
+./shaktiman index /path/to/your/project --embed
+
+# Option 2: Index directly (uses defaults, or reads existing .shaktiman/shaktiman.toml)
 ./shaktiman index /path/to/your/project
 
-# Index and generate embeddings (requires Ollama)
-./shaktiman index --embed /path/to/your/project
+# Option 3: Override vector backend at index time
+./shaktiman index /path/to/your/project --embed --vector hnsw
 ```
 
 This creates `.shaktiman/index.db` and indexes all source files. With `--embed`, it also generates vector embeddings for semantic search. Run it again at any time to re-index.
+
+The `--vector` flag selects the vector store backend (`brute_force` or `hnsw`). Config resolution order: default → TOML → `--vector` flag.
+
+Ctrl+C during embedding saves progress to disk. On the next run, only unembedded chunks are processed.
 
 **What gets created:**
 
 ```
 your-project/
   .shaktiman/
+    shaktiman.toml     # Configuration (created by init or auto-generated)
     index.db           # SQLite database (symbols, chunks, FTS index, dependency graph)
     embeddings.bin     # Vector embeddings (only if Ollama is running)
 ```
@@ -225,7 +235,8 @@ The `--format` flag is persistent and applies to all subcommands.
 
 | Command | What it does | Key flags |
 |---------|-------------|-----------|
-| `index <root>` | Index a project directory | `--embed` (also generate embeddings) |
+| `init <root>` | Initialize `.shaktiman/` config directory | (none) |
+| `index <root>` | Index a project directory | `--embed` (generate embeddings), `--vector` (brute_force/hnsw) |
 | `status <root>` | Show index status | (none) |
 | `search <query>` | Search indexed code by keyword | `--root`, `--max`, `--mode` (locate/full), `--min-score`, `--explain` |
 | `context <query>` | Assemble ranked code context fitted to a token budget | `--root`, `--budget` (256-32768) |
@@ -237,11 +248,17 @@ The `--format` flag is persistent and applies to all subcommands.
 ### Examples
 
 ```bash
+# Initialize config (optional — edit .shaktiman/shaktiman.toml before indexing)
+./shaktiman init /path/to/project
+
 # Index a project
 ./shaktiman index /path/to/project
 
 # Index with embeddings (requires Ollama)
 ./shaktiman index --embed /path/to/project
+
+# Index with HNSW vector backend
+./shaktiman index --embed --vector hnsw /path/to/project
 
 # Check index status
 ./shaktiman status /path/to/project
@@ -376,7 +393,7 @@ go vet -tags sqlite_fts5 ./...
 
 ```
 cmd/
-  shaktiman/           CLI tool (index, search, context, symbols, deps, diff, status)
+  shaktiman/           CLI tool (init, index, search, context, symbols, deps, diff, status)
   shaktimand/          MCP daemon (stdio server)
 internal/
   types/               Shared types, config, interfaces

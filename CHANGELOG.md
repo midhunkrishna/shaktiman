@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`shaktiman init` command** (`cmd/shaktiman/main.go`) — scaffolds
+  `.shaktiman/shaktiman.toml` with commented-out defaults. Refuses to
+  overwrite an existing config. Allows users to configure vector backend
+  and other settings before first index.
+- **`--vector` CLI flag for `index`** (`cmd/shaktiman/main.go`) — selects
+  vector store backend (`brute_force` or `hnsw`) at index time. Config
+  resolution order: default → TOML → `--vector` flag.
+- **CLI signal handling** (`cmd/shaktiman/main.go`) — `signal.NotifyContext`
+  for SIGINT/SIGTERM with `defer d.Stop()`. Ctrl+C during embedding now
+  saves progress to disk instead of losing it.
+- **Periodic embedding checkpoint in CLI** (`cmd/shaktiman/main.go`,
+  `internal/daemon/daemon.go`) — `RunPeriodicEmbeddingSave` exported
+  wrapper runs 30s checkpoint saves during CLI embedding phase. Stops
+  automatically when embedding completes.
+- **TOML config loading for all CLI commands** (`cmd/shaktiman/main.go`,
+  `cmd/shaktiman/query.go`) — `index`, `symbols`, `deps`, `diff`, and
+  `enrichment-status` now call `LoadConfigFromFile` to respect
+  `shaktiman.toml` settings (previously only `search` and `context` did).
+- **CLI tests** (`cmd/shaktiman/main_test.go`) — `TestInitCmd_CreatesConfig`,
+  `TestInitCmd_ExistingConfigNoOverwrite`, `TestIndexCmd_LoadsTOML`,
+  `TestIndexCmd_VectorFlagOverridesToml`, `TestIndexCmd_InvalidVectorFlag`.
+- **Daemon tests** (`internal/daemon/daemon_test.go`) —
+  `TestRunPeriodicEmbeddingSave`, `TestRunPeriodicEmbeddingSave_NilVectorStore`,
+  `TestStopSavesEmbeddings`.
+
+### Changed
+
+- MCP server version bumped to `0.7.0`.
+
+---
+
 - **HNSW vector store backend** (`internal/vector/hnsw.go`) — `HNSWStore`
   adapter implementing `VectorStore` + `VectorPersister` interfaces, backed by
   hnswlib C++ via `midhunkrishna/hnswgo` CGo bindings. O(log n) approximate
