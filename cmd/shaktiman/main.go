@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -37,6 +40,7 @@ func main() {
 	rootCmd.PersistentFlags().StringVar(&outputFormat, "format", "json",
 		`Output format: "json" (default) or "text"`)
 
+	rootCmd.AddCommand(initCmd())
 	rootCmd.AddCommand(indexCmd())
 	rootCmd.AddCommand(statusCmd())
 	rootCmd.AddCommand(searchCmd())
@@ -51,8 +55,33 @@ func main() {
 	}
 }
 
+func initCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "init <project-root>",
+		Short: "Initialize a .shaktiman config directory",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			projectRoot := args[0]
+			tomlPath := filepath.Join(projectRoot, ".shaktiman", "shaktiman.toml")
+			if _, err := os.Stat(tomlPath); err == nil {
+				fmt.Printf("Config already exists: %s\n", tomlPath)
+				return nil
+			}
+			types.WriteSampleConfig(projectRoot)
+			if _, err := os.Stat(tomlPath); err != nil {
+				return fmt.Errorf("failed to create config: %w", err)
+			}
+			fmt.Printf("Created config: %s\n", tomlPath)
+			return nil
+		},
+	}
+}
+
 func indexCmd() *cobra.Command {
-	var embed bool
+	var (
+		embed         bool
+		vectorBackend string
+	)
 	cmd := &cobra.Command{
 		Use:   "index <project-root>",
 		Short: "Index a project directory",
@@ -61,12 +90,30 @@ func indexCmd() *cobra.Command {
 			projectRoot := args[0]
 			cfg := types.DefaultConfig(projectRoot)
 
+			// Load TOML config if it exists
+			cfg, err := types.LoadConfigFromFile(cfg)
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+
+			// CLI --vector flag overrides TOML and default
+			if vectorBackend != "" {
+				if vectorBackend != "brute_force" && vectorBackend != "hnsw" {
+					return fmt.Errorf("--vector must be 'brute_force' or 'hnsw', got %q", vectorBackend)
+				}
+				cfg.VectorBackend = vectorBackend
+			}
+
+			// Signal handling for graceful shutdown
+			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
 			d, err := daemon.New(cfg)
 			if err != nil {
 				return fmt.Errorf("init: %w", err)
 			}
+			defer d.Stop()
 
-			ctx := context.Background()
 			tty := isTTY()
 
 			// Index with progress
@@ -104,6 +151,10 @@ func indexCmd() *cobra.Command {
 			}
 
 			if embed {
+				// Start periodic embedding checkpoint saves
+				saveCtx, saveCancel := context.WithCancel(ctx)
+				go d.RunPeriodicEmbeddingSave(saveCtx)
+
 				var lastEmbedPct int
 				count, err := d.EmbedProject(ctx, func(p types.EmbedProgress) {
 					if p.Warning != "" {
@@ -125,11 +176,12 @@ func indexCmd() *cobra.Command {
 						lastEmbedPct = pct
 					}
 				})
+				saveCancel() // stop periodic saves
+
 				if tty {
 					fmt.Fprintln(os.Stdout)
 				}
 				if err != nil {
-					// Ollama unreachable: print friendly message and continue
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					fmt.Fprintf(os.Stderr, "Indexing completed without embeddings. Run 'shaktiman index --embed' to retry.\n")
 					if count > 0 {
@@ -147,6 +199,7 @@ func indexCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&embed, "embed", false, "Also generate embeddings (requires Ollama)")
+	cmd.Flags().StringVar(&vectorBackend, "vector", "", `Vector backend: "brute_force" or "hnsw"`)
 	return cmd
 }
 

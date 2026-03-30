@@ -27,6 +27,7 @@ build/
 .shaktiman/
 /shaktiman
 /shaktimand
+/bin/
 
 # go specific
 # If you prefer the allow list template instead of the deny list, see community template:

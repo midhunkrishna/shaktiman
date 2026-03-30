@@ -337,6 +337,15 @@ func (d *Daemon) reconcileEmbeddedFlags(ctx context.Context) error {
 	return d.store.ResetEmbeddedFlags(ctx, missing)
 }
 
+// RunPeriodicEmbeddingSave is an exported wrapper around periodicEmbeddingSave.
+// Used by the CLI to run periodic checkpoint saves during embedding.
+func (d *Daemon) RunPeriodicEmbeddingSave(ctx context.Context) {
+	if d.vectorStore == nil {
+		return
+	}
+	d.periodicEmbeddingSave(ctx)
+}
+
 // periodicEmbeddingSave checkpoints embeddings to disk. Uses 30s interval during
 // active embedding (crash safety) and 5min interval otherwise. A short poll
 // interval detects embedding-active transitions without waiting for a full 5min tick.
