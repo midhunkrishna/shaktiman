@@ -179,6 +179,10 @@ func symbolsCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := types.DefaultConfig(root)
+			cfg, err := types.LoadConfigFromFile(cfg)
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
 
 			db, err := storage.Open(storage.OpenInput{Path: cfg.DBPath})
 			if err != nil {
@@ -240,6 +244,10 @@ func depsCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := types.DefaultConfig(root)
+			cfg, err := types.LoadConfigFromFile(cfg)
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
 
 			db, err := storage.Open(storage.OpenInput{Path: cfg.DBPath})
 			if err != nil {
@@ -322,6 +330,10 @@ func diffCmd() *cobra.Command {
 		Short: "Show recent file changes and affected symbols",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := types.DefaultConfig(root)
+			cfg, err := types.LoadConfigFromFile(cfg)
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
 
 			db, err := storage.Open(storage.OpenInput{Path: cfg.DBPath})
 			if err != nil {
@@ -393,6 +405,10 @@ func enrichmentStatusCmd() *cobra.Command {
 		Short: "Show indexing stats and enrichment progress",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := types.DefaultConfig(root)
+			cfg, err := types.LoadConfigFromFile(cfg)
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
 
 			db, err := storage.Open(storage.OpenInput{Path: cfg.DBPath})
 			if err != nil {

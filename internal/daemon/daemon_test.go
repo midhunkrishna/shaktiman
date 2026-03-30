@@ -510,6 +510,133 @@ func TestPeriodicEmbeddingSave(t *testing.T) {
 	d.Stop()
 }
 
+func TestRunPeriodicEmbeddingSave(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	srv := newMockOllama(dims, nil)
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeGoFiles(t, projectDir, 2, 2)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	embPath := filepath.Join(tmpDir, "embeddings.bin")
+	cfg := embedCfg(projectDir, dbPath, embPath, srv.URL)
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := context.Background()
+
+	if err := d.IndexProject(ctx, nil); err != nil {
+		t.Fatalf("IndexProject: %v", err)
+	}
+	if _, err := d.EmbedProject(ctx, nil); err != nil {
+		t.Fatalf("EmbedProject: %v", err)
+	}
+
+	// Remove saved file so we can verify RunPeriodicEmbeddingSave creates it
+	os.Remove(embPath)
+
+	d.savePollInterval = 5 * time.Millisecond
+	d.saveActiveInterval = 1 * time.Millisecond
+	d.saveIdleInterval = 1 * time.Millisecond
+	d.embeddingActive.Store(true)
+
+	saveCtx, saveCancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		d.RunPeriodicEmbeddingSave(saveCtx)
+		close(done)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	saveCancel()
+	<-done
+
+	if _, err := os.Stat(embPath); os.IsNotExist(err) {
+		t.Error("expected RunPeriodicEmbeddingSave to create embeddings file")
+	}
+
+	d.Stop()
+}
+
+func TestRunPeriodicEmbeddingSave_NilVectorStore(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	cfg := types.Config{
+		ProjectRoot:       tmpDir,
+		DBPath:            dbPath,
+		EnrichmentWorkers: 2,
+		WriterChannelSize: 100,
+		EmbedEnabled:      false, // no vector store
+	}
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer d.Stop()
+
+	// Should return immediately without panic
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.RunPeriodicEmbeddingSave(ctx)
+}
+
+func TestStopSavesEmbeddings(t *testing.T) {
+	t.Parallel()
+
+	const dims = 4
+	srv := newMockOllama(dims, nil)
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeGoFiles(t, projectDir, 2, 2)
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	embPath := filepath.Join(tmpDir, "embeddings.bin")
+	cfg := embedCfg(projectDir, dbPath, embPath, srv.URL)
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := d.IndexProject(ctx, nil); err != nil {
+		t.Fatalf("IndexProject: %v", err)
+	}
+	if _, err := d.EmbedProject(ctx, nil); err != nil {
+		t.Fatalf("EmbedProject: %v", err)
+	}
+
+	// Remove the file saved by EmbedProject
+	os.Remove(embPath)
+
+	// Stop should save embeddings
+	if err := d.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if _, err := os.Stat(embPath); os.IsNotExist(err) {
+		t.Error("expected Stop() to save embeddings file")
+	}
+}
+
 // ── Language Compatibility Integration Tests ──
 //
 // These tests exercise the full pipeline (scan → parse → index → search)
