@@ -15,6 +15,7 @@ import (
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/shaktimanai/shaktiman/internal/core"
+	"github.com/shaktimanai/shaktiman/internal/parser"
 	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 	"github.com/shaktimanai/shaktiman/internal/vector"
@@ -1164,6 +1165,219 @@ public class App {
 
 	d2.Stop()
 	t.Logf("Incremental: %d files, %d languages after adding Java", stats.TotalFiles, len(stats.Languages))
+}
+
+// TestIntegration_JavaImportEdgesStoredAsPending verifies the full pipeline:
+// a Java file with imports of external types (e.g. ExecutorService from JDK)
+// is parsed, indexed, and import edges are stored in pending_edges — not
+// silently dropped. Then verifies PendingEdgeCallers can discover which
+// project symbols import the external type.
+func TestIntegration_JavaImportEdgesStoredAsPending(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	// Java file importing external JDK types not defined in the project.
+	javaSrc := `package com.example;
+
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.List;
+
+public class TaskRunner {
+    private final ExecutorService executor;
+
+    public TaskRunner(int threads) {
+        this.executor = Executors.newFixedThreadPool(threads);
+    }
+
+    public void submit(Runnable task) {
+        executor.submit(task);
+    }
+
+    public List<String> status() {
+        return List.of("running");
+    }
+}
+`
+	javaPath := filepath.Join(tmpDir, "TaskRunner.java")
+	if err := os.WriteFile(javaPath, []byte(javaSrc), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Also add a second Java file that imports the same external types.
+	java2Src := `package com.example;
+
+import java.util.concurrent.ExecutorService;
+import java.util.List;
+
+public class WorkerPool {
+    private final ExecutorService pool;
+
+    public WorkerPool(ExecutorService pool) {
+        this.pool = pool;
+    }
+
+    public List<String> workers() {
+        return List.of("w1", "w2");
+    }
+}
+`
+	java2Path := filepath.Join(tmpDir, "WorkerPool.java")
+	if err := os.WriteFile(java2Path, []byte(java2Src), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// ── Phase 1: Parser-level validation ──
+	// Parse the Java file directly and verify import edges have non-empty
+	// SrcSymbolName. This is the core of the bug: without the fix,
+	// file-level imports get SrcSymbolName="" because imports appear before
+	// any class declaration. InsertEdges then drops edges with srcID=0.
+
+	p, err := parser.NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	content, err := os.ReadFile(javaPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	result, err := p.Parse(context.Background(), parser.ParseInput{
+		FilePath: "TaskRunner.java",
+		Content:  content,
+		Language: "java",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Verify import edges were extracted at all.
+	var importEdges []string
+	for _, e := range result.Edges {
+		if e.Kind == "imports" {
+			importEdges = append(importEdges, e.DstSymbolName)
+		}
+	}
+	if len(importEdges) == 0 {
+		t.Fatal("parser extracted zero import edges — edge extraction itself is broken")
+	}
+
+	// Verify every import edge has a non-empty SrcSymbolName.
+	// Without the fix, SrcSymbolName="" for file-level imports because
+	// walkForEdges starts with owner="" and imports precede class declarations.
+	for _, e := range result.Edges {
+		if e.Kind == "imports" && e.SrcSymbolName == "" {
+			t.Fatalf("import edge for %q has SrcSymbolName=\"\" — "+
+				"this causes InsertEdges to skip the edge (srcID=0 → continue), "+
+				"so it never reaches pending_edges", e.DstSymbolName)
+		}
+	}
+
+	// ── Phase 2: Full pipeline (index → storage → query) ──
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	cfg := types.Config{
+		ProjectRoot:       tmpDir,
+		DBPath:            dbPath,
+		EnrichmentWorkers: 2,
+		WriterChannelSize: 100,
+	}
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon: %v", err)
+	}
+	defer d.Stop()
+
+	ctx := context.Background()
+
+	if err := d.IndexProject(ctx, nil); err != nil {
+		t.Fatalf("IndexProject: %v", err)
+	}
+
+	store := d.Store()
+
+	// Verify symbols were created for the classes.
+	for _, name := range []string{"TaskRunner", "WorkerPool"} {
+		syms, err := store.GetSymbolByName(ctx, name)
+		if err != nil {
+			t.Fatalf("GetSymbolByName(%s): %v", name, err)
+		}
+		if len(syms) == 0 {
+			t.Errorf("expected symbol for %q, got none", name)
+		}
+	}
+
+	// Verify external types are NOT in the symbols table.
+	for _, name := range []string{"ExecutorService", "Executors"} {
+		syms, err := store.GetSymbolByName(ctx, name)
+		if err != nil {
+			t.Fatalf("GetSymbolByName(%s): %v", name, err)
+		}
+		if len(syms) != 0 {
+			t.Errorf("did not expect symbol definition for external type %q, but got %d", name, len(syms))
+		}
+	}
+
+	// Verify import edges landed in pending_edges.
+	// ExecutorService is imported in both files → expect 2 callers.
+	callerIDs, err := store.PendingEdgeCallers(ctx, "ExecutorService")
+	if err != nil {
+		t.Fatalf("PendingEdgeCallers(ExecutorService): %v", err)
+	}
+	if len(callerIDs) == 0 {
+		t.Fatal("expected pending edge callers for ExecutorService, got none")
+	}
+
+	// Resolve caller IDs to symbol names.
+	callerNames := map[string]bool{}
+	for _, id := range callerIDs {
+		sym, err := store.GetSymbolByID(ctx, id)
+		if err != nil || sym == nil {
+			continue
+		}
+		callerNames[sym.Name] = true
+	}
+	for _, expected := range []string{"TaskRunner", "WorkerPool"} {
+		if !callerNames[expected] {
+			t.Errorf("expected %q in callers of ExecutorService, got: %v", expected, callerNames)
+		}
+	}
+
+	// Verify edge kind is "imports".
+	callersWithKind, err := store.PendingEdgeCallersWithKind(ctx, "ExecutorService")
+	if err != nil {
+		t.Fatalf("PendingEdgeCallersWithKind(ExecutorService): %v", err)
+	}
+	for _, c := range callersWithKind {
+		if c.Kind != "imports" {
+			t.Errorf("expected edge kind 'imports', got %q", c.Kind)
+		}
+	}
+
+	// Executors imported only by TaskRunner → exactly 1 caller.
+	executorsCallers, err := store.PendingEdgeCallers(ctx, "Executors")
+	if err != nil {
+		t.Fatalf("PendingEdgeCallers(Executors): %v", err)
+	}
+	if len(executorsCallers) != 1 {
+		t.Errorf("expected 1 pending edge caller for Executors, got %d", len(executorsCallers))
+	}
+
+	// List imported by both files → at least 2 callers.
+	listCallers, err := store.PendingEdgeCallers(ctx, "List")
+	if err != nil {
+		t.Fatalf("PendingEdgeCallers(List): %v", err)
+	}
+	if len(listCallers) < 2 {
+		t.Errorf("expected at least 2 pending edge callers for List, got %d", len(listCallers))
+	}
+
+	t.Logf("Integration: ExecutorService has %d callers, Executors has %d, List has %d",
+		len(callerIDs), len(executorsCallers), len(listCallers))
 }
 
 // ── Embedding Integration Tests ──

@@ -185,6 +185,7 @@ var schemaV1 = []string{
 
 	// Pending edges
 	`CREATE INDEX IF NOT EXISTS idx_pending_name ON pending_edges(dst_symbol_name)`,
+	`CREATE INDEX IF NOT EXISTS idx_pending_src ON pending_edges(src_symbol_id)`,
 
 	// Diff
 	`CREATE INDEX IF NOT EXISTS idx_difflog_file_ts ON diff_log(file_id, timestamp)`,

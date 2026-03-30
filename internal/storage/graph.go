@@ -214,6 +214,61 @@ func (s *Store) neighborsCTE(ctx context.Context, symbolID int64, maxDepth int, 
 	return ids, rows.Err()
 }
 
+// PendingEdgeCallers returns src_symbol_ids from pending_edges where the
+// unresolved destination matches the given name. This enables finding callers
+// of external/library symbols (e.g. "ExecutorService") that are never defined
+// in the project and therefore remain in pending_edges permanently.
+func (s *Store) PendingEdgeCallers(ctx context.Context, dstName string) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT src_symbol_id
+		FROM pending_edges
+		WHERE dst_symbol_name = ?`, dstName)
+	if err != nil {
+		return nil, fmt.Errorf("pending edge callers for %s: %w", dstName, err)
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan pending caller: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// PendingEdgeCaller holds a source symbol ID and the edge kind from a pending edge.
+type PendingEdgeCaller struct {
+	SrcSymbolID int64
+	Kind        string
+}
+
+// PendingEdgeCallersWithKind returns src_symbol_id and kind from pending_edges
+// for a given unresolved destination name. Used by the symbols handler to show
+// which symbols reference an external type.
+func (s *Store) PendingEdgeCallersWithKind(ctx context.Context, dstName string) ([]PendingEdgeCaller, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT src_symbol_id, kind
+		FROM pending_edges
+		WHERE dst_symbol_name = ?`, dstName)
+	if err != nil {
+		return nil, fmt.Errorf("pending edge callers with kind for %s: %w", dstName, err)
+	}
+	defer rows.Close()
+
+	var results []PendingEdgeCaller
+	for rows.Next() {
+		var c PendingEdgeCaller
+		if err := rows.Scan(&c.SrcSymbolID, &c.Kind); err != nil {
+			return nil, fmt.Errorf("scan pending caller with kind: %w", err)
+		}
+		results = append(results, c)
+	}
+	return results, rows.Err()
+}
+
 // DeleteEdgesByFile removes all edges originating from a given file.
 func (s *Store) DeleteEdgesByFile(ctx context.Context, tx *sql.Tx, fileID int64) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM edges WHERE file_id = ?", fileID); err != nil {

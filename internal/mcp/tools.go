@@ -235,6 +235,43 @@ func symbolsHandler(store *storage.Store) handlerFunc {
 			})
 		}
 
+		// When the symbol genuinely doesn't exist in the project (not just
+		// filtered by kind), check pending_edges for references. External
+		// types (e.g. JDK's ExecutorService) are never in the symbols table
+		// but may be referenced as imports by project symbols.
+		if len(results) == 0 && len(syms) == 0 {
+			callers, err := store.PendingEdgeCallersWithKind(ctx, name)
+			if err == nil && len(callers) > 0 {
+				var refs []format.SymbolRef
+				for _, c := range callers {
+					sym, err := store.GetSymbolByID(ctx, c.SrcSymbolID)
+					if err != nil || sym == nil {
+						continue
+					}
+					path, _ := store.GetFilePathByID(ctx, sym.FileID)
+					refs = append(refs, format.SymbolRef{
+						Symbol:   sym.Name,
+						Kind:     sym.Kind,
+						FilePath: path,
+						Line:     sym.Line,
+						Via:      c.Kind,
+					})
+				}
+				if len(refs) > 0 {
+					enriched := format.SymbolsWithRefs{
+						Definitions:  results,
+						ReferencedBy: refs,
+						Note:         fmt.Sprintf("No definitions for %q in project. Referenced by %d symbol(s). Use 'dependencies direction:callers' or 'search' for more.", name, len(refs)),
+					}
+					data, err := json.Marshal(enriched)
+					if err != nil {
+						return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
+					}
+					return withResultCount(mcpsdk.NewToolResultText(string(data)), len(refs)), nil
+				}
+			}
+		}
+
 		data, err := json.Marshal(results)
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
@@ -291,14 +328,33 @@ func dependenciesHandler(store *storage.Store) handlerFunc {
 
 		// Find the symbol
 		syms, err := store.GetSymbolByName(ctx, symbolName)
-		if err != nil || len(syms) == 0 {
-			return mcpsdk.NewToolResultText("[]"), nil
+		if err != nil {
+			return mcpsdk.NewToolResultError(sanitizeError("symbol lookup failed: ", err)), nil
 		}
 
-		symbolID := syms[0].ID
-		neighborIDs, err := store.Neighbors(ctx, symbolID, depth, direction)
-		if err != nil {
-			return mcpsdk.NewToolResultError(sanitizeError("graph query failed: ", err)), nil
+		var neighborIDs []int64
+		if len(syms) > 0 {
+			symbolID := syms[0].ID
+			neighborIDs, err = store.Neighbors(ctx, symbolID, depth, direction)
+			if err != nil {
+				return mcpsdk.NewToolResultError(sanitizeError("graph query failed: ", err)), nil
+			}
+		}
+
+		// When no resolved neighbors found and direction includes incoming,
+		// also check pending_edges. This covers two cases:
+		// 1. Symbol not defined in project (external type like ExecutorService)
+		// 2. Symbol exists but edges are still pending (incremental indexing)
+		if len(neighborIDs) == 0 && (direction == "incoming" || direction == "both") {
+			pendingIDs, err := store.PendingEdgeCallers(ctx, symbolName)
+			if err != nil {
+				return mcpsdk.NewToolResultError(sanitizeError("pending edge lookup failed: ", err)), nil
+			}
+			neighborIDs = append(neighborIDs, pendingIDs...)
+		}
+
+		if len(neighborIDs) == 0 {
+			return withResultCount(mcpsdk.NewToolResultText("[]"), 0), nil
 		}
 
 		var results []format.DepResult

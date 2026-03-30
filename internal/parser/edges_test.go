@@ -402,3 +402,233 @@ fn process() {}
 		}
 	}
 }
+
+// ── Import owner tests (file-level edges get first symbol as source) ──
+
+func TestEdges_JavaImportOwner(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`package com.example;
+
+import java.util.concurrent.ExecutorService;
+import java.util.List;
+
+public class TaskRunner {
+    private ExecutorService executor;
+
+    public void run() {}
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "TaskRunner.java",
+		Content:  src,
+		Language: "java",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	for _, e := range result.Edges {
+		if e.Kind == "imports" {
+			if e.SrcSymbolName == "" {
+				t.Errorf("import edge for %q has empty SrcSymbolName; expected first symbol", e.DstSymbolName)
+			}
+			if e.SrcSymbolName != "TaskRunner" {
+				t.Errorf("import edge for %q: SrcSymbolName=%q, want %q", e.DstSymbolName, e.SrcSymbolName, "TaskRunner")
+			}
+		}
+	}
+
+	// Verify both imports were extracted
+	imports := map[string]bool{}
+	for _, e := range result.Edges {
+		if e.Kind == "imports" {
+			imports[e.DstSymbolName] = true
+		}
+	}
+	for _, name := range []string{"ExecutorService", "List"} {
+		if !imports[name] {
+			t.Errorf("expected import edge for %q", name)
+		}
+	}
+}
+
+func TestEdges_GoImportOwner(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("hello")
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "main.go",
+		Content:  src,
+		Language: "go",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	for _, e := range result.Edges {
+		if e.Kind == "imports" && e.DstSymbolName == "fmt" {
+			if e.SrcSymbolName == "" {
+				t.Error("import edge for 'fmt' has empty SrcSymbolName; expected 'main'")
+			}
+			return
+		}
+	}
+	t.Error("expected import edge for 'fmt'")
+}
+
+func TestEdges_TypeScriptImportOwner(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`import { foo } from 'bar';
+
+export function doStuff(): string {
+  return foo();
+}`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "test.ts",
+		Content:  src,
+		Language: "typescript",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	for _, e := range result.Edges {
+		if e.Kind == "imports" && e.DstSymbolName == "foo" {
+			if e.SrcSymbolName == "" {
+				t.Error("import edge for 'foo' has empty SrcSymbolName; expected first symbol")
+			}
+			return
+		}
+	}
+	t.Error("expected import edge for 'foo'")
+}
+
+func TestEdges_PythonTopLevelCallNotMisattributed(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	// Top-level print() call appears before the function definition.
+	// It should NOT be attributed to "process" — it should keep
+	// SrcSymbolName="" so InsertEdges drops it (there is no graph
+	// node for module-level code).
+	src := []byte(`import os
+
+print(os.getcwd())
+
+def process(items):
+    return items
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "script.py",
+		Content:  src,
+		Language: "python",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Import edge should have importOwner fallback.
+	foundImport := false
+	for _, e := range result.Edges {
+		if e.Kind == "imports" && e.DstSymbolName == "os" {
+			foundImport = true
+			if e.SrcSymbolName == "" {
+				t.Error("import edge for 'os' has empty SrcSymbolName; expected importOwner fallback")
+			}
+		}
+	}
+	if !foundImport {
+		t.Error("expected import edge for 'os'")
+	}
+
+	// Top-level call edges should NOT be attributed to the first symbol.
+	for _, e := range result.Edges {
+		if e.Kind == "calls" && e.SrcSymbolName == "process" {
+			// "process" only contains "return items" — no calls.
+			// Any call edge sourced from "process" means a top-level
+			// call was misattributed.
+			t.Errorf("top-level call to %q was misattributed to 'process'", e.DstSymbolName)
+		}
+	}
+}
+
+func TestEdges_GoBlankIdentifierSkippedAsImportOwner(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	// Common Go pattern: var _ Interface = (*Impl)(nil) before imports.
+	// The blank identifier "_" should NOT become the importOwner.
+	src := []byte(`package main
+
+import "fmt"
+
+var _ fmt.Stringer = (*MyType)(nil)
+
+type MyType struct{}
+
+func (m *MyType) String() string { return "" }
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "impl.go",
+		Content:  src,
+		Language: "go",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	for _, e := range result.Edges {
+		if e.Kind == "imports" && e.DstSymbolName == "fmt" {
+			if e.SrcSymbolName == "_" {
+				t.Error("import edge for 'fmt' has SrcSymbolName='_'; blank identifier should be skipped as importOwner")
+			}
+			if e.SrcSymbolName == "" {
+				t.Error("import edge for 'fmt' has empty SrcSymbolName; expected a non-blank symbol")
+			}
+			return
+		}
+	}
+	t.Error("expected import edge for 'fmt'")
+}

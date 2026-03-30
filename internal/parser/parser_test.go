@@ -995,11 +995,14 @@ public class UserService {
 		}
 	}
 
-	// Should have import edge
+	// Should have import edge with first symbol as source
 	foundImport := false
 	for _, e := range result.Edges {
 		if e.Kind == "imports" && e.DstSymbolName == "List" {
 			foundImport = true
+			if e.SrcSymbolName != "UserService" {
+				t.Errorf("expected import edge SrcSymbolName='UserService', got %q", e.SrcSymbolName)
+			}
 			break
 		}
 	}
