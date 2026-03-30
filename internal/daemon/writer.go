@@ -340,7 +340,12 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 			return nil, fmt.Errorf("insert symbol %s: %w", sym.Name, err)
 		}
 		symID, _ := res.LastInsertId()
-		symbolIDs[sym.Name] = symID
+		// Keep the first symbol ID for each name. Duplicates (e.g. Java
+		// method overloads) would overwrite, potentially pointing edges
+		// at the wrong overload.
+		if _, exists := symbolIDs[sym.Name]; !exists {
+			symbolIDs[sym.Name] = symID
+		}
 		newSymbolNames = append(newSymbolNames, sym.Name)
 	}
 
