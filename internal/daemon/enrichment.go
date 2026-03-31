@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -332,7 +333,8 @@ func (ep *EnrichmentPipeline) EnrichFile(ctx context.Context, event FileChangeEv
 
 // contentHash returns the SHA-256 hex hash of content.
 func contentHash(content []byte) string {
-	return fmt.Sprintf("%x", sha256.Sum256(content))
+	h := sha256.Sum256(content)
+	return hex.EncodeToString(h[:])
 }
 
 const maxFileSize = 10 * 1024 * 1024 // 10MB

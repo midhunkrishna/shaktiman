@@ -3,6 +3,7 @@ package vector
 import (
 	"context"
 	"math"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
@@ -582,5 +583,63 @@ func TestCosineSimilarity(t *testing.T) {
 				t.Errorf("cosineSimilarity(%v, %v) = %f, want %f", tt.a, tt.b, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCosineSimilarity_HighDim(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewSource(42))
+	a := make([]float32, 768)
+	b := make([]float32, 768)
+	for i := range a {
+		a[i] = rng.Float32()*2 - 1
+		b[i] = rng.Float32()*2 - 1
+	}
+
+	// Reference: compute in float64 for ground truth
+	var dot, nA, nB float64
+	for i := range a {
+		ai, bi := float64(a[i]), float64(b[i])
+		dot += ai * bi
+		nA += ai * ai
+		nB += bi * bi
+	}
+	ref := dot / (math.Sqrt(nA) * math.Sqrt(nB))
+
+	got := cosineSimilarity(a, b)
+	if math.Abs(got-ref) > 1e-4 {
+		t.Errorf("cosineSimilarity(768-dim): got %f, ref %f, diff %e", got, ref, math.Abs(got-ref))
+	}
+}
+
+func TestBruteForceStore_Search_TopKZero(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := NewBruteForceStore(3)
+	if err := s.Upsert(ctx, 1, []float32{1, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := s.Search(ctx, []float32{1, 0, 0}, 0)
+	if err != nil {
+		t.Fatalf("Search(topK=0): %v", err)
+	}
+	if results != nil {
+		t.Fatalf("expected nil, got %d results", len(results))
+	}
+}
+
+func TestBruteForceStore_Search_TopKNegative(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := NewBruteForceStore(3)
+	if err := s.Upsert(ctx, 1, []float32{1, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := s.Search(ctx, []float32{1, 0, 0}, -1)
+	if err != nil {
+		t.Fatalf("Search(topK=-1): %v", err)
+	}
+	if results != nil {
+		t.Fatalf("expected nil, got %d results", len(results))
 	}
 }

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -211,10 +212,11 @@ func ScanRepo(ctx context.Context, input ScanInput) (*ScanResult, error) {
 			return nil
 		}
 
-		hash := fmt.Sprintf("%x", sha256.Sum256(content))
+		sum := sha256.Sum256(content)
+			hash := hex.EncodeToString(sum[:])
 
-		files = append(files, ScannedFile{
-			Path:        relPath,
+			files = append(files, ScannedFile{
+				Path:        relPath,
 			AbsPath:     absPath,
 			ContentHash: hash,
 			Mtime:       float64(info.ModTime().UnixMilli()) / 1000.0,
