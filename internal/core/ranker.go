@@ -137,7 +137,93 @@ func NormalizeCosineSimilarity(sim float64) float64 {
 
 // computeStructuralScores computes structural boost for candidates.
 // A candidate gets boosted if other high-scoring candidates are BFS-reachable.
+// Uses batch queries when the store supports BatchMetadataStore, falling back
+// to per-item queries otherwise.
 func computeStructuralScores(ctx context.Context, store types.MetadataStore, candidates []types.ScoredResult) map[int64]float64 {
+	if bs, ok := store.(types.BatchMetadataStore); ok {
+		return computeStructuralScoresBatch(ctx, bs, candidates)
+	}
+	return computeStructuralScoresLegacy(ctx, store, candidates)
+}
+
+func computeStructuralScoresBatch(ctx context.Context, store types.BatchMetadataStore, candidates []types.ScoredResult) map[int64]float64 {
+	scores := make(map[int64]float64, len(candidates))
+	if len(candidates) == 0 {
+		return scores
+	}
+
+	// Collect non-zero chunk IDs
+	chunkIDs := make([]int64, 0, len(candidates))
+	for _, c := range candidates {
+		if c.ChunkID != 0 {
+			chunkIDs = append(chunkIDs, c.ChunkID)
+		}
+	}
+
+	// Batch 1: chunk → symbol mapping
+	chunkSymbolMap, err := store.BatchGetSymbolIDsForChunks(ctx, chunkIDs)
+	if err != nil {
+		return scores
+	}
+
+	// Collect unique symbol IDs
+	symbolIDs := make([]int64, 0, len(chunkSymbolMap))
+	for _, symID := range chunkSymbolMap {
+		symbolIDs = append(symbolIDs, symID)
+	}
+
+	// Batch 2: symbol → neighbors
+	neighborMap, err := store.BatchNeighbors(ctx, symbolIDs, 2)
+	if err != nil {
+		return scores
+	}
+
+	// Collect all neighbor symbol IDs for batch chunk lookup
+	allNeighborSyms := make(map[int64]bool)
+	for _, neighbors := range neighborMap {
+		for _, nID := range neighbors {
+			allNeighborSyms[nID] = true
+		}
+	}
+	neighborSymIDs := make([]int64, 0, len(allNeighborSyms))
+	for id := range allNeighborSyms {
+		neighborSymIDs = append(neighborSymIDs, id)
+	}
+
+	// Batch 3: neighbor symbol → chunk mapping
+	symChunkMap, err := store.BatchGetChunkIDsForSymbols(ctx, neighborSymIDs)
+	if err != nil {
+		return scores
+	}
+
+	// Build candidate set for overlap detection
+	candidateChunks := make(map[int64]bool, len(candidates))
+	for _, c := range candidates {
+		candidateChunks[c.ChunkID] = true
+	}
+
+	// Compute overlap scores
+	for _, c := range candidates {
+		symID, ok := chunkSymbolMap[c.ChunkID]
+		if !ok {
+			continue
+		}
+		neighbors := neighborMap[symID]
+		overlap := 0
+		for _, nSymID := range neighbors {
+			ncID := symChunkMap[nSymID]
+			if ncID != 0 && candidateChunks[ncID] && ncID != c.ChunkID {
+				overlap++
+			}
+		}
+		if overlap > 0 {
+			scores[c.ChunkID] = float64(overlap) / float64(overlap+1)
+		}
+	}
+	return scores
+}
+
+func computeStructuralScoresLegacy(ctx context.Context, store types.MetadataStore, candidates []types.ScoredResult) map[int64]float64 {
 	scores := make(map[int64]float64, len(candidates))
 
 	candidateChunks := make(map[int64]bool, len(candidates))

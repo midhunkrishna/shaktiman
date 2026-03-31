@@ -54,6 +54,28 @@ type MetadataStore interface {
 	Neighbors(ctx context.Context, symbolID int64, maxDepth int, direction string) ([]int64, error)
 }
 
+// BatchMetadataStore extends MetadataStore with batch query methods.
+// Callers use type assertion to detect support and fall back to per-item queries.
+type BatchMetadataStore interface {
+	MetadataStore
+
+	// BatchGetSymbolIDsForChunks returns chunkID → symbolID mapping.
+	// Replicates lookupSymbolForChunk same-file-match fallback logic.
+	BatchGetSymbolIDsForChunks(ctx context.Context, chunkIDs []int64) (map[int64]int64, error)
+
+	// BatchNeighbors returns symbolID → []neighborSymbolID for each seed.
+	BatchNeighbors(ctx context.Context, symbolIDs []int64, maxDepth int) (map[int64][]int64, error)
+
+	// BatchGetChunkIDsForSymbols returns symbolID → chunkID mapping.
+	BatchGetChunkIDsForSymbols(ctx context.Context, symbolIDs []int64) (map[int64]int64, error)
+
+	// BatchHydrateChunks returns chunk data joined with file paths and is_test.
+	BatchHydrateChunks(ctx context.Context, chunkIDs []int64) ([]HydratedChunk, error)
+
+	// BatchGetFileHashes returns path → contentHash for existing files.
+	BatchGetFileHashes(ctx context.Context, paths []string) (map[string]string, error)
+}
+
 // VectorResult holds a single vector similarity match.
 type VectorResult struct {
 	ChunkID int64   `json:"chunk_id"`

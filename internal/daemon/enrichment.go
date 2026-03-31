@@ -231,14 +231,21 @@ func (ep *EnrichmentPipeline) enrichFile(ctx context.Context, p *parser.Parser, 
 }
 
 // filterChanged returns files whose content hash differs from the stored version.
+// Uses batch query (1 query instead of N).
 func (ep *EnrichmentPipeline) filterChanged(ctx context.Context, files []ScannedFile) ([]ScannedFile, error) {
+	paths := make([]string, len(files))
+	for i, f := range files {
+		paths[i] = f.Path
+	}
+
+	existing, err := ep.store.BatchGetFileHashes(ctx, paths)
+	if err != nil {
+		return nil, fmt.Errorf("batch get file hashes: %w", err)
+	}
+
 	var changed []ScannedFile
 	for _, f := range files {
-		existing, err := ep.store.GetFileByPath(ctx, f.Path)
-		if err != nil {
-			return nil, fmt.Errorf("check file %s: %w", f.Path, err)
-		}
-		if existing == nil || existing.ContentHash != f.ContentHash {
+		if hash, found := existing[f.Path]; !found || hash != f.ContentHash {
 			changed = append(changed, f)
 		}
 	}

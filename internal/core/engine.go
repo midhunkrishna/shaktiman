@@ -322,6 +322,7 @@ func filterByScore(results []types.ScoredResult, minScore float64) []types.Score
 
 // mergeResults creates a union of keyword and semantic results, hydrating vector-only entries.
 // The filter is applied to vector-only results during hydration (keyword results are already filtered).
+// Uses batch hydration when the store supports BatchMetadataStore.
 func mergeResults(ctx context.Context, store types.MetadataStore, kwResults []types.ScoredResult, semResults []types.VectorResult, filter TestFilter) []types.ScoredResult {
 	seen := make(map[int64]bool, len(kwResults)+len(semResults))
 	merged := make([]types.ScoredResult, 0, len(kwResults)+len(semResults))
@@ -331,19 +332,54 @@ func mergeResults(ctx context.Context, store types.MetadataStore, kwResults []ty
 		merged = append(merged, r)
 	}
 
+	// Collect unhydrated semantic-only chunk IDs
+	var needHydrate []int64
 	for _, sr := range semResults {
-		if seen[sr.ChunkID] {
-			continue
+		if !seen[sr.ChunkID] {
+			seen[sr.ChunkID] = true
+			needHydrate = append(needHydrate, sr.ChunkID)
 		}
-		seen[sr.ChunkID] = true
+	}
 
-		// Hydrate from store
-		chunk, err := store.GetChunkByID(ctx, sr.ChunkID)
+	if len(needHydrate) == 0 {
+		return merged
+	}
+
+	// Batch path: 1 query instead of 3N
+	if bs, ok := store.(types.BatchMetadataStore); ok {
+		hydrated, err := bs.BatchHydrateChunks(ctx, needHydrate)
+		if err == nil {
+			for _, h := range hydrated {
+				if filter.ExcludeTests && h.IsTest {
+					continue
+				}
+				if filter.TestOnly && !h.IsTest {
+					continue
+				}
+				merged = append(merged, types.ScoredResult{
+					ChunkID:    h.ChunkID,
+					Score:      0, // will be set by ranker
+					Path:       h.Path,
+					SymbolName: h.SymbolName,
+					Kind:       h.Kind,
+					StartLine:  h.StartLine,
+					EndLine:    h.EndLine,
+					Content:    h.Content,
+					TokenCount: h.TokenCount,
+				})
+			}
+			return merged
+		}
+		// fall through to legacy on error
+	}
+
+	// Legacy per-item path
+	for _, id := range needHydrate {
+		chunk, err := store.GetChunkByID(ctx, id)
 		if err != nil || chunk == nil {
 			continue
 		}
 
-		// Apply test file filter to vector-only results
 		if filter.ExcludeTests || filter.TestOnly {
 			isTest, err := store.GetFileIsTestByID(ctx, chunk.FileID)
 			if err != nil {
@@ -361,7 +397,7 @@ func mergeResults(ctx context.Context, store types.MetadataStore, kwResults []ty
 
 		merged = append(merged, types.ScoredResult{
 			ChunkID:    chunk.ID,
-			Score:      0, // will be set by ranker
+			Score:      0,
 			Path:       path,
 			SymbolName: chunk.SymbolName,
 			Kind:       chunk.Kind,

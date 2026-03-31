@@ -718,3 +718,202 @@ func boolToInt(b bool) int {
 	}
 	return 0
 }
+
+// batchInClause builds "?,?,?" placeholders and []any args for an IN clause.
+// Callers must chunk inputs to stay under SQLite's variable limit (999).
+const batchLimit = 500
+
+func inClauseInt64(ids []int64) (string, []any) {
+	ph := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		ph[i] = "?"
+		args[i] = id
+	}
+	return strings.Join(ph, ","), args
+}
+
+func inClauseStrings(vals []string) (string, []any) {
+	ph := make([]string, len(vals))
+	args := make([]any, len(vals))
+	for i, v := range vals {
+		ph[i] = "?"
+		args[i] = v
+	}
+	return strings.Join(ph, ","), args
+}
+
+// ---------------------------------------------------------------------------
+// Batch query methods (BatchMetadataStore interface)
+// ---------------------------------------------------------------------------
+
+// BatchGetSymbolIDsForChunks returns chunkID → symbolID for each chunk.
+// Replicates lookupSymbolForChunk: prefers a symbol in the same file as the chunk,
+// falls back to the first symbol with that name.
+func (s *Store) BatchGetSymbolIDsForChunks(ctx context.Context, chunkIDs []int64) (map[int64]int64, error) {
+	result := make(map[int64]int64, len(chunkIDs))
+	for start := 0; start < len(chunkIDs); start += batchLimit {
+		end := start + batchLimit
+		if end > len(chunkIDs) {
+			end = len(chunkIDs)
+		}
+		batch := chunkIDs[start:end]
+		ph, args := inClauseInt64(batch)
+
+		rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+			SELECT c.id, c.file_id, c.symbol_name, s.id AS sym_id, s.file_id AS sym_file_id
+			FROM chunks c
+			JOIN symbols s ON s.name = c.symbol_name
+			WHERE c.id IN (%s) AND c.symbol_name != ''
+			ORDER BY c.id, CASE WHEN s.file_id = c.file_id THEN 0 ELSE 1 END, s.id
+		`, ph), args...)
+		if err != nil {
+			return nil, fmt.Errorf("batch get symbol IDs: %w", err)
+		}
+
+		for rows.Next() {
+			var chunkID, fileID int64
+			var symbolName string
+			var symID, symFileID int64
+			if err := rows.Scan(&chunkID, &fileID, &symbolName, &symID, &symFileID); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan symbol ID: %w", err)
+			}
+			// ORDER BY ensures same-file match comes first; keep only the first per chunk.
+			if _, exists := result[chunkID]; !exists {
+				result[chunkID] = symID
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+// BatchNeighbors returns symbolID → []neighborSymbolID for each seed.
+// Pragmatic first pass: delegates to existing Neighbors() per symbol.
+func (s *Store) BatchNeighbors(ctx context.Context, symbolIDs []int64, maxDepth int) (map[int64][]int64, error) {
+	result := make(map[int64][]int64, len(symbolIDs))
+	for _, symID := range symbolIDs {
+		neighbors, err := s.Neighbors(ctx, symID, maxDepth, "both")
+		if err != nil {
+			continue
+		}
+		result[symID] = neighbors
+	}
+	return result, nil
+}
+
+// BatchGetChunkIDsForSymbols returns symbolID → chunkID mapping.
+func (s *Store) BatchGetChunkIDsForSymbols(ctx context.Context, symbolIDs []int64) (map[int64]int64, error) {
+	result := make(map[int64]int64, len(symbolIDs))
+	for start := 0; start < len(symbolIDs); start += batchLimit {
+		end := start + batchLimit
+		if end > len(symbolIDs) {
+			end = len(symbolIDs)
+		}
+		batch := symbolIDs[start:end]
+		ph, args := inClauseInt64(batch)
+
+		rows, err := s.db.QueryContext(ctx, fmt.Sprintf(
+			"SELECT id, chunk_id FROM symbols WHERE id IN (%s)", ph), args...)
+		if err != nil {
+			return nil, fmt.Errorf("batch get chunk IDs: %w", err)
+		}
+		for rows.Next() {
+			var symID, chunkID int64
+			if err := rows.Scan(&symID, &chunkID); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan chunk ID: %w", err)
+			}
+			result[symID] = chunkID
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+// BatchHydrateChunks returns chunk data joined with file path and is_test.
+// Eliminates per-result GetChunkByID + GetFilePathByID + GetFileIsTestByID queries.
+func (s *Store) BatchHydrateChunks(ctx context.Context, chunkIDs []int64) ([]types.HydratedChunk, error) {
+	if len(chunkIDs) == 0 {
+		return nil, nil
+	}
+	var results []types.HydratedChunk
+	for start := 0; start < len(chunkIDs); start += batchLimit {
+		end := start + batchLimit
+		if end > len(chunkIDs) {
+			end = len(chunkIDs)
+		}
+		batch := chunkIDs[start:end]
+		ph, args := inClauseInt64(batch)
+
+		rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+			SELECT c.id, c.file_id, c.symbol_name, c.kind,
+			       c.start_line, c.end_line, c.content, c.token_count,
+			       f.path, f.is_test
+			FROM chunks c
+			JOIN files f ON c.file_id = f.id
+			WHERE c.id IN (%s)
+		`, ph), args...)
+		if err != nil {
+			return nil, fmt.Errorf("batch hydrate chunks: %w", err)
+		}
+		for rows.Next() {
+			var h types.HydratedChunk
+			var isTest int
+			if err := rows.Scan(
+				&h.ChunkID, &h.FileID, &h.SymbolName, &h.Kind,
+				&h.StartLine, &h.EndLine, &h.Content, &h.TokenCount,
+				&h.Path, &isTest,
+			); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan hydrated chunk: %w", err)
+			}
+			h.IsTest = isTest != 0
+			results = append(results, h)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return results, nil
+}
+
+// BatchGetFileHashes returns path → contentHash for existing files.
+func (s *Store) BatchGetFileHashes(ctx context.Context, paths []string) (map[string]string, error) {
+	result := make(map[string]string, len(paths))
+	for start := 0; start < len(paths); start += batchLimit {
+		end := start + batchLimit
+		if end > len(paths) {
+			end = len(paths)
+		}
+		batch := paths[start:end]
+		ph, args := inClauseStrings(batch)
+
+		rows, err := s.db.QueryContext(ctx, fmt.Sprintf(
+			"SELECT path, content_hash FROM files WHERE path IN (%s)", ph), args...)
+		if err != nil {
+			return nil, fmt.Errorf("batch get file hashes: %w", err)
+		}
+		for rows.Next() {
+			var path, hash string
+			if err := rows.Scan(&path, &hash); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan file hash: %w", err)
+			}
+			result[path] = hash
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
