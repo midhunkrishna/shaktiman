@@ -110,6 +110,17 @@ func openReader(path string, inMemory bool) (*sql.DB, error) {
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(0) // PRAGMAs stick for connection lifetime
 
+	// Increase reader page cache for large indexes (32MB vs SQLite default 2MB)
+	if _, err := db.Exec("PRAGMA cache_size = -32000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set reader cache_size: %w", err)
+	}
+	// Enable memory-mapped I/O for reads (256MB)
+	if _, err := db.Exec("PRAGMA mmap_size = 268435456"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set reader mmap_size: %w", err)
+	}
+
 	return db, nil
 }
 

@@ -300,6 +300,11 @@ func (p *Parser) mergeSmallChunks(chunks []types.ChunkRecord) []types.ChunkRecor
 }
 
 // splitLargeChunks splits chunks exceeding maxChunkTokens.
+// Uses per-line incremental token counting to avoid O(n²) re-tokenization.
+// Note: splits BEFORE the line that would exceed the limit, so emitted chunks
+// stay within maxChunkTokens. This may produce different boundaries than
+// previous versions that split after — a re-index will update chunk boundaries
+// and embeddings will be regenerated naturally.
 func (p *Parser) splitLargeChunks(chunks []types.ChunkRecord) []types.ChunkRecord {
 	var result []types.ChunkRecord
 	for _, c := range chunks {
@@ -311,30 +316,39 @@ func (p *Parser) splitLargeChunks(chunks []types.ChunkRecord) []types.ChunkRecor
 		lines := strings.Split(c.Content, "\n")
 		var current strings.Builder
 		currentStart := c.StartLine
+		tokensSoFar := 0
 
 		for i, line := range lines {
-			current.WriteString(line)
+			// Count tokens for this line (including newline separator)
+			lineTokens := p.tokens.Count(line)
 			if i < len(lines)-1 {
-				current.WriteString("\n")
+				lineTokens++ // account for newline token
 			}
 
-			tokensSoFar := p.tokens.Count(current.String())
-			if tokensSoFar >= maxChunkTokens && i < len(lines)-1 {
+			if tokensSoFar+lineTokens >= maxChunkTokens && current.Len() > 0 {
+				// Emit current chunk with exact token count
 				part := current.String()
 				result = append(result, types.ChunkRecord{
 					ChunkIndex:  len(result),
 					SymbolName:  c.SymbolName,
 					Kind:        c.Kind,
 					StartLine:   currentStart,
-					EndLine:     c.StartLine + i,
+					EndLine:     c.StartLine + i - 1,
 					Content:     part,
 					TokenCount:  p.tokens.Count(part),
 					Signature:   c.Signature,
 					ParentIndex: c.ParentIndex,
 				})
 				current.Reset()
-				currentStart = c.StartLine + i + 1
+				currentStart = c.StartLine + i
+				tokensSoFar = 0
 			}
+
+			current.WriteString(line)
+			if i < len(lines)-1 {
+				current.WriteString("\n")
+			}
+			tokensSoFar += lineTokens
 		}
 
 		if current.Len() > 0 {

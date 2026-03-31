@@ -1,19 +1,29 @@
 package vector
 
-import "sync"
+import (
+	"container/list"
+	"sync"
+)
 
 // EmbedCache is an LRU cache for query embeddings.
+// Uses container/list for O(1) move-to-back and eviction.
 type EmbedCache struct {
-	mu      sync.Mutex
-	entries map[string][]float32
-	order   []string
-	maxSize int
+	mu       sync.Mutex
+	entries  map[string]*list.Element
+	order    *list.List
+	maxSize  int
+}
+
+type cacheEntry struct {
+	key string
+	vec []float32
 }
 
 // NewEmbedCache creates a cache with the given maximum entry count.
 func NewEmbedCache(maxSize int) *EmbedCache {
 	return &EmbedCache{
-		entries: make(map[string][]float32, maxSize),
+		entries: make(map[string]*list.Element, maxSize),
+		order:   list.New(),
 		maxSize: maxSize,
 	}
 }
@@ -22,9 +32,10 @@ func NewEmbedCache(maxSize int) *EmbedCache {
 func (c *EmbedCache) Get(query string) ([]float32, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	vec, ok := c.entries[query]
+	elem, ok := c.entries[query]
 	if ok {
-		c.moveToEnd(query)
+		c.order.MoveToBack(elem)
+		vec := elem.Value.(*cacheEntry).vec
 		cp := make([]float32, len(vec))
 		copy(cp, vec)
 		return cp, true
@@ -40,28 +51,20 @@ func (c *EmbedCache) Put(query string, vec []float32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if _, exists := c.entries[query]; exists {
-		c.entries[query] = cp
-		c.moveToEnd(query)
+	if elem, exists := c.entries[query]; exists {
+		elem.Value.(*cacheEntry).vec = cp
+		c.order.MoveToBack(elem)
 		return
 	}
 
-	if len(c.order) >= c.maxSize {
-		oldest := c.order[0]
-		c.order = c.order[1:]
-		delete(c.entries, oldest)
-	}
-
-	c.entries[query] = cp
-	c.order = append(c.order, query)
-}
-
-func (c *EmbedCache) moveToEnd(key string) {
-	for i, k := range c.order {
-		if k == key {
-			c.order = append(c.order[:i], c.order[i+1:]...)
-			c.order = append(c.order, key)
-			return
+	if c.order.Len() >= c.maxSize {
+		front := c.order.Front()
+		if front != nil {
+			evicted := c.order.Remove(front).(*cacheEntry)
+			delete(c.entries, evicted.key)
 		}
 	}
+
+	elem := c.order.PushBack(&cacheEntry{key: query, vec: cp})
+	c.entries[query] = elem
 }

@@ -308,13 +308,19 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 		return nil, fmt.Errorf("delete old chunks for %s: %w", job.FilePath, err)
 	}
 
-	// Insert new chunks
+	// Insert new chunks (prepared statement avoids re-compiling SQL per row)
+	chunkStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO chunks (file_id, chunk_index, symbol_name, kind,
+		                    start_line, end_line, content, token_count, signature, parse_quality)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return nil, fmt.Errorf("prepare chunk insert for %s: %w", job.FilePath, err)
+	}
+	defer chunkStmt.Close()
+
 	chunkIDs := make([]int64, len(job.Chunks))
 	for i, c := range job.Chunks {
-		res, err := tx.ExecContext(ctx, `
-			INSERT INTO chunks (file_id, chunk_index, symbol_name, kind,
-			                    start_line, end_line, content, token_count, signature, parse_quality)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		res, err := chunkStmt.ExecContext(ctx,
 			fileID, c.ChunkIndex, c.SymbolName, c.Kind,
 			c.StartLine, c.EndLine, c.Content, c.TokenCount, c.Signature,
 			coalesce(c.ParseQuality, "full"))
@@ -336,6 +342,15 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 	}
 
 	// Insert symbols with resolved chunk IDs, track name→ID mapping for edges
+	symStmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO symbols (chunk_id, file_id, name, qualified_name, kind,
+		                     line, signature, visibility, is_exported)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return nil, fmt.Errorf("prepare symbol insert for %s: %w", job.FilePath, err)
+	}
+	defer symStmt.Close()
+
 	symbolIDs := make(map[string]int64, len(job.Symbols))
 	var newSymbolNames []string
 	for _, sym := range job.Symbols {
@@ -349,10 +364,7 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 		if sym.IsExported {
 			exported = 1
 		}
-		res, err := tx.ExecContext(ctx, `
-			INSERT INTO symbols (chunk_id, file_id, name, qualified_name, kind,
-			                     line, signature, visibility, is_exported)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		res, err := symStmt.ExecContext(ctx,
 			chunkID, fileID, sym.Name, sym.QualifiedName, sym.Kind,
 			sym.Line, sym.Signature, sym.Visibility, exported)
 		if err != nil {

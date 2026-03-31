@@ -3,6 +3,7 @@ package vector
 
 import (
 	"bufio"
+	"container/heap"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -12,7 +13,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
 	"sync"
 	"time"
 
@@ -35,8 +35,33 @@ func NewBruteForceStore(dim int) *BruteForceStore {
 	}
 }
 
+// scored holds a vector ID and its similarity score.
+type scored struct {
+	id    int64
+	score float64
+}
+
+// scoreHeap is a min-heap of scored entries (lowest score on top).
+type scoreHeap []scored
+
+func (h scoreHeap) Len() int            { return len(h) }
+func (h scoreHeap) Less(i, j int) bool   { return h[i].score < h[j].score }
+func (h scoreHeap) Swap(i, j int)        { h[i], h[j] = h[j], h[i] }
+func (h *scoreHeap) Push(x any)          { *h = append(*h, x.(scored)) }
+func (h *scoreHeap) Pop() any {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
+}
+
 // Search returns the topK most similar vectors by cosine similarity.
+// Uses a min-heap to avoid allocating and sorting all N results.
 func (s *BruteForceStore) Search(_ context.Context, query []float32, topK int) ([]types.VectorResult, error) {
+	if topK <= 0 {
+		return nil, nil
+	}
 	if len(query) != s.dim {
 		return nil, fmt.Errorf("query dim %d != store dim %d", len(query), s.dim)
 	}
@@ -48,30 +73,28 @@ func (s *BruteForceStore) Search(_ context.Context, query []float32, topK int) (
 		return nil, nil
 	}
 
-	type scored struct {
-		id    int64
-		score float64
+	// Min-heap of size topK: keep the highest-scoring entries.
+	k := topK
+	if k > n {
+		k = n
 	}
-	results := make([]scored, 0, n)
+	h := make(scoreHeap, 0, k)
 	for id, vec := range s.vectors {
 		sim := cosineSimilarity(query, vec)
-		results = append(results, scored{id, sim})
+		if h.Len() < topK {
+			heap.Push(&h, scored{id, sim})
+		} else if sim > h[0].score {
+			h[0] = scored{id, sim}
+			heap.Fix(&h, 0)
+		}
 	}
 	s.mu.RUnlock()
 
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].score > results[j].score
-	})
-
-	if topK > len(results) {
-		topK = len(results)
-	}
-	out := make([]types.VectorResult, topK)
-	for i := 0; i < topK; i++ {
-		out[i] = types.VectorResult{
-			ChunkID: results[i].id,
-			Score:   results[i].score,
-		}
+	// Extract results in descending order (highest score first).
+	out := make([]types.VectorResult, h.Len())
+	for i := len(out) - 1; i >= 0; i-- {
+		s := heap.Pop(&h).(scored)
+		out[i] = types.VectorResult{ChunkID: s.id, Score: s.score}
 	}
 	return out, nil
 }
@@ -148,11 +171,14 @@ var embMagic = [4]byte{'E', 'M', 'B', 'V'}
 
 // SaveToDisk persists all vectors to a binary file using atomic replace.
 // Writes format v2 with CRC32 integrity footer.
-// Snapshots vectors under RLock, then releases before disk I/O.
+// Snapshots vectors under RLock (fast copy), then serializes to disk without
+// holding any lock. Uses math.Float32bits encoding (no reflection overhead).
 func (s *BruteForceStore) SaveToDisk(path string) error {
 	start := time.Now()
 
-	// Snapshot under lock — release before disk I/O to avoid blocking UpsertBatch
+	// Snapshot under lock — release before disk I/O to avoid blocking writers.
+	// Go's RWMutex is writer-preferring: a waiting writer blocks new readers too,
+	// so holding RLock during disk writes would stall both Upsert and Search.
 	s.mu.RLock()
 	snapshot := make(map[int64][]float32, len(s.vectors))
 	dim := s.dim
@@ -174,37 +200,31 @@ func (s *BruteForceStore) SaveToDisk(path string) error {
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName) // clean up on failure
 
-	bw := bufio.NewWriter(tmp)
+	bw := bufio.NewWriterSize(tmp, 1<<20) // 1MB buffer
 	h := crc32.NewIEEE()
 	w := io.MultiWriter(bw, h) // write to both buffer and hasher
 
-	// Header
-	if err := binary.Write(w, binary.LittleEndian, embMagic); err != nil {
+	// Header (direct byte encoding — avoids binary.Write reflection overhead)
+	var hdr [16]byte
+	copy(hdr[:4], embMagic[:])
+	binary.LittleEndian.PutUint32(hdr[4:8], 2)
+	binary.LittleEndian.PutUint32(hdr[8:12], uint32(dim))
+	binary.LittleEndian.PutUint32(hdr[12:16], uint32(len(snapshot)))
+	if _, err := w.Write(hdr[:]); err != nil {
 		tmp.Close()
-		return fmt.Errorf("write magic: %w", err)
-	}
-	if err := binary.Write(w, binary.LittleEndian, uint32(2)); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write version: %w", err)
-	}
-	if err := binary.Write(w, binary.LittleEndian, uint32(dim)); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write dim: %w", err)
-	}
-	if err := binary.Write(w, binary.LittleEndian, uint32(len(snapshot))); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write count: %w", err)
+		return fmt.Errorf("write header: %w", err)
 	}
 
-	// Entries (from snapshot, no lock held)
+	// Entries (direct byte encoding — avoids binary.Write reflection per vector)
+	entryBuf := make([]byte, 8+dim*4)
 	for id, vec := range snapshot {
-		if err := binary.Write(w, binary.LittleEndian, id); err != nil {
-			tmp.Close()
-			return fmt.Errorf("write id: %w", err)
+		binary.LittleEndian.PutUint64(entryBuf[:8], uint64(id))
+		for j, v := range vec {
+			binary.LittleEndian.PutUint32(entryBuf[8+j*4:], math.Float32bits(v))
 		}
-		if err := binary.Write(w, binary.LittleEndian, vec); err != nil {
+		if _, err := w.Write(entryBuf); err != nil {
 			tmp.Close()
-			return fmt.Errorf("write vector: %w", err)
+			return fmt.Errorf("write entry: %w", err)
 		}
 	}
 
@@ -293,14 +313,16 @@ func (s *BruteForceStore) LoadFromDisk(path string) error {
 	s.dim = int(dim)
 	s.vectors = make(map[int64][]float32, count)
 
+	// Read entries (direct byte decoding — avoids binary.Read reflection per vector)
+	entryBuf := make([]byte, 8+int(dim)*4)
 	for i := uint32(0); i < count; i++ {
-		var id int64
-		if err := binary.Read(r, binary.LittleEndian, &id); err != nil {
-			return fmt.Errorf("read id at entry %d: %w", i, err)
+		if _, err := io.ReadFull(r, entryBuf); err != nil {
+			return fmt.Errorf("read entry %d: %w", i, err)
 		}
+		id := int64(binary.LittleEndian.Uint64(entryBuf[:8]))
 		vec := make([]float32, dim)
-		if err := binary.Read(r, binary.LittleEndian, &vec); err != nil {
-			return fmt.Errorf("read vector at entry %d: %w", i, err)
+		for j := range vec {
+			vec[j] = math.Float32frombits(binary.LittleEndian.Uint32(entryBuf[8+j*4:]))
 		}
 		s.vectors[id] = vec
 	}
@@ -326,16 +348,25 @@ func (s *BruteForceStore) LoadFromDisk(path string) error {
 
 // cosineSimilarity computes cosine similarity between two vectors.
 // Returns a value in [-1, 1]. Normalized to [0, 1] by callers when needed.
+// Uses float32 accumulation with 4x unrolling for SIMD-friendly codegen.
 func cosineSimilarity(a, b []float32) float64 {
-	var dot, normA, normB float64
-	for i := range a {
-		ai, bi := float64(a[i]), float64(b[i])
-		dot += ai * bi
-		normA += ai * ai
-		normB += bi * bi
+	var dot, normA, normB float32
+	n := len(a)
+	i := 0
+	for ; i+3 < n; i += 4 {
+		a0, a1, a2, a3 := a[i], a[i+1], a[i+2], a[i+3]
+		b0, b1, b2, b3 := b[i], b[i+1], b[i+2], b[i+3]
+		dot += a0*b0 + a1*b1 + a2*b2 + a3*b3
+		normA += a0*a0 + a1*a1 + a2*a2 + a3*a3
+		normB += b0*b0 + b1*b1 + b2*b2 + b3*b3
+	}
+	for ; i < n; i++ {
+		dot += a[i] * b[i]
+		normA += a[i] * a[i]
+		normB += b[i] * b[i]
 	}
 	if normA == 0 || normB == 0 {
 		return 0
 	}
-	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+	return float64(dot) / (math.Sqrt(float64(normA)) * math.Sqrt(float64(normB)))
 }

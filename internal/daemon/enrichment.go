@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -189,10 +190,15 @@ func (ep *EnrichmentPipeline) IndexAll(ctx context.Context, input IndexAllInput)
 }
 
 // enrichFile parses a single file and submits the result to the writer.
+// Uses file.Content if available (carried from scan), falls back to reading from disk.
 func (ep *EnrichmentPipeline) enrichFile(ctx context.Context, p *parser.Parser, file ScannedFile) error {
-	content, err := readFileContent(file.AbsPath)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", file.Path, err)
+	content := file.Content
+	if content == nil {
+		var err error
+		content, err = readFileContent(file.AbsPath)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", file.Path, err)
+		}
 	}
 
 	result, err := p.Parse(ctx, parser.ParseInput{
@@ -230,14 +236,21 @@ func (ep *EnrichmentPipeline) enrichFile(ctx context.Context, p *parser.Parser, 
 }
 
 // filterChanged returns files whose content hash differs from the stored version.
+// Uses batch query (1 query instead of N).
 func (ep *EnrichmentPipeline) filterChanged(ctx context.Context, files []ScannedFile) ([]ScannedFile, error) {
+	paths := make([]string, len(files))
+	for i, f := range files {
+		paths[i] = f.Path
+	}
+
+	existing, err := ep.store.BatchGetFileHashes(ctx, paths)
+	if err != nil {
+		return nil, fmt.Errorf("batch get file hashes: %w", err)
+	}
+
 	var changed []ScannedFile
 	for _, f := range files {
-		existing, err := ep.store.GetFileByPath(ctx, f.Path)
-		if err != nil {
-			return nil, fmt.Errorf("check file %s: %w", f.Path, err)
-		}
-		if existing == nil || existing.ContentHash != f.ContentHash {
+		if hash, found := existing[f.Path]; !found || hash != f.ContentHash {
 			changed = append(changed, f)
 		}
 	}
@@ -332,7 +345,8 @@ func (ep *EnrichmentPipeline) EnrichFile(ctx context.Context, event FileChangeEv
 
 // contentHash returns the SHA-256 hex hash of content.
 func contentHash(content []byte) string {
-	return fmt.Sprintf("%x", sha256.Sum256(content))
+	h := sha256.Sum256(content)
+	return hex.EncodeToString(h[:])
 }
 
 const maxFileSize = 10 * 1024 * 1024 // 10MB

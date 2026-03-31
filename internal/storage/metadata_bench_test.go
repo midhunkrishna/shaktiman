@@ -154,3 +154,229 @@ func BenchmarkCountChunksNeedingEmbedding(b *testing.B) {
 		}
 	}
 }
+
+// setupLargeBenchStoreWithSymbols extends setupLargeBenchStore with symbols and edges.
+// Returns the store, all chunk IDs, and all symbol IDs.
+func setupLargeBenchStoreWithSymbols(b *testing.B) (*Store, []int64, []int64) {
+	b.Helper()
+
+	db, err := Open(OpenInput{InMemory: true})
+	if err != nil {
+		b.Fatalf("Open: %v", err)
+	}
+	b.Cleanup(func() { db.Close() })
+
+	if err := Migrate(db); err != nil {
+		b.Fatalf("Migrate: %v", err)
+	}
+
+	const (
+		numFiles      = 200
+		chunksPerFile = 20
+		totalChunks   = numFiles * chunksPerFile
+	)
+
+	store := NewStore(db)
+	allChunkIDs := make([]int64, 0, totalChunks)
+	allSymbolIDs := make([]int64, 0, totalChunks)
+
+	err = db.WithWriteTx(func(tx *sql.Tx) error {
+		fileStmt, err := tx.Prepare(`INSERT INTO files (path, content_hash, mtime, size, language, embedding_status, parse_quality)
+			VALUES (?, 'hash', 1.0, 1024, 'go', 'pending', 'full')`)
+		if err != nil {
+			return err
+		}
+		defer fileStmt.Close()
+
+		chunkStmt, err := tx.Prepare(`INSERT INTO chunks (file_id, chunk_index, symbol_name, kind, start_line, end_line, content, token_count, parse_quality, embedded)
+			VALUES (?, ?, ?, 'function', ?, ?, ?, 10, 'full', 0)`)
+		if err != nil {
+			return err
+		}
+		defer chunkStmt.Close()
+
+		symStmt, err := tx.Prepare(`INSERT INTO symbols (chunk_id, file_id, name, qualified_name, kind, line, signature, visibility, is_exported)
+			VALUES (?, ?, ?, '', 'function', ?, '', 'public', 1)`)
+		if err != nil {
+			return err
+		}
+		defer symStmt.Close()
+
+		edgeStmt, err := tx.Prepare(`INSERT INTO edges (src_symbol_id, dst_symbol_id, kind) VALUES (?, ?, 'calls')`)
+		if err != nil {
+			return err
+		}
+		defer edgeStmt.Close()
+
+		for fi := 0; fi < numFiles; fi++ {
+			fRes, err := fileStmt.Exec(fmt.Sprintf("pkg/file_%04d.go", fi))
+			if err != nil {
+				return err
+			}
+			fid, _ := fRes.LastInsertId()
+
+			fileChunkIDs := make([]int64, 0, chunksPerFile)
+			fileSymIDs := make([]int64, 0, chunksPerFile)
+
+			for ci := 0; ci < chunksPerFile; ci++ {
+				startLine := ci*10 + 1
+				symName := fmt.Sprintf("Func_%d_%d", fi, ci)
+				cRes, err := chunkStmt.Exec(fid, ci, symName, startLine, startLine+9,
+					fmt.Sprintf("func %s() {}", symName))
+				if err != nil {
+					return err
+				}
+				cid, _ := cRes.LastInsertId()
+				allChunkIDs = append(allChunkIDs, cid)
+				fileChunkIDs = append(fileChunkIDs, cid)
+
+				sRes, err := symStmt.Exec(cid, fid, symName, startLine)
+				if err != nil {
+					return err
+				}
+				sid, _ := sRes.LastInsertId()
+				allSymbolIDs = append(allSymbolIDs, sid)
+				fileSymIDs = append(fileSymIDs, sid)
+			}
+
+			// Create call edges between consecutive symbols in this file
+			for i := 0; i < len(fileSymIDs)-1; i++ {
+				if _, err := edgeStmt.Exec(fileSymIDs[i], fileSymIDs[i+1]); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		b.Fatalf("bulk insert: %v", err)
+	}
+
+	return store, allChunkIDs, allSymbolIDs
+}
+
+// BenchmarkBatchHydrateChunks measures batch chunk hydration (JOIN chunks+files).
+func BenchmarkBatchHydrateChunks(b *testing.B) {
+	store, allChunkIDs, _ := setupLargeBenchStoreWithSymbols(b)
+	ctx := context.Background()
+
+	// Pick 200 chunk IDs spread across the dataset
+	ids := make([]int64, 200)
+	step := len(allChunkIDs) / 200
+	for i := range ids {
+		ids[i] = allChunkIDs[i*step]
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		results, err := store.BatchHydrateChunks(ctx, ids)
+		if err != nil {
+			b.Fatalf("BatchHydrateChunks: %v", err)
+		}
+		if len(results) == 0 {
+			b.Fatal("expected non-empty results")
+		}
+	}
+}
+
+// BenchmarkBatchGetFileHashes measures batch file hash lookup.
+func BenchmarkBatchGetFileHashes(b *testing.B) {
+	store, _, _ := setupLargeBenchStoreWithSymbols(b)
+	ctx := context.Background()
+
+	paths := make([]string, 200)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("pkg/file_%04d.go", i)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		result, err := store.BatchGetFileHashes(ctx, paths)
+		if err != nil {
+			b.Fatalf("BatchGetFileHashes: %v", err)
+		}
+		if len(result) == 0 {
+			b.Fatal("expected non-empty results")
+		}
+	}
+}
+
+// BenchmarkBatchGetSymbolIDsForChunks measures batch chunk→symbol resolution.
+func BenchmarkBatchGetSymbolIDsForChunks(b *testing.B) {
+	store, allChunkIDs, _ := setupLargeBenchStoreWithSymbols(b)
+	ctx := context.Background()
+
+	ids := make([]int64, 200)
+	step := len(allChunkIDs) / 200
+	for i := range ids {
+		ids[i] = allChunkIDs[i*step]
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		result, err := store.BatchGetSymbolIDsForChunks(ctx, ids)
+		if err != nil {
+			b.Fatalf("BatchGetSymbolIDsForChunks: %v", err)
+		}
+		if len(result) == 0 {
+			b.Fatal("expected non-empty results")
+		}
+	}
+}
+
+// BenchmarkBatchGetChunkIDsForSymbols measures batch symbol→chunk resolution.
+func BenchmarkBatchGetChunkIDsForSymbols(b *testing.B) {
+	store, _, allSymbolIDs := setupLargeBenchStoreWithSymbols(b)
+	ctx := context.Background()
+
+	ids := make([]int64, 200)
+	step := len(allSymbolIDs) / 200
+	for i := range ids {
+		ids[i] = allSymbolIDs[i*step]
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		result, err := store.BatchGetChunkIDsForSymbols(ctx, ids)
+		if err != nil {
+			b.Fatalf("BatchGetChunkIDsForSymbols: %v", err)
+		}
+		if len(result) == 0 {
+			b.Fatal("expected non-empty results")
+		}
+	}
+}
+
+// BenchmarkBatchNeighbors measures batch BFS neighbor traversal.
+func BenchmarkBatchNeighbors(b *testing.B) {
+	store, _, allSymbolIDs := setupLargeBenchStoreWithSymbols(b)
+	ctx := context.Background()
+
+	// Smaller batch — this calls Neighbors() per symbol internally
+	ids := make([]int64, 50)
+	step := len(allSymbolIDs) / 50
+	for i := range ids {
+		ids[i] = allSymbolIDs[i*step]
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		result, err := store.BatchNeighbors(ctx, ids, 2)
+		if err != nil {
+			b.Fatalf("BatchNeighbors: %v", err)
+		}
+		if len(result) == 0 {
+			b.Fatal("expected non-empty results")
+		}
+	}
+}

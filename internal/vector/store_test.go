@@ -3,6 +3,7 @@ package vector
 import (
 	"context"
 	"math"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
@@ -582,5 +583,161 @@ func TestCosineSimilarity(t *testing.T) {
 				t.Errorf("cosineSimilarity(%v, %v) = %f, want %f", tt.a, tt.b, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCosineSimilarity_HighDim(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewSource(42))
+	a := make([]float32, 768)
+	b := make([]float32, 768)
+	for i := range a {
+		a[i] = rng.Float32()*2 - 1
+		b[i] = rng.Float32()*2 - 1
+	}
+
+	// Reference: compute in float64 for ground truth
+	var dot, nA, nB float64
+	for i := range a {
+		ai, bi := float64(a[i]), float64(b[i])
+		dot += ai * bi
+		nA += ai * ai
+		nB += bi * bi
+	}
+	ref := dot / (math.Sqrt(nA) * math.Sqrt(nB))
+
+	got := cosineSimilarity(a, b)
+	if math.Abs(got-ref) > 1e-4 {
+		t.Errorf("cosineSimilarity(768-dim): got %f, ref %f, diff %e", got, ref, math.Abs(got-ref))
+	}
+}
+
+func TestBruteForceStore_Search_TopKZero(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := NewBruteForceStore(3)
+	if err := s.Upsert(ctx, 1, []float32{1, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := s.Search(ctx, []float32{1, 0, 0}, 0)
+	if err != nil {
+		t.Fatalf("Search(topK=0): %v", err)
+	}
+	if results != nil {
+		t.Fatalf("expected nil, got %d results", len(results))
+	}
+}
+
+func TestBruteForceStore_Search_TopKNegative(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := NewBruteForceStore(3)
+	if err := s.Upsert(ctx, 1, []float32{1, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := s.Search(ctx, []float32{1, 0, 0}, -1)
+	if err != nil {
+		t.Fatalf("Search(topK=-1): %v", err)
+	}
+	if results != nil {
+		t.Fatalf("expected nil, got %d results", len(results))
+	}
+}
+
+func TestBruteForceStore_SaveToDisk_ConcurrentSearch(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := NewBruteForceStore(3)
+
+	// Populate with enough vectors to make the save non-trivial
+	rng := rand.New(rand.NewSource(42))
+	for i := 0; i < 1000; i++ {
+		vec := []float32{rng.Float32(), rng.Float32(), rng.Float32()}
+		if err := s.Upsert(ctx, int64(i+1), vec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "concurrent.bin")
+	query := []float32{1, 0, 0}
+
+	// Run SaveToDisk and Search concurrently — must not race or deadlock
+	done := make(chan error, 2)
+
+	go func() {
+		done <- s.SaveToDisk(path)
+	}()
+
+	go func() {
+		var lastErr error
+		for range 100 {
+			_, err := s.Search(ctx, query, 5)
+			if err != nil {
+				lastErr = err
+			}
+		}
+		done <- lastErr
+	}()
+
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatalf("concurrent operation failed: %v", err)
+		}
+	}
+
+	// Verify the saved file is valid by loading it back
+	s2 := NewBruteForceStore(3)
+	if err := s2.LoadFromDisk(path); err != nil {
+		t.Fatalf("LoadFromDisk after concurrent save: %v", err)
+	}
+	count, _ := s2.Count(ctx)
+	if count != 1000 {
+		t.Errorf("expected 1000 vectors after load, got %d", count)
+	}
+}
+
+func TestBruteForceStore_SaveToDisk_ConcurrentUpsert(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := NewBruteForceStore(3)
+
+	for i := 0; i < 500; i++ {
+		s.Upsert(ctx, int64(i+1), []float32{float32(i), 0, 0})
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "upsert_concurrent.bin")
+
+	done := make(chan error, 2)
+
+	go func() {
+		done <- s.SaveToDisk(path)
+	}()
+
+	go func() {
+		var lastErr error
+		for i := 500; i < 1000; i++ {
+			if err := s.Upsert(ctx, int64(i+1), []float32{float32(i), 1, 1}); err != nil {
+				lastErr = err
+			}
+		}
+		done <- lastErr
+	}()
+
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatalf("concurrent operation failed: %v", err)
+		}
+	}
+
+	// File should be loadable regardless of race outcome
+	s2 := NewBruteForceStore(3)
+	if err := s2.LoadFromDisk(path); err != nil {
+		t.Fatalf("LoadFromDisk after concurrent upsert: %v", err)
+	}
+	count, _ := s2.Count(ctx)
+	if count < 500 {
+		t.Errorf("expected >= 500 vectors, got %d", count)
 	}
 }

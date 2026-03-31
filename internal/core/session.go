@@ -1,9 +1,11 @@
 package core
 
 import (
+	"container/list"
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,17 +18,22 @@ type SessionHit struct {
 // SessionStore tracks recently accessed code locations for session-aware ranking.
 // It uses an in-memory LRU map keyed on "filePath:startLine" for stability
 // across chunk re-indexes (chunk IDs change but file paths and line numbers don't).
+//
+// Uses container/list for O(1) LRU operations and an atomic generation counter
+// for O(1) decay instead of iterating all entries.
 type SessionStore struct {
-	mu      sync.RWMutex
-	entries map[string]*sessionEntry
-	order   []string // LRU order, most recent last
-	maxSize int
+	mu         sync.RWMutex
+	entries    map[string]*list.Element
+	order      *list.List
+	maxSize    int
+	generation atomic.Int64
 }
 
 type sessionEntry struct {
-	accessCount         int
-	lastAccessed        time.Time
-	queriesSinceLastHit int
+	key            string
+	accessCount    int
+	lastAccessed   time.Time
+	lastGeneration int64
 }
 
 // NewSessionStore creates a session store with the given capacity.
@@ -35,8 +42,8 @@ func NewSessionStore(maxSize int) *SessionStore {
 		maxSize = 2000
 	}
 	return &SessionStore{
-		entries: make(map[string]*sessionEntry, maxSize),
-		order:   make([]string, 0, maxSize),
+		entries: make(map[string]*list.Element, maxSize),
+		order:   list.New(),
 		maxSize: maxSize,
 	}
 }
@@ -48,30 +55,36 @@ func sessionKey(filePath string, startLine int) string {
 // RecordAccess records a single access to a code location.
 func (s *SessionStore) RecordAccess(filePath string, startLine int) {
 	key := sessionKey(filePath, startLine)
+	gen := s.generation.Load()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if e, ok := s.entries[key]; ok {
+	if elem, ok := s.entries[key]; ok {
+		e := elem.Value.(*sessionEntry)
 		e.accessCount++
 		e.lastAccessed = time.Now()
-		e.queriesSinceLastHit = 0
-		s.moveToBack(key)
+		e.lastGeneration = gen
+		s.order.MoveToBack(elem)
 		return
 	}
 
 	s.evictIfNeeded()
 
-	s.entries[key] = &sessionEntry{
-		accessCount:  1,
-		lastAccessed: time.Now(),
+	entry := &sessionEntry{
+		key:            key,
+		accessCount:    1,
+		lastAccessed:   time.Now(),
+		lastGeneration: gen,
 	}
-	s.order = append(s.order, key)
+	elem := s.order.PushBack(entry)
+	s.entries[key] = elem
 }
 
 // RecordBatch records accesses for a batch of search results.
 func (s *SessionStore) RecordBatch(hits []SessionHit) {
 	now := time.Now()
+	gen := s.generation.Load()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -79,21 +92,25 @@ func (s *SessionStore) RecordBatch(hits []SessionHit) {
 	for _, h := range hits {
 		key := sessionKey(h.FilePath, h.StartLine)
 
-		if e, ok := s.entries[key]; ok {
+		if elem, ok := s.entries[key]; ok {
+			e := elem.Value.(*sessionEntry)
 			e.accessCount++
 			e.lastAccessed = now
-			e.queriesSinceLastHit = 0
-			s.moveToBack(key)
+			e.lastGeneration = gen
+			s.order.MoveToBack(elem)
 			continue
 		}
 
 		s.evictIfNeeded()
 
-		s.entries[key] = &sessionEntry{
-			accessCount:  1,
-			lastAccessed: now,
+		entry := &sessionEntry{
+			key:            key,
+			accessCount:    1,
+			lastAccessed:   now,
+			lastGeneration: gen,
 		}
-		s.order = append(s.order, key)
+		elem := s.order.PushBack(entry)
+		s.entries[key] = elem
 	}
 }
 
@@ -103,16 +120,20 @@ func (s *SessionStore) Score(filePath string, startLine int) float64 {
 	key := sessionKey(filePath, startLine)
 
 	s.mu.RLock()
-	e, ok := s.entries[key]
+	elem, ok := s.entries[key]
 	if !ok {
 		s.mu.RUnlock()
 		return 0.0
 	}
+	e := elem.Value.(*sessionEntry)
 	// Copy values under read lock to avoid holding lock during math
 	accessCount := e.accessCount
 	lastAccessed := e.lastAccessed
-	queriesSince := e.queriesSinceLastHit
+	lastGen := e.lastGeneration
 	s.mu.RUnlock()
+
+	currentGen := s.generation.Load()
+	queriesSince := int(currentGen - lastGen)
 
 	minutesAgo := time.Since(lastAccessed).Minutes()
 
@@ -128,20 +149,20 @@ func (s *SessionStore) Score(filePath string, startLine int) float64 {
 	return recency * frequency * decay
 }
 
-// DecayAllExcept increments queriesSinceLastHit for all entries
-// not in the given hit set.
+// DecayAllExcept increments the generation counter and updates hit entries.
+// O(len(hits)) instead of O(len(entries)).
+// Invariant: must be called exactly once per query cycle for the generation
+// counter to be equivalent to per-entry queriesSinceLastHit counting.
 func (s *SessionStore) DecayAllExcept(hits []SessionHit) {
-	hitSet := make(map[string]bool, len(hits))
-	for _, h := range hits {
-		hitSet[sessionKey(h.FilePath, h.StartLine)] = true
-	}
+	gen := s.generation.Add(1)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for key, e := range s.entries {
-		if !hitSet[key] {
-			e.queriesSinceLastHit++
+	for _, h := range hits {
+		key := sessionKey(h.FilePath, h.StartLine)
+		if elem, ok := s.entries[key]; ok {
+			elem.Value.(*sessionEntry).lastGeneration = gen
 		}
 	}
 }
@@ -156,21 +177,12 @@ func (s *SessionStore) Len() int {
 // evictIfNeeded removes the least recently accessed entry if at capacity.
 // Must be called with s.mu held.
 func (s *SessionStore) evictIfNeeded() {
-	for len(s.entries) >= s.maxSize && len(s.order) > 0 {
-		oldest := s.order[0]
-		s.order = s.order[1:]
-		delete(s.entries, oldest)
-	}
-}
-
-// moveToBack moves a key to the back of the LRU order.
-// Must be called with s.mu held.
-func (s *SessionStore) moveToBack(key string) {
-	for i, k := range s.order {
-		if k == key {
-			s.order = append(s.order[:i], s.order[i+1:]...)
-			s.order = append(s.order, key)
-			return
+	for len(s.entries) >= s.maxSize {
+		front := s.order.Front()
+		if front == nil {
+			break
 		}
+		evicted := s.order.Remove(front).(*sessionEntry)
+		delete(s.entries, evicted.key)
 	}
 }

@@ -164,6 +164,36 @@ func TestScanRepo(t *testing.T) {
 	t.Logf("Scanned %d TypeScript files", len(result.Files))
 }
 
+func TestScanRepo_ContentCarried(t *testing.T) {
+	t.Parallel()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	testdataRoot := filepath.Join(cwd, "..", "..", "testdata", "typescript_project")
+	if _, err := os.Stat(testdataRoot); os.IsNotExist(err) {
+		t.Skipf("testdata not found at %s", testdataRoot)
+	}
+
+	result, err := ScanRepo(context.Background(), ScanInput{ProjectRoot: testdataRoot})
+	if err != nil {
+		t.Fatalf("ScanRepo: %v", err)
+	}
+
+	for _, f := range result.Files {
+		if f.Content == nil {
+			t.Errorf("expected Content to be carried for %s, got nil", f.Path)
+		}
+		if len(f.Content) == 0 {
+			t.Errorf("expected non-empty Content for %s", f.Path)
+		}
+		if f.Size != int64(len(f.Content)) {
+			t.Errorf("file %s: Size=%d but len(Content)=%d", f.Path, f.Size, len(f.Content))
+		}
+	}
+}
+
 func TestScanRepo_RelativeRoot(t *testing.T) {
 	t.Parallel()
 

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -21,6 +22,7 @@ type ScannedFile struct {
 	Mtime       float64 // Unix timestamp
 	Size        int64
 	Language    string
+	Content     []byte  // file content carried from scan to avoid double read; nil after enrichment
 }
 
 // ScanInput configures a file scanning operation.
@@ -211,15 +213,17 @@ func ScanRepo(ctx context.Context, input ScanInput) (*ScanResult, error) {
 			return nil
 		}
 
-		hash := fmt.Sprintf("%x", sha256.Sum256(content))
+		sum := sha256.Sum256(content)
+			hash := hex.EncodeToString(sum[:])
 
-		files = append(files, ScannedFile{
-			Path:        relPath,
+			files = append(files, ScannedFile{
+				Path:        relPath,
 			AbsPath:     absPath,
 			ContentHash: hash,
 			Mtime:       float64(info.ModTime().UnixMilli()) / 1000.0,
 			Size:        info.Size(),
 			Language:    lang,
+			Content:     content,
 		})
 
 		return nil

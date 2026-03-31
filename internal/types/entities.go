@@ -65,6 +65,21 @@ type EdgeRecord struct {
 	IsCrossFile      bool
 }
 
+// HydratedChunk holds chunk data joined with file metadata.
+// Used by batch hydration to eliminate per-result queries.
+type HydratedChunk struct {
+	ChunkID    int64
+	FileID     int64
+	Path       string
+	IsTest     bool
+	SymbolName string
+	Kind       string
+	StartLine  int
+	EndLine    int
+	Content    string
+	TokenCount int
+}
+
 // WriteJobType distinguishes the kind of write operation.
 type WriteJobType int
 
