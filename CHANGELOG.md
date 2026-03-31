@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-03-30
+
+### Added
+
+- **Scope-based test file filtering** — all MCP tools (`search`, `context`,
+  `symbols`, `dependencies`, `diff`) now exclude test files by default. New
+  `scope` parameter: `"impl"` (default), `"test"` (test files only), `"all"`.
+  Test classification stored as `is_test` on the `files` table, computed at
+  index time from configurable glob patterns.
+- **Configurable test file patterns** (`internal/types/config.go`) — `[test]`
+  section in `shaktiman.toml` with `patterns` array. Auto-populated with
+  language-specific defaults after indexing. Supports basename globs
+  (`*_test.go`) and directory prefixes (`testdata/`, `__tests__/`).
+- **`IsTestFile` utility** (`internal/daemon/scanner.go`) — path-based test
+  file detection supporting Go, Python, TypeScript, JavaScript, Java, Groovy,
+  Rust, and Bash patterns.
+- **`GetFileIsTestByID` store method** (`internal/storage/metadata.go`) —
+  single-column lookup for test file classification, used by all tool handlers
+  during scope filtering.
+- **Schema V3→V4 migration** (`internal/storage/schema.go`) — adds `is_test`
+  column to `files` table. Existing files default to `is_test=0` (impl) until
+  next re-index.
+- **MCP server instructions** (`internal/mcp/server.go`) — `WithInstructions`
+  set during initialize handshake, telling the LLM when to use shaktiman vs
+  built-in tools and that test files are excluded by default.
+
+### Changed
+
+- MCP server version bumped to `0.8.0`.
+- **Tool descriptions rewritten** — honest positioning as complementary to
+  Grep/Glob (not a replacement), framing value around reducing context waste
+  during codebase exploration. Each description now mentions default test
+  exclusion.
+- **CLAUDE.md templates updated** (`docs/reference/sample_claude.md`,
+  `README.md`) — replaced "STOP RULE" / "INSTEAD of Grep" framing with
+  bidirectional decision tables: when to use shaktiman, when to use Grep/Glob,
+  and signs you should switch. Added scope guidance and subagent delegation
+  template.
+
+---
+
 ## [Unreleased]
 
 ### Added
