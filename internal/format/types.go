@@ -12,11 +12,12 @@ type SymbolResult struct {
 
 // SymbolRef describes a symbol that references an unresolved name (e.g. an import of an external type).
 type SymbolRef struct {
-	Symbol   string `json:"symbol"`
-	Kind     string `json:"kind"`
-	FilePath string `json:"file_path"`
-	Line     int    `json:"line"`
-	Via      string `json:"via"`
+	Symbol        string `json:"symbol"`
+	Kind          string `json:"kind"`
+	FilePath      string `json:"file_path"`
+	Line          int    `json:"line"`
+	Via           string `json:"via"`
+	QualifiedName string `json:"qualified_name,omitempty"`
 }
 
 // SymbolsWithRefs is the enriched response when no definitions are found

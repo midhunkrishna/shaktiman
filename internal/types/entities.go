@@ -53,14 +53,15 @@ type SymbolRecord struct {
 
 // EdgeRecord represents a dependency edge between two symbols.
 type EdgeRecord struct {
-	ID            int64
-	SrcSymbolID   int64
-	DstSymbolID   int64
-	SrcSymbolName string // set by parser, resolved to ID during write
-	DstSymbolName string // set by parser, resolved to ID during write
-	Kind          string // imports | calls | type_ref | inherits | implements
-	FileID        int64
-	IsCrossFile   bool
+	ID               int64
+	SrcSymbolID      int64
+	DstSymbolID      int64
+	SrcSymbolName    string // set by parser, resolved to ID during write
+	DstSymbolName    string // set by parser, resolved to ID during write
+	DstQualifiedName string // full import path (e.g. "java.util.List", "fmt", "std::collections::HashMap")
+	Kind             string // imports | calls | type_ref | inherits | implements
+	FileID           int64
+	IsCrossFile      bool
 }
 
 // WriteJobType distinguishes the kind of write operation.

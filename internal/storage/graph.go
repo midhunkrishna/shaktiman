@@ -12,7 +12,9 @@ import (
 // InsertEdges inserts resolved edges into the edges table and queues
 // unresolved edges into pending_edges. symbolIDs maps symbol names to their
 // database IDs from the current file. Uses tx to see uncommitted symbols.
-func (s *Store) InsertEdges(ctx context.Context, tx *sql.Tx, fileID int64, edges []types.EdgeRecord, symbolIDs map[string]int64) error {
+// language is the source file's language, used for language-filtered lookup
+// and stored on pending_edges for cross-language misresolution prevention.
+func (s *Store) InsertEdges(ctx context.Context, tx *sql.Tx, fileID int64, edges []types.EdgeRecord, symbolIDs map[string]int64, language string) error {
 	if len(edges) == 0 {
 		return nil
 	}
@@ -26,8 +28,8 @@ func (s *Store) InsertEdges(ctx context.Context, tx *sql.Tx, fileID int64, edges
 	defer edgeStmt.Close()
 
 	pendingStmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO pending_edges (src_symbol_id, dst_symbol_name, kind)
-		VALUES (?, ?, ?)`)
+		INSERT INTO pending_edges (src_symbol_id, dst_symbol_name, dst_qualified_name, kind, src_language)
+		VALUES (?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare pending edge insert: %w", err)
 	}
@@ -41,8 +43,8 @@ func (s *Store) InsertEdges(ctx context.Context, tx *sql.Tx, fileID int64, edges
 
 		dstID := symbolIDs[e.DstSymbolName]
 		if dstID == 0 {
-			// Lookup via tx, preferring same-file symbols
-			dstID, _ = lookupSymbolIDTx(ctx, tx, e.DstSymbolName, fileID)
+			// Lookup via tx, preferring same-file, then same-language
+			dstID, _ = lookupSymbolIDTx(ctx, tx, e.DstSymbolName, fileID, language)
 		}
 
 		if dstID != 0 {
@@ -50,7 +52,7 @@ func (s *Store) InsertEdges(ctx context.Context, tx *sql.Tx, fileID int64, edges
 				return fmt.Errorf("insert edge %s→%s: %w", e.SrcSymbolName, e.DstSymbolName, err)
 			}
 		} else {
-			if _, err := pendingStmt.ExecContext(ctx, srcID, e.DstSymbolName, e.Kind); err != nil {
+			if _, err := pendingStmt.ExecContext(ctx, srcID, e.DstSymbolName, e.DstQualifiedName, e.Kind, language); err != nil {
 				return fmt.Errorf("insert pending edge %s→%s: %w", e.SrcSymbolName, e.DstSymbolName, err)
 			}
 		}
@@ -60,7 +62,8 @@ func (s *Store) InsertEdges(ctx context.Context, tx *sql.Tx, fileID int64, edges
 }
 
 // ResolvePendingEdges attempts to resolve pending edges whose dst_symbol_name
-// matches any of the given newly-inserted symbol names.
+// matches any of the given newly-inserted symbol names. Uses src_language
+// to ensure a Java import never resolves to a Python symbol.
 func (s *Store) ResolvePendingEdges(ctx context.Context, tx *sql.Tx, newSymbolNames []string) error {
 	if len(newSymbolNames) == 0 {
 		return nil
@@ -74,7 +77,7 @@ func (s *Store) ResolvePendingEdges(ctx context.Context, tx *sql.Tx, newSymbolNa
 	}
 
 	query := fmt.Sprintf(`
-		SELECT id, src_symbol_id, dst_symbol_name, kind
+		SELECT id, src_symbol_id, dst_symbol_name, kind, src_language
 		FROM pending_edges
 		WHERE dst_symbol_name IN (%s)`, strings.Join(placeholders, ","))
 
@@ -85,16 +88,17 @@ func (s *Store) ResolvePendingEdges(ctx context.Context, tx *sql.Tx, newSymbolNa
 	defer rows.Close()
 
 	type pending struct {
-		id      int64
-		srcID   int64
-		dstName string
-		kind    string
+		id       int64
+		srcID    int64
+		dstName  string
+		kind     string
+		language string
 	}
 	var toResolve []pending
 
 	for rows.Next() {
 		var p pending
-		if err := rows.Scan(&p.id, &p.srcID, &p.dstName, &p.kind); err != nil {
+		if err := rows.Scan(&p.id, &p.srcID, &p.dstName, &p.kind, &p.language); err != nil {
 			return fmt.Errorf("scan pending edge: %w", err)
 		}
 		toResolve = append(toResolve, p)
@@ -122,7 +126,7 @@ func (s *Store) ResolvePendingEdges(ctx context.Context, tx *sql.Tx, newSymbolNa
 	defer delStmt.Close()
 
 	for _, p := range toResolve {
-		dstID, err := lookupSymbolIDTx(ctx, tx, p.dstName, 0)
+		dstID, err := lookupSymbolIDTx(ctx, tx, p.dstName, 0, p.language)
 		if err != nil || dstID == 0 {
 			continue
 		}
@@ -241,16 +245,17 @@ func (s *Store) PendingEdgeCallers(ctx context.Context, dstName string) ([]int64
 
 // PendingEdgeCaller holds a source symbol ID and the edge kind from a pending edge.
 type PendingEdgeCaller struct {
-	SrcSymbolID int64
-	Kind        string
+	SrcSymbolID      int64
+	Kind             string
+	DstQualifiedName string
 }
 
-// PendingEdgeCallersWithKind returns src_symbol_id and kind from pending_edges
-// for a given unresolved destination name. Used by the symbols handler to show
-// which symbols reference an external type.
+// PendingEdgeCallersWithKind returns src_symbol_id, kind, and dst_qualified_name
+// from pending_edges for a given unresolved destination name. Used by the symbols
+// handler to show which symbols reference an external type.
 func (s *Store) PendingEdgeCallersWithKind(ctx context.Context, dstName string) ([]PendingEdgeCaller, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT DISTINCT src_symbol_id, kind
+		SELECT DISTINCT src_symbol_id, kind, dst_qualified_name
 		FROM pending_edges
 		WHERE dst_symbol_name = ?`, dstName)
 	if err != nil {
@@ -261,7 +266,7 @@ func (s *Store) PendingEdgeCallersWithKind(ctx context.Context, dstName string) 
 	var results []PendingEdgeCaller
 	for rows.Next() {
 		var c PendingEdgeCaller
-		if err := rows.Scan(&c.SrcSymbolID, &c.Kind); err != nil {
+		if err := rows.Scan(&c.SrcSymbolID, &c.Kind, &c.DstQualifiedName); err != nil {
 			return nil, fmt.Errorf("scan pending caller with kind: %w", err)
 		}
 		results = append(results, c)
@@ -279,8 +284,10 @@ func (s *Store) DeleteEdgesByFile(ctx context.Context, tx *sql.Tx, fileID int64)
 
 // lookupSymbolIDTx looks up a symbol by name within a write transaction,
 // ensuring uncommitted symbols from the current transaction are visible.
-// Prefers a same-file match (fileID) before falling back to global lookup.
-func lookupSymbolIDTx(ctx context.Context, tx *sql.Tx, name string, fileID int64) (int64, error) {
+// Prefers same-file match, then same-language match, then global fallback.
+// Pass language="" for non-import edges (calls, inherits) where cross-language
+// is not a concern.
+func lookupSymbolIDTx(ctx context.Context, tx *sql.Tx, name string, fileID int64, language string) (int64, error) {
 	var id int64
 	// Try same-file first
 	if fileID > 0 {
@@ -291,7 +298,25 @@ func lookupSymbolIDTx(ctx context.Context, tx *sql.Tx, name string, fileID int64
 			return id, nil
 		}
 	}
-	// Fallback to global
+	// Try same-language match
+	if language != "" {
+		err := tx.QueryRowContext(ctx,
+			`SELECT s.id FROM symbols s JOIN files f ON s.file_id = f.id
+			 WHERE s.name = ? AND f.language = ? LIMIT 1`,
+			name, language).Scan(&id)
+		if err == nil {
+			return id, nil
+		}
+		// When a language is specified, do NOT fall back to global lookup.
+		// This prevents cross-language misresolution (e.g. Java import
+		// resolving to a Python symbol).
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("lookup symbol %s (lang=%s): %w", name, language, err)
+	}
+	// Global fallback: no language constraint (for non-import edges
+	// and pre-migration pending edges with empty src_language)
 	err := tx.QueryRowContext(ctx, "SELECT id FROM symbols WHERE name = ? LIMIT 1", name).Scan(&id)
 	if err == sql.ErrNoRows {
 		return 0, nil

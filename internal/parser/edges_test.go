@@ -632,3 +632,270 @@ func (m *MyType) String() string { return "" }
 	}
 	t.Error("expected import edge for 'fmt'")
 }
+
+// ── Qualified name extraction tests ──
+
+func TestEdges_JavaImportQualifiedName(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`package com.example;
+
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+
+public class MyService {
+    public void run() {}
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "MyService.java",
+		Content:  src,
+		Language: "java",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	expected := map[string]string{
+		"List":            "java.util.List",
+		"ExecutorService": "java.util.concurrent.ExecutorService",
+	}
+	for _, e := range result.Edges {
+		if e.Kind == "imports" {
+			if want, ok := expected[e.DstSymbolName]; ok {
+				if e.DstQualifiedName != want {
+					t.Errorf("import %q: DstQualifiedName=%q, want %q", e.DstSymbolName, e.DstQualifiedName, want)
+				}
+				delete(expected, e.DstSymbolName)
+			}
+		}
+	}
+	for name := range expected {
+		t.Errorf("missing import edge for %q", name)
+	}
+}
+
+func TestEdges_GoImportQualifiedName(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`package main
+
+import (
+	"fmt"
+	"net/http"
+)
+
+func main() {
+	fmt.Println("hello")
+	http.ListenAndServe(":8080", nil)
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "main.go",
+		Content:  src,
+		Language: "go",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	expected := map[string]string{
+		"fmt":  "fmt",
+		"http": "net/http",
+	}
+	for _, e := range result.Edges {
+		if e.Kind == "imports" {
+			if want, ok := expected[e.DstSymbolName]; ok {
+				if e.DstQualifiedName != want {
+					t.Errorf("import %q: DstQualifiedName=%q, want %q", e.DstSymbolName, e.DstQualifiedName, want)
+				}
+				delete(expected, e.DstSymbolName)
+			}
+		}
+	}
+	for name := range expected {
+		t.Errorf("missing import edge for %q", name)
+	}
+}
+
+func TestEdges_RustImportQualifiedName(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`use std::collections::HashMap;
+use std::io;
+
+fn main() {}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "main.rs",
+		Content:  src,
+		Language: "rust",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	expected := map[string]string{
+		"HashMap": "std::collections::HashMap",
+		"io":      "std::io",
+	}
+	for _, e := range result.Edges {
+		if e.Kind == "imports" {
+			if want, ok := expected[e.DstSymbolName]; ok {
+				if e.DstQualifiedName != want {
+					t.Errorf("import %q: DstQualifiedName=%q, want %q", e.DstSymbolName, e.DstQualifiedName, want)
+				}
+				delete(expected, e.DstSymbolName)
+			}
+		}
+	}
+	for name := range expected {
+		t.Errorf("missing import edge for %q", name)
+	}
+}
+
+func TestEdges_TypeScriptImportQualifiedName(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`import { foo } from '@scope/pkg';
+
+export function doStuff(): string {
+  return foo();
+}`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "test.ts",
+		Content:  src,
+		Language: "typescript",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	for _, e := range result.Edges {
+		if e.Kind == "imports" && e.DstSymbolName == "foo" {
+			if e.DstQualifiedName != "@scope/pkg/foo" {
+				t.Errorf("import 'foo': DstQualifiedName=%q, want %q", e.DstQualifiedName, "@scope/pkg/foo")
+			}
+			return
+		}
+	}
+	t.Error("expected import edge for 'foo'")
+}
+
+func TestEdges_PythonImportQualifiedName(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`from os.path import join
+import json
+
+def process():
+    pass
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "test.py",
+		Content:  src,
+		Language: "python",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	expected := map[string]string{
+		"join": "os.path.join",
+		"json": "json",
+	}
+	for _, e := range result.Edges {
+		if e.Kind == "imports" {
+			if want, ok := expected[e.DstSymbolName]; ok {
+				if e.DstQualifiedName != want {
+					t.Errorf("import %q: DstQualifiedName=%q, want %q", e.DstSymbolName, e.DstQualifiedName, want)
+				}
+				delete(expected, e.DstSymbolName)
+			}
+		}
+	}
+	for name := range expected {
+		t.Errorf("missing import edge for %q", name)
+	}
+}
+
+func TestEdges_GroovyImportQualifiedName(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`import groovy.transform.ToString
+import java.util.List
+
+class MyService {
+    String name
+    List items
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "test.groovy",
+		Content:  src,
+		Language: "groovy",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	expected := map[string]string{
+		"ToString": "groovy.transform.ToString",
+		"List":     "java.util.List",
+	}
+	for _, e := range result.Edges {
+		if e.Kind == "imports" {
+			if want, ok := expected[e.DstSymbolName]; ok {
+				if e.DstQualifiedName != want {
+					t.Errorf("import %q: DstQualifiedName=%q, want %q", e.DstSymbolName, e.DstQualifiedName, want)
+				}
+				delete(expected, e.DstSymbolName)
+			}
+		}
+	}
+	for name := range expected {
+		t.Errorf("missing import edge for %q", name)
+	}
+}

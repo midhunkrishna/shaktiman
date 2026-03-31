@@ -18,6 +18,10 @@ type edgeContext struct {
 }
 
 func (c *edgeContext) addEdge(src, dst, kind string) {
+	c.addEdgeQualified(src, dst, "", kind)
+}
+
+func (c *edgeContext) addEdgeQualified(src, dst, qualifiedDst, kind string) {
 	if dst == "" {
 		return
 	}
@@ -27,10 +31,11 @@ func (c *edgeContext) addEdge(src, dst, kind string) {
 	}
 	c.seen[key] = true
 	c.edges = append(c.edges, types.EdgeRecord{
-		SrcSymbolName: src,
-		DstSymbolName: dst,
-		Kind:          kind,
-		IsCrossFile:   kind == "imports",
+		SrcSymbolName:    src,
+		DstSymbolName:    dst,
+		DstQualifiedName: qualifiedDst,
+		Kind:             kind,
+		IsCrossFile:      kind == "imports",
 	})
 }
 
@@ -183,12 +188,21 @@ func (p *Parser) tsImportEdges(node *sitter.Node, owner string, ctx *edgeContext
 	if clause == nil {
 		return
 	}
+
+	// Extract module path from the import source (e.g. 'bar' in `import { Foo } from 'bar'`)
+	modulePath := ""
+	src := findChildByType(node, "string")
+	if src != nil {
+		modulePath = strings.Trim(src.Content(ctx.source), "\"'`")
+	}
+
 	for i := 0; i < int(clause.NamedChildCount()); i++ {
 		child := clause.NamedChild(i)
 		switch child.Type() {
 		case "identifier":
 			// Default import: import Foo from 'bar'
-			ctx.addEdge(owner, child.Content(ctx.source), "imports")
+			shortName := child.Content(ctx.source)
+			ctx.addEdgeQualified(owner, shortName, modulePath+"/"+shortName, "imports")
 		case "named_imports":
 			// Named imports: import { Foo, Bar } from 'baz'
 			for j := 0; j < int(child.NamedChildCount()); j++ {
@@ -196,7 +210,8 @@ func (p *Parser) tsImportEdges(node *sitter.Node, owner string, ctx *edgeContext
 				if spec.Type() == "import_specifier" {
 					name := spec.ChildByFieldName("name")
 					if name != nil {
-						ctx.addEdge(owner, name.Content(ctx.source), "imports")
+						shortName := name.Content(ctx.source)
+						ctx.addEdgeQualified(owner, shortName, modulePath+"/"+shortName, "imports")
 					}
 				}
 			}
@@ -204,7 +219,7 @@ func (p *Parser) tsImportEdges(node *sitter.Node, owner string, ctx *edgeContext
 			// import * as ns from 'bar'
 			name := extractName(child, ctx.source)
 			if name != "" {
-				ctx.addEdge(owner, name, "imports")
+				ctx.addEdgeQualified(owner, name, modulePath, "imports")
 			}
 		}
 	}
@@ -212,6 +227,12 @@ func (p *Parser) tsImportEdges(node *sitter.Node, owner string, ctx *edgeContext
 
 func (p *Parser) pyImportEdges(node *sitter.Node, owner string, ctx *edgeContext) {
 	moduleField := node.ChildByFieldName("module_name")
+
+	// Extract module prefix for "from X import Y" statements
+	modulePrefix := ""
+	if moduleField != nil {
+		modulePrefix = moduleField.Content(ctx.source)
+	}
 
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
@@ -221,12 +242,22 @@ func (p *Parser) pyImportEdges(node *sitter.Node, owner string, ctx *edgeContext
 		}
 		switch n.Type() {
 		case "dotted_name":
-			ctx.addEdge(owner, n.Content(ctx.source), "imports")
+			content := n.Content(ctx.source)
+			qualified := content
+			if modulePrefix != "" {
+				qualified = modulePrefix + "." + content
+			}
+			ctx.addEdgeQualified(owner, content, qualified, "imports")
 			return
 		case "aliased_import":
 			name := n.ChildByFieldName("name")
 			if name != nil {
-				ctx.addEdge(owner, name.Content(ctx.source), "imports")
+				content := name.Content(ctx.source)
+				qualified := content
+				if modulePrefix != "" {
+					qualified = modulePrefix + "." + content
+				}
+				ctx.addEdgeQualified(owner, content, qualified, "imports")
 			}
 			return
 		case "wildcard_import":
@@ -248,7 +279,7 @@ func (p *Parser) goImportEdges(node *sitter.Node, owner string, ctx *edgeContext
 				pkgPath := strings.Trim(path.Content(ctx.source), "\"")
 				parts := strings.Split(pkgPath, "/")
 				pkgName := parts[len(parts)-1]
-				ctx.addEdge(owner, pkgName, "imports")
+				ctx.addEdgeQualified(owner, pkgName, pkgPath, "imports")
 			}
 			return
 		}
@@ -260,18 +291,20 @@ func (p *Parser) goImportEdges(node *sitter.Node, owner string, ctx *edgeContext
 }
 
 func (p *Parser) javaImportEdges(node *sitter.Node, owner string, ctx *edgeContext) {
-	// Java: import foo.bar.Baz; → extract "Baz"
+	// Java: import foo.bar.Baz; → extract "Baz" with qualified "foo.bar.Baz"
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
 		if n.Type() == "scoped_identifier" {
+			qualified := n.Content(ctx.source)
 			name := n.ChildByFieldName("name")
 			if name != nil {
-				ctx.addEdge(owner, name.Content(ctx.source), "imports")
+				ctx.addEdgeQualified(owner, name.Content(ctx.source), qualified, "imports")
 			}
 			return
 		}
 		if n.Type() == "identifier" {
-			ctx.addEdge(owner, n.Content(ctx.source), "imports")
+			content := n.Content(ctx.source)
+			ctx.addEdgeQualified(owner, content, content, "imports")
 			return
 		}
 		for i := 0; i < int(n.NamedChildCount()); i++ {
@@ -282,13 +315,25 @@ func (p *Parser) javaImportEdges(node *sitter.Node, owner string, ctx *edgeConte
 }
 
 func (p *Parser) groovyImportEdges(node *sitter.Node, owner string, ctx *edgeContext) {
-	// Groovy: import foo.bar.Baz → extract last dot-separated component
+	// Groovy: import foo.bar.Baz → extract last dot-separated component with full qualified path
+	// Extract the full import text from the node to use as qualified name
+	fullImportText := node.Content(ctx.source)
+	// Strip "import " prefix and any trailing whitespace/semicolons
+	fullImportText = strings.TrimPrefix(fullImportText, "import ")
+	fullImportText = strings.TrimRight(fullImportText, " \t\n\r;")
+
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
 		if n.Type() == "dotted_identifier" || n.Type() == "identifier" {
 			content := n.Content(ctx.source)
 			parts := strings.Split(content, ".")
-			ctx.addEdge(owner, parts[len(parts)-1], "imports")
+			shortName := parts[len(parts)-1]
+			// Use fullImportText as qualified name if it contains dots (the full path)
+			qualified := content
+			if strings.Contains(fullImportText, ".") {
+				qualified = fullImportText
+			}
+			ctx.addEdgeQualified(owner, shortName, qualified, "imports")
 			return
 		}
 		for i := 0; i < int(n.NamedChildCount()); i++ {
@@ -299,30 +344,61 @@ func (p *Parser) groovyImportEdges(node *sitter.Node, owner string, ctx *edgeCon
 }
 
 func (p *Parser) rustImportEdges(node *sitter.Node, owner string, ctx *edgeContext) {
-	// Rust: use std::collections::HashMap; → extract "HashMap"
+	// Rust: use std::collections::HashMap; → extract "HashMap" with qualified "std::collections::HashMap"
 	// Also handles: use std::{io, fs}; (use_list) and use foo as bar (use_as_clause)
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
 		switch n.Type() {
 		case "use_as_clause":
-			// use foo::Bar as Baz → extract the alias "Baz"
+			// use foo::Bar as Baz → extract the alias "Baz" with the original path as qualified
 			alias := n.ChildByFieldName("alias")
 			if alias != nil {
-				ctx.addEdge(owner, alias.Content(ctx.source), "imports")
+				// Extract the path part (before "as")
+				path := n.ChildByFieldName("path")
+				qualified := ""
+				if path != nil {
+					qualified = path.Content(ctx.source)
+				}
+				ctx.addEdgeQualified(owner, alias.Content(ctx.source), qualified, "imports")
 				return
 			}
 			// No alias field, fall through to extract the path's last component
 		case "scoped_identifier":
+			qualified := n.Content(ctx.source)
 			name := n.ChildByFieldName("name")
 			if name != nil {
-				ctx.addEdge(owner, name.Content(ctx.source), "imports")
+				ctx.addEdgeQualified(owner, name.Content(ctx.source), qualified, "imports")
 			}
 			return
 		case "identifier":
-			ctx.addEdge(owner, n.Content(ctx.source), "imports")
+			content := n.Content(ctx.source)
+			ctx.addEdgeQualified(owner, content, content, "imports")
 			return
 		case "scoped_use_list":
 			// use std::{io, fs}; → recurse into the use_list child
+			// Extract the prefix path for qualification
+			pathNode := n.ChildByFieldName("path")
+			prefix := ""
+			if pathNode != nil {
+				prefix = pathNode.Content(ctx.source)
+			}
+			list := n.ChildByFieldName("list")
+			if list != nil {
+				for i := 0; i < int(list.NamedChildCount()); i++ {
+					child := list.NamedChild(i)
+					if child.Type() == "identifier" {
+						shortName := child.Content(ctx.source)
+						qualified := shortName
+						if prefix != "" {
+							qualified = prefix + "::" + shortName
+						}
+						ctx.addEdgeQualified(owner, shortName, qualified, "imports")
+					} else {
+						walk(child)
+					}
+				}
+			}
+			return
 		case "use_wildcard":
 			// use foo::*; → skip, no specific name to extract
 			return

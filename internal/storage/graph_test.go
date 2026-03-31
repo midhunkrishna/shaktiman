@@ -27,11 +27,18 @@ func setupTestDB(t *testing.T) (*DB, *Store) {
 // insertTestFileChunkSymbol creates a file, chunk, and symbol in one shot.
 // Returns fileID, chunkID, symbolID.
 func insertTestFileChunkSymbol(t *testing.T, store *Store, path, symbolName string) (int64, int64, int64) {
+	return insertTestFileChunkSymbolWithLang(t, store, path, symbolName, "")
+}
+
+// insertTestFileChunkSymbolWithLang creates a file with a specific language, chunk, and symbol.
+// Returns fileID, chunkID, symbolID.
+func insertTestFileChunkSymbolWithLang(t *testing.T, store *Store, path, symbolName, language string) (int64, int64, int64) {
 	t.Helper()
 	ctx := context.Background()
 
 	fileID, err := store.UpsertFile(ctx, &types.FileRecord{
 		Path: path, ContentHash: "h_" + path, Mtime: 1.0,
+		Language:        language,
 		EmbeddingStatus: "pending", ParseQuality: "full",
 	})
 	if err != nil {
@@ -74,7 +81,7 @@ func TestInsertEdges_Resolved(t *testing.T) {
 	}
 
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, fileID, edges, symbolIDs)
+		return store.InsertEdges(ctx, tx, fileID, edges, symbolIDs, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges: %v", err)
@@ -109,7 +116,7 @@ func TestInsertEdges_Pending(t *testing.T) {
 	}
 
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, fileID, edges, symbolIDs)
+		return store.InsertEdges(ctx, tx, fileID, edges, symbolIDs, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges: %v", err)
@@ -151,7 +158,7 @@ func TestResolvePendingEdges(t *testing.T) {
 	}
 
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, fileID, edges, symbolIDs)
+		return store.InsertEdges(ctx, tx, fileID, edges, symbolIDs, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges: %v", err)
@@ -205,7 +212,7 @@ func TestNeighbors_Outgoing(t *testing.T) {
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
 		return store.InsertEdges(ctx, tx, fileID, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
-		}, map[string]int64{"FuncA": symAID, "FuncB": symBID})
+		}, map[string]int64{"FuncA": symAID, "FuncB": symBID}, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges A->B: %v", err)
@@ -221,7 +228,7 @@ func TestNeighbors_Outgoing(t *testing.T) {
 	err = db.WithWriteTx(func(tx *sql.Tx) error {
 		return store.InsertEdges(ctx, tx, bFileID, []types.EdgeRecord{
 			{SrcSymbolName: "FuncB", DstSymbolName: "FuncC", Kind: "calls"},
-		}, map[string]int64{"FuncB": symBID, "FuncC": symCID})
+		}, map[string]int64{"FuncB": symBID, "FuncC": symCID}, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges B->C: %v", err)
@@ -261,7 +268,7 @@ func TestNeighbors_Incoming(t *testing.T) {
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
 		return store.InsertEdges(ctx, tx, fileID, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
-		}, map[string]int64{"FuncA": symAID, "FuncB": symBID})
+		}, map[string]int64{"FuncA": symAID, "FuncB": symBID}, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges A->B: %v", err)
@@ -277,7 +284,7 @@ func TestNeighbors_Incoming(t *testing.T) {
 	err = db.WithWriteTx(func(tx *sql.Tx) error {
 		return store.InsertEdges(ctx, tx, bFileID, []types.EdgeRecord{
 			{SrcSymbolName: "FuncB", DstSymbolName: "FuncC", Kind: "calls"},
-		}, map[string]int64{"FuncB": symBID, "FuncC": symCID})
+		}, map[string]int64{"FuncB": symBID, "FuncC": symCID}, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges B->C: %v", err)
@@ -316,12 +323,12 @@ func TestDeleteEdgesByFile_RemovesTargetEdges(t *testing.T) {
 	if err := db.WithWriteTx(func(tx *sql.Tx) error {
 		if err := store.InsertEdges(ctx, tx, fileIDA, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
-		}, map[string]int64{"FuncA": symIDA, "FuncB": symIDB}); err != nil {
+		}, map[string]int64{"FuncA": symIDA, "FuncB": symIDB}, ""); err != nil {
 			return err
 		}
 		return store.InsertEdges(ctx, tx, fileIDC, []types.EdgeRecord{
 			{SrcSymbolName: "FuncC", DstSymbolName: "FuncB", Kind: "calls"},
-		}, map[string]int64{"FuncC": symIDC, "FuncB": symIDB})
+		}, map[string]int64{"FuncC": symIDC, "FuncB": symIDB}, "")
 	}); err != nil {
 		t.Fatalf("InsertEdges: %v", err)
 	}
@@ -365,12 +372,12 @@ func TestNeighbors_Both(t *testing.T) {
 	if err := db.WithWriteTx(func(tx *sql.Tx) error {
 		if err := store.InsertEdges(ctx, tx, fileIDA, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
-		}, map[string]int64{"FuncA": symIDA, "FuncB": symIDB}); err != nil {
+		}, map[string]int64{"FuncA": symIDA, "FuncB": symIDB}, ""); err != nil {
 			return err
 		}
 		return store.InsertEdges(ctx, tx, fileIDC, []types.EdgeRecord{
 			{SrcSymbolName: "FuncC", DstSymbolName: "FuncB", Kind: "calls"},
-		}, map[string]int64{"FuncC": symIDC, "FuncB": symIDB})
+		}, map[string]int64{"FuncC": symIDC, "FuncB": symIDB}, "")
 	}); err != nil {
 		t.Fatalf("InsertEdges: %v", err)
 	}
@@ -419,7 +426,7 @@ func TestNeighbors_DepthClampBelow(t *testing.T) {
 	if err := db.WithWriteTx(func(tx *sql.Tx) error {
 		return store.InsertEdges(ctx, tx, fileID, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
-		}, map[string]int64{"FuncA": symIDA, "FuncB": symIDB})
+		}, map[string]int64{"FuncA": symIDA, "FuncB": symIDB}, "")
 	}); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -445,7 +452,7 @@ func TestNeighbors_DepthClampAbove(t *testing.T) {
 	if err := db.WithWriteTx(func(tx *sql.Tx) error {
 		return store.InsertEdges(ctx, tx, fileID, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
-		}, map[string]int64{"FuncA": symIDA, "FuncB": symIDB})
+		}, map[string]int64{"FuncA": symIDA, "FuncB": symIDB}, "")
 	}); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -479,7 +486,7 @@ func TestInsertEdges_SkipUnknownSrc(t *testing.T) {
 	}
 
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, fileID, edges, symbolIDs)
+		return store.InsertEdges(ctx, tx, fileID, edges, symbolIDs, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges: %v", err)
@@ -515,7 +522,7 @@ func TestInsertEdges_CrossFileLookup(t *testing.T) {
 	}
 
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, fileIDA, edges, symbolIDs)
+		return store.InsertEdges(ctx, tx, fileIDA, edges, symbolIDs, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges: %v", err)
@@ -542,7 +549,7 @@ func TestResolvePendingEdges_NoMatch(t *testing.T) {
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
 		return store.InsertEdges(ctx, tx, fileID, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncZ", Kind: "calls"},
-		}, map[string]int64{"FuncA": symIDA})
+		}, map[string]int64{"FuncA": symIDA}, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges: %v", err)
@@ -561,6 +568,352 @@ func TestResolvePendingEdges_NoMatch(t *testing.T) {
 	db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pending_edges WHERE dst_symbol_name = 'FuncZ'").Scan(&count)
 	if count != 1 {
 		t.Errorf("expected pending edge to remain, got count=%d", count)
+	}
+}
+
+// ── Language filter and qualified name tests ──
+
+func TestInsertEdges_QualifiedNameAndLanguageStored(t *testing.T) {
+	t.Parallel()
+	db, store := setupTestDB(t)
+	ctx := context.Background()
+
+	fileID, _, symAID := insertTestFileChunkSymbolWithLang(t, store, "MyService.java", "MyService", "java")
+
+	edges := []types.EdgeRecord{
+		{SrcSymbolName: "MyService", DstSymbolName: "List", DstQualifiedName: "java.util.List", Kind: "imports"},
+	}
+	symbolIDs := map[string]int64{"MyService": symAID}
+
+	err := db.WithWriteTx(func(tx *sql.Tx) error {
+		return store.InsertEdges(ctx, tx, fileID, edges, symbolIDs, "java")
+	})
+	if err != nil {
+		t.Fatalf("InsertEdges: %v", err)
+	}
+
+	// Verify pending_edges has correct dst_qualified_name and src_language
+	var qualifiedName, srcLang string
+	err = db.QueryRowContext(ctx,
+		"SELECT dst_qualified_name, src_language FROM pending_edges WHERE dst_symbol_name = 'List'",
+	).Scan(&qualifiedName, &srcLang)
+	if err != nil {
+		t.Fatalf("query pending_edges: %v", err)
+	}
+	if qualifiedName != "java.util.List" {
+		t.Errorf("dst_qualified_name=%q, want %q", qualifiedName, "java.util.List")
+	}
+	if srcLang != "java" {
+		t.Errorf("src_language=%q, want %q", srcLang, "java")
+	}
+}
+
+func TestResolvePendingEdges_LanguageFilter(t *testing.T) {
+	t.Parallel()
+	db, store := setupTestDB(t)
+	ctx := context.Background()
+
+	// Java file imports "Config"
+	javaFileID, _, javaSymID := insertTestFileChunkSymbolWithLang(t, store, "App.java", "App", "java")
+
+	// Insert pending edge from Java for "Config"
+	err := db.WithWriteTx(func(tx *sql.Tx) error {
+		return store.InsertEdges(ctx, tx, javaFileID, []types.EdgeRecord{
+			{SrcSymbolName: "App", DstSymbolName: "Config", DstQualifiedName: "com.example.Config", Kind: "imports"},
+		}, map[string]int64{"App": javaSymID}, "java")
+	})
+	if err != nil {
+		t.Fatalf("InsertEdges: %v", err)
+	}
+
+	// Python file defines "Config" — should NOT resolve the Java pending edge
+	insertTestFileChunkSymbolWithLang(t, store, "config.py", "Config", "python")
+
+	err = db.WithWriteTx(func(tx *sql.Tx) error {
+		return store.ResolvePendingEdges(ctx, tx, []string{"Config"})
+	})
+	if err != nil {
+		t.Fatalf("ResolvePendingEdges: %v", err)
+	}
+
+	// Pending edge should still exist (not resolved to Python symbol)
+	var count int
+	db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pending_edges WHERE dst_symbol_name = 'Config'").Scan(&count)
+	if count != 1 {
+		t.Errorf("expected Java pending edge for Config to remain (not resolve to Python), got count=%d", count)
+	}
+
+	// No resolved edge should exist
+	neighbors, err := store.Neighbors(ctx, javaSymID, 1, "outgoing")
+	if err != nil {
+		t.Fatalf("Neighbors: %v", err)
+	}
+	if len(neighbors) != 0 {
+		t.Errorf("expected 0 resolved neighbors (cross-language should not resolve), got %d", len(neighbors))
+	}
+}
+
+func TestResolvePendingEdges_SameLanguageResolves(t *testing.T) {
+	t.Parallel()
+	db, store := setupTestDB(t)
+	ctx := context.Background()
+
+	// Java file imports "Config"
+	javaFileID, _, javaSymID := insertTestFileChunkSymbolWithLang(t, store, "App.java", "App", "java")
+
+	err := db.WithWriteTx(func(tx *sql.Tx) error {
+		return store.InsertEdges(ctx, tx, javaFileID, []types.EdgeRecord{
+			{SrcSymbolName: "App", DstSymbolName: "Config", DstQualifiedName: "com.example.Config", Kind: "imports"},
+		}, map[string]int64{"App": javaSymID}, "java")
+	})
+	if err != nil {
+		t.Fatalf("InsertEdges: %v", err)
+	}
+
+	// Java file defines "Config" — should resolve the Java pending edge
+	_, _, javaConfigID := insertTestFileChunkSymbolWithLang(t, store, "Config.java", "Config", "java")
+
+	err = db.WithWriteTx(func(tx *sql.Tx) error {
+		return store.ResolvePendingEdges(ctx, tx, []string{"Config"})
+	})
+	if err != nil {
+		t.Fatalf("ResolvePendingEdges: %v", err)
+	}
+
+	// Pending edge should be resolved
+	var count int
+	db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pending_edges WHERE dst_symbol_name = 'Config'").Scan(&count)
+	if count != 0 {
+		t.Errorf("expected pending edge to be resolved, got count=%d", count)
+	}
+
+	// Resolved edge should exist
+	neighbors, err := store.Neighbors(ctx, javaSymID, 1, "outgoing")
+	if err != nil {
+		t.Fatalf("Neighbors: %v", err)
+	}
+	if len(neighbors) != 1 || neighbors[0] != javaConfigID {
+		t.Errorf("expected resolved edge to Java Config (%d), got %v", javaConfigID, neighbors)
+	}
+}
+
+func TestLookupSymbolIDTx_LanguageFilter(t *testing.T) {
+	t.Parallel()
+	db, store := setupTestDB(t)
+	ctx := context.Background()
+
+	// Create Config in both Python and Java
+	_, _, pyConfigID := insertTestFileChunkSymbolWithLang(t, store, "config.py", "Config", "python")
+	_, _, javaConfigID := insertTestFileChunkSymbolWithLang(t, store, "Config.java", "Config", "java")
+
+	// lookupSymbolIDTx with language="java" should return the Java symbol
+	var gotID int64
+	err := db.WithWriteTx(func(tx *sql.Tx) error {
+		var lookupErr error
+		gotID, lookupErr = lookupSymbolIDTx(ctx, tx, "Config", 0, "java")
+		return lookupErr
+	})
+	if err != nil {
+		t.Fatalf("lookupSymbolIDTx: %v", err)
+	}
+	if gotID != javaConfigID {
+		t.Errorf("lookupSymbolIDTx(Config, java)=%d, want %d (Java); Python=%d", gotID, javaConfigID, pyConfigID)
+	}
+
+	// lookupSymbolIDTx with language="python" should return the Python symbol
+	err = db.WithWriteTx(func(tx *sql.Tx) error {
+		var lookupErr error
+		gotID, lookupErr = lookupSymbolIDTx(ctx, tx, "Config", 0, "python")
+		return lookupErr
+	})
+	if err != nil {
+		t.Fatalf("lookupSymbolIDTx: %v", err)
+	}
+	if gotID != pyConfigID {
+		t.Errorf("lookupSymbolIDTx(Config, python)=%d, want %d (Python)", gotID, pyConfigID)
+	}
+
+	// lookupSymbolIDTx with language="" falls back to global (any match)
+	err = db.WithWriteTx(func(tx *sql.Tx) error {
+		var lookupErr error
+		gotID, lookupErr = lookupSymbolIDTx(ctx, tx, "Config", 0, "")
+		return lookupErr
+	})
+	if err != nil {
+		t.Fatalf("lookupSymbolIDTx: %v", err)
+	}
+	if gotID == 0 {
+		t.Error("lookupSymbolIDTx(Config, '') returned 0, want any Config symbol")
+	}
+}
+
+func TestIntegration_CrossLanguageNoMisresolution(t *testing.T) {
+	t.Parallel()
+	db, store := setupTestDB(t)
+	ctx := context.Background()
+
+	// Polyglot scenario: Python defines Config, Java imports Config
+	insertTestFileChunkSymbolWithLang(t, store, "config.py", "Config", "python")
+
+	javaFileID, _, javaSymID := insertTestFileChunkSymbolWithLang(t, store, "App.java", "App", "java")
+
+	// Java imports Config — should NOT resolve to Python Config
+	err := db.WithWriteTx(func(tx *sql.Tx) error {
+		return store.InsertEdges(ctx, tx, javaFileID, []types.EdgeRecord{
+			{SrcSymbolName: "App", DstSymbolName: "Config", DstQualifiedName: "com.example.Config", Kind: "imports"},
+		}, map[string]int64{"App": javaSymID}, "java")
+	})
+	if err != nil {
+		t.Fatalf("InsertEdges: %v", err)
+	}
+
+	// Config should be in pending_edges, not resolved
+	var count int
+	db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pending_edges WHERE dst_symbol_name = 'Config'").Scan(&count)
+	if count != 1 {
+		t.Fatalf("expected 1 pending edge for Config, got %d", count)
+	}
+
+	// No resolved edge from App
+	neighbors, err := store.Neighbors(ctx, javaSymID, 1, "outgoing")
+	if err != nil {
+		t.Fatalf("Neighbors: %v", err)
+	}
+	if len(neighbors) != 0 {
+		t.Errorf("expected no resolved edges (Java→Python should not resolve), got %d", len(neighbors))
+	}
+}
+
+func TestMigration_V2toV3(t *testing.T) {
+	t.Parallel()
+
+	// Create a DB at v2 (before our migration)
+	db, err := Open(OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	// Apply base schema and v1→v2 migration manually
+	err = db.WithWriteTx(func(tx *sql.Tx) error {
+		for _, stmt := range schemaV1 {
+			if _, err := tx.Exec(stmt); err != nil {
+				return err
+			}
+		}
+		for _, stmt := range ftsTriggers {
+			if _, err := tx.Exec(stmt); err != nil {
+				return err
+			}
+		}
+		for _, stmt := range migrationsV1toV2 {
+			if _, execErr := tx.Exec(stmt); execErr != nil {
+				if isDuplicateColumnError(execErr) {
+					continue
+				}
+				return execErr
+			}
+		}
+		_, err := tx.Exec("INSERT INTO schema_version (version) VALUES (2)")
+		return err
+	})
+	if err != nil {
+		t.Fatalf("setup v2 schema: %v", err)
+	}
+
+	// Run full Migrate — should apply v2→v3
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate v2→v3: %v", err)
+	}
+
+	// Create a file, chunk, and symbol so we have a valid src_symbol_id
+	ctx := context.Background()
+	err = db.WithWriteTx(func(tx *sql.Tx) error {
+		if _, execErr := tx.ExecContext(ctx,
+			"INSERT INTO files (path, content_hash, mtime, language) VALUES ('test.java', 'h1', 1.0, 'java')"); execErr != nil {
+			return execErr
+		}
+		if _, execErr := tx.ExecContext(ctx,
+			"INSERT INTO chunks (file_id, chunk_index, kind, start_line, end_line, content, token_count) VALUES (1, 0, 'class', 1, 10, 'class App {}', 5)"); execErr != nil {
+			return execErr
+		}
+		if _, execErr := tx.ExecContext(ctx,
+			"INSERT INTO symbols (chunk_id, file_id, name, kind, line) VALUES (1, 1, 'App', 'class', 1)"); execErr != nil {
+			return execErr
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("setup test data: %v", err)
+	}
+
+	// Verify new columns exist by inserting a pending edge with them
+	err = db.WithWriteTx(func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(ctx,
+			"INSERT INTO pending_edges (src_symbol_id, dst_symbol_name, dst_qualified_name, kind, src_language) VALUES (1, 'Foo', 'com.example.Foo', 'imports', 'java')")
+		return execErr
+	})
+	if err != nil {
+		t.Fatalf("insert with new columns failed: %v", err)
+	}
+
+	// Verify the values
+	var qualifiedName, srcLang string
+	err = db.QueryRowContext(ctx,
+		"SELECT dst_qualified_name, src_language FROM pending_edges WHERE dst_symbol_name = 'Foo'",
+	).Scan(&qualifiedName, &srcLang)
+	if err != nil {
+		t.Fatalf("query new columns: %v", err)
+	}
+	if qualifiedName != "com.example.Foo" {
+		t.Errorf("dst_qualified_name=%q, want %q", qualifiedName, "com.example.Foo")
+	}
+	if srcLang != "java" {
+		t.Errorf("src_language=%q, want %q", srcLang, "java")
+	}
+
+	// Verify schema version is 3
+	var version int
+	db.QueryRowContext(ctx, "SELECT MAX(version) FROM schema_version").Scan(&version)
+	if version != 3 {
+		t.Errorf("schema version=%d, want 3", version)
+	}
+}
+
+func TestResolvePendingEdges_BackwardCompat_EmptyLanguage(t *testing.T) {
+	t.Parallel()
+	db, store := setupTestDB(t)
+	ctx := context.Background()
+
+	// Simulate pre-migration pending edge with empty src_language
+	fileID, _, symAID := insertTestFileChunkSymbol(t, store, "a.go", "FuncA")
+	err := db.WithWriteTx(func(tx *sql.Tx) error {
+		// Insert with empty language (like pre-migration data)
+		return store.InsertEdges(ctx, tx, fileID, []types.EdgeRecord{
+			{SrcSymbolName: "FuncA", DstSymbolName: "FuncZ", Kind: "calls"},
+		}, map[string]int64{"FuncA": symAID}, "")
+	})
+	if err != nil {
+		t.Fatalf("InsertEdges: %v", err)
+	}
+
+	// Create FuncZ
+	_, _, symZID := insertTestFileChunkSymbol(t, store, "z.go", "FuncZ")
+
+	// Resolve — should work even with empty src_language (backward compat fallback)
+	err = db.WithWriteTx(func(tx *sql.Tx) error {
+		return store.ResolvePendingEdges(ctx, tx, []string{"FuncZ"})
+	})
+	if err != nil {
+		t.Fatalf("ResolvePendingEdges: %v", err)
+	}
+
+	neighbors, err := store.Neighbors(ctx, symAID, 1, "outgoing")
+	if err != nil {
+		t.Fatalf("Neighbors: %v", err)
+	}
+	if len(neighbors) != 1 || neighbors[0] != symZID {
+		t.Errorf("expected edge to FuncZ (%d), got %v", symZID, neighbors)
 	}
 }
 

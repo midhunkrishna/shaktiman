@@ -438,7 +438,7 @@ func setupDependenciesHandler(t *testing.T) handlerFunc {
 		}, map[string]int64{
 			"NewServer":     srcID,
 			"handleRequest": dstID,
-		})
+		}, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges: %v", err)
@@ -1229,7 +1229,7 @@ func setupHandlersWithPendingEdge(t *testing.T) (*storage.Store, handlerFunc, ha
 			{SrcSymbolName: "NewServer", DstSymbolName: "ExternalLib", Kind: "imports"},
 		}, map[string]int64{
 			"NewServer": srcID,
-		})
+		}, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges: %v", err)

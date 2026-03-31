@@ -250,11 +250,12 @@ func symbolsHandler(store *storage.Store) handlerFunc {
 					}
 					path, _ := store.GetFilePathByID(ctx, sym.FileID)
 					refs = append(refs, format.SymbolRef{
-						Symbol:   sym.Name,
-						Kind:     sym.Kind,
-						FilePath: path,
-						Line:     sym.Line,
-						Via:      c.Kind,
+						Symbol:        sym.Name,
+						Kind:          sym.Kind,
+						FilePath:      path,
+						Line:          sym.Line,
+						Via:           c.Kind,
+						QualifiedName: c.DstQualifiedName,
 					})
 				}
 				if len(refs) > 0 {

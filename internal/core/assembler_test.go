@@ -139,7 +139,7 @@ func TestAssemble_StructuralExpansion(t *testing.T) {
 		}
 		return store.InsertEdges(ctx, tx, fileID, []types.EdgeRecord{
 			{SrcSymbolName: "Caller", DstSymbolName: "Helper", Kind: "calls"},
-		}, symMap)
+		}, symMap, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges: %v", err)
@@ -258,7 +258,7 @@ func TestStructuralExpand_WithEdges(t *testing.T) {
 		}
 		return store.InsertEdges(ctx, tx, fileID1, []types.EdgeRecord{
 			{SrcSymbolName: "Main", DstSymbolName: "Serve", Kind: "calls"},
-		}, symMap)
+		}, symMap, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges: %v", err)
