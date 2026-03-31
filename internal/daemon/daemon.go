@@ -501,7 +501,10 @@ func (d *Daemon) startWatcher(ctx context.Context, pipeline *EnrichmentPipeline)
 
 	// Process watcher events — registered as a writer producer so
 	// drain() waits for in-flight EnrichFile calls before closing.
-	d.writer.AddProducer()
+	if !d.writer.AddProducer() {
+		d.logger.Info("writer draining, skipping watcher")
+		return
+	}
 	go func() {
 		defer d.writer.RemoveProducer()
 		for event := range w.Events() {

@@ -304,7 +304,7 @@ func TestWriterManager_ProcessJob(t *testing.T) {
 
 	// Submit a job with a Done channel to wait for completion
 	done := make(chan error, 1)
-	wm.AddProducer()
+	_ = wm.AddProducer()
 	if err := wm.Submit(types.WriteJob{
 		Type:     types.WriteJobEnrichment,
 		FilePath: "test.ts",
@@ -2323,7 +2323,7 @@ func TestWriterManager_ReindexWithChangedSymbols(t *testing.T) {
 
 	// Phase 1: Index file with original symbols
 	done1 := make(chan error, 1)
-	wm.AddProducer()
+	_ = wm.AddProducer()
 	if err := wm.Submit(types.WriteJob{
 		Type:     types.WriteJobEnrichment,
 		FilePath: "app.go",
@@ -2361,7 +2361,7 @@ func TestWriterManager_ReindexWithChangedSymbols(t *testing.T) {
 
 	// Phase 2: Re-index with changed symbols (OldFunc → NewFunc, StableFunc remains)
 	done2 := make(chan error, 1)
-	wm.AddProducer()
+	_ = wm.AddProducer()
 	if err := wm.Submit(types.WriteJob{
 		Type:     types.WriteJobEnrichment,
 		FilePath: "app.go",
@@ -2555,7 +2555,7 @@ func TestWriterManager_DeleteJob(t *testing.T) {
 
 	// First, create a file
 	done1 := make(chan error, 1)
-	wm.AddProducer()
+	_ = wm.AddProducer()
 	if err := wm.Submit(types.WriteJob{
 		Type:     types.WriteJobEnrichment,
 		FilePath: "del_target.go",

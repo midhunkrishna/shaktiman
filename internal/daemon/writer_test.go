@@ -116,7 +116,7 @@ func TestSubmit_BlockedDuringShutdown(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
-	wm.AddProducer()
+	_ = wm.AddProducer()
 
 	// Fill the channel so next Submit blocks
 	_ = wm.Submit(types.WriteJob{
@@ -209,7 +209,7 @@ func TestWriterChannelFull_LogsAtDebug(t *testing.T) {
 	go wm.Run(ctx)
 
 	// Fill channel with one job (it will be processed).
-	wm.AddProducer()
+	_ = wm.AddProducer()
 	_ = wm.Submit(types.WriteJob{
 		Type:     types.WriteJobEnrichment,
 		FilePath: "file1.go",

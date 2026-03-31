@@ -88,7 +88,7 @@ func TestEnrichFile_Modify(t *testing.T) {
 	wm := NewWriterManager(store, 100)
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
-	wm.AddProducer()
+	_ = wm.AddProducer()
 
 	pipeline := NewEnrichmentPipeline(store, wm, 1)
 
@@ -139,7 +139,7 @@ func TestEnrichFile_Delete(t *testing.T) {
 	wm := NewWriterManager(store, 100)
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
-	wm.AddProducer()
+	_ = wm.AddProducer()
 
 	pipeline := NewEnrichmentPipeline(store, wm, 1)
 
@@ -201,7 +201,7 @@ func TestEnrichFile_SkipUnchanged(t *testing.T) {
 	wm1 := NewWriterManager(store, 100)
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	go wm1.Run(ctx1)
-	wm1.AddProducer()
+	_ = wm1.AddProducer()
 
 	pipeline := NewEnrichmentPipeline(store, wm1, 1)
 
@@ -232,7 +232,7 @@ func TestEnrichFile_SkipUnchanged(t *testing.T) {
 	wm2 := NewWriterManager(store, 100)
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	go wm2.Run(ctx2)
-	wm2.AddProducer()
+	_ = wm2.AddProducer()
 	pipeline.writer = wm2
 
 	if err := pipeline.EnrichFile(context.Background(), event); err != nil {
@@ -255,7 +255,7 @@ func TestEnrichFile_UnsupportedLanguage(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go wm.Run(ctx)
-	wm.AddProducer()
+	_ = wm.AddProducer()
 
 	pipeline := NewEnrichmentPipeline(store, wm, 1)
 
@@ -286,7 +286,7 @@ func TestEnrichFile_LargeFile(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go wm.Run(ctx)
-	wm.AddProducer()
+	_ = wm.AddProducer()
 
 	pipeline := NewEnrichmentPipeline(store, wm, 1)
 
@@ -322,7 +322,7 @@ func TestEnrichFile_UnreadableFile(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go wm.Run(ctx)
-	wm.AddProducer()
+	_ = wm.AddProducer()
 
 	pipeline := NewEnrichmentPipeline(store, wm, 1)
 
