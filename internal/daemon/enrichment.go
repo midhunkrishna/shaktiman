@@ -74,6 +74,15 @@ func (ep *EnrichmentPipeline) IndexAll(ctx context.Context, input IndexAllInput)
 	if err := ep.store.DisableFTSTriggers(ctx); err != nil {
 		ep.logger.Warn("failed to disable FTS triggers", "err", err)
 	}
+	// Ensure FTS is rebuilt and triggers re-enabled on all exit paths
+	defer func() {
+		if err := ep.store.RebuildFTS(ctx); err != nil {
+			ep.logger.Warn("failed to rebuild FTS", "err", err)
+		}
+		if err := ep.store.EnableFTSTriggers(ctx); err != nil {
+			ep.logger.Warn("failed to enable FTS triggers", "err", err)
+		}
+	}()
 
 	// Distribute work to workers
 	jobCh := make(chan ScannedFile, len(needsIndex))
@@ -82,7 +91,9 @@ func (ep *EnrichmentPipeline) IndexAll(ctx context.Context, input IndexAllInput)
 	}
 	close(jobCh)
 
-	ep.writer.AddProducer()
+	if !ep.writer.AddProducer() {
+		return fmt.Errorf("writer is shutting down")
+	}
 	var wg sync.WaitGroup
 	var indexErr error
 	var mu sync.Mutex
@@ -157,23 +168,14 @@ func (ep *EnrichmentPipeline) IndexAll(ctx context.Context, input IndexAllInput)
 	}
 
 	// Clean up sync marker
-	ep.writer.AddProducer()
-	if err := ep.writer.Submit(types.WriteJob{
-		Type:     types.WriteJobFileDelete,
-		FilePath: "__sync_marker__",
-	}); err != nil {
-		ep.logger.Warn("submit sync marker cleanup failed", "err", err)
-	}
-	ep.writer.RemoveProducer()
-
-	// Rebuild FTS5 index (A11)
-	if err := ep.store.RebuildFTS(ctx); err != nil {
-		ep.logger.Warn("failed to rebuild FTS", "err", err)
-	}
-
-	// Re-enable FTS triggers
-	if err := ep.store.EnableFTSTriggers(ctx); err != nil {
-		ep.logger.Warn("failed to enable FTS triggers", "err", err)
+	if ep.writer.AddProducer() {
+		if err := ep.writer.Submit(types.WriteJob{
+			Type:     types.WriteJobFileDelete,
+			FilePath: "__sync_marker__",
+		}); err != nil {
+			ep.logger.Warn("submit sync marker cleanup failed", "err", err)
+		}
+		ep.writer.RemoveProducer()
 	}
 
 	elapsed := time.Since(startTime)

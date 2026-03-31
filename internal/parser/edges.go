@@ -10,10 +10,11 @@ import (
 
 // edgeContext tracks state during edge extraction walk.
 type edgeContext struct {
-	source []byte
-	cfg    *LanguageConfig
-	edges  []types.EdgeRecord
-	seen   map[string]bool // "src|dst|kind" dedup
+	source      []byte
+	cfg         *LanguageConfig
+	edges       []types.EdgeRecord
+	seen        map[string]bool // "src|dst|kind" dedup
+	importOwner string          // fallback owner for file-level imports
 }
 
 func (c *edgeContext) addEdge(src, dst, kind string) {
@@ -34,12 +35,29 @@ func (c *edgeContext) addEdge(src, dst, kind string) {
 }
 
 // extractEdges extracts dependency edges (imports, calls, inherits) from the AST.
-func (p *Parser) extractEdges(root *sitter.Node, source []byte, _ []types.SymbolRecord, cfg *LanguageConfig) []types.EdgeRecord {
-	ctx := &edgeContext{
-		source: source,
-		cfg:    cfg,
-		seen:   make(map[string]bool),
+func (p *Parser) extractEdges(root *sitter.Node, source []byte, symbols []types.SymbolRecord, cfg *LanguageConfig) []types.EdgeRecord {
+	// importOwner is the fallback source for file-level import edges that
+	// appear before any class/function declaration. Without this, file-level
+	// imports get SrcSymbolName="" and are dropped during storage because no
+	// symbol ID can be resolved for "".
+	//
+	// Only imports use this fallback. Top-level call edges keep owner=""
+	// and are correctly dropped (the graph has no node for module-level code).
+	importOwner := ""
+	for _, s := range symbols {
+		if s.Name != "" && s.Name != "_" {
+			importOwner = s.Name
+			break
+		}
 	}
+
+	ctx := &edgeContext{
+		source:      source,
+		cfg:         cfg,
+		seen:        make(map[string]bool),
+		importOwner: importOwner,
+	}
+
 	p.walkForEdges(root, "", ctx)
 	return ctx.edges
 }
@@ -136,6 +154,11 @@ func (p *Parser) walkForEdges(node *sitter.Node, owner string, ctx *edgeContext)
 // ── Import edge extraction ──
 
 func (p *Parser) extractImportEdgesFrom(node *sitter.Node, owner string, ctx *edgeContext) {
+	// For file-level imports (owner=""), use the importOwner fallback so
+	// the edge gets a valid SrcSymbolName and isn't dropped by InsertEdges.
+	if owner == "" && ctx.importOwner != "" {
+		owner = ctx.importOwner
+	}
 	switch ctx.cfg.Name {
 	case "typescript":
 		p.tsImportEdges(node, owner, ctx)

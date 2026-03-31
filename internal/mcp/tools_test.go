@@ -1207,5 +1207,154 @@ func TestDiffHandler_LargeLimitClamped(t *testing.T) {
 	}
 }
 
+// ── Pending edge fallback tests ──
+
+// setupHandlersWithPendingEdge creates store+handlers with a pending edge:
+// NewServer --imports--> "ExternalLib" (unresolved, lives in pending_edges).
+func setupHandlersWithPendingEdge(t *testing.T) (*storage.Store, handlerFunc, handlerFunc) {
+	t.Helper()
+	store, db := setupStoreWithData(t)
+	ctx := context.Background()
+
+	syms, err := store.GetSymbolByName(ctx, "NewServer")
+	if err != nil || len(syms) == 0 {
+		t.Fatalf("GetSymbolByName NewServer: %v", err)
+	}
+	srcID := syms[0].ID
+	srcFileID := syms[0].FileID
+
+	// Insert edge where dst is unresolvable → goes to pending_edges.
+	err = db.WithWriteTx(func(tx *sql.Tx) error {
+		return store.InsertEdges(ctx, tx, srcFileID, []types.EdgeRecord{
+			{SrcSymbolName: "NewServer", DstSymbolName: "ExternalLib", Kind: "imports"},
+		}, map[string]int64{
+			"NewServer": srcID,
+		})
+	})
+	if err != nil {
+		t.Fatalf("InsertEdges: %v", err)
+	}
+
+	return store, symbolsHandler(store), dependenciesHandler(store)
+}
+
+func TestSymbolsHandler_PendingEdgeFallback(t *testing.T) {
+	t.Parallel()
+	_, handler, _ := setupHandlersWithPendingEdge(t)
+
+	result, err := handler(context.Background(), makeToolRequest(map[string]any{
+		"name": "ExternalLib",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected tool error: %s", result.Content[0].(mcpsdk.TextContent).Text)
+	}
+	text := result.Content[0].(mcpsdk.TextContent).Text
+	if !strings.Contains(text, "referenced_by") {
+		t.Errorf("expected referenced_by in response, got: %s", text)
+	}
+	if !strings.Contains(text, "NewServer") {
+		t.Errorf("expected NewServer as referencing symbol, got: %s", text)
+	}
+}
+
+func TestDependenciesHandler_PendingEdgeFallback(t *testing.T) {
+	t.Parallel()
+	_, _, handler := setupHandlersWithPendingEdge(t)
+
+	result, err := handler(context.Background(), makeToolRequest(map[string]any{
+		"symbol":    "ExternalLib",
+		"direction": "callers",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected tool error: %s", result.Content[0].(mcpsdk.TextContent).Text)
+	}
+	text := result.Content[0].(mcpsdk.TextContent).Text
+	if !strings.Contains(text, "NewServer") {
+		t.Errorf("expected NewServer in callers of ExternalLib, got: %s", text)
+	}
+}
+
+func TestDependenciesHandler_PendingEdgeCalleesReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	_, _, handler := setupHandlersWithPendingEdge(t)
+
+	// direction=callees for an unknown symbol should return empty
+	// (pending edges only have caller info, not callee info).
+	result, err := handler(context.Background(), makeToolRequest(map[string]any{
+		"symbol":    "ExternalLib",
+		"direction": "callees",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected tool error: %s", result.Content[0].(mcpsdk.TextContent).Text)
+	}
+	text := result.Content[0].(mcpsdk.TextContent).Text
+	if text != "[]" {
+		t.Errorf("expected [] for callees of unknown symbol, got: %s", text)
+	}
+}
+
+// TestDependenciesHandler_FoundSymbolWithPendingEdges tests the case where a
+// symbol exists in the symbols table but has no resolved edges — only pending
+// edges. The handler should still return the pending callers.
+func TestDependenciesHandler_FoundSymbolWithPendingEdges(t *testing.T) {
+	t.Parallel()
+
+	store, db := setupStoreWithData(t)
+	ctx := context.Background()
+
+	// NewServer exists in the symbols table (from setupStoreWithData).
+	// Insert a pending edge where NewServer is the SOURCE and "ExternalLib"
+	// is an unresolved destination. Then query for callers of "NewServer" —
+	// NewServer has no incoming resolved edges, but it IS a known symbol.
+	// Meanwhile, also insert a pending edge where some OTHER symbol imports
+	// "NewServer" as an unresolved name — simulating incremental indexing
+	// where the caller file was indexed before NewServer's file.
+	syms, err := store.GetSymbolByName(ctx, "handleRequest")
+	if err != nil || len(syms) == 0 {
+		t.Fatalf("GetSymbolByName handleRequest: %v", err)
+	}
+	handleID := syms[0].ID
+
+	// handleRequest --imports--> NewServer (pending, because we insert with
+	// "NewServer" as dst_symbol_name but don't resolve it to an edge).
+	err = db.WithWriteTx(func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			"INSERT INTO pending_edges (src_symbol_id, dst_symbol_name, kind) VALUES (?, ?, ?)",
+			handleID, "NewServer", "imports")
+		return err
+	})
+	if err != nil {
+		t.Fatalf("insert pending edge: %v", err)
+	}
+
+	handler := dependenciesHandler(store)
+
+	// NewServer IS in the symbols table, Neighbors returns empty (no resolved
+	// incoming edges), but pending_edges has handleRequest -> NewServer.
+	result, err := handler(ctx, makeToolRequest(map[string]any{
+		"symbol":    "NewServer",
+		"direction": "callers",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected tool error: %s", result.Content[0].(mcpsdk.TextContent).Text)
+	}
+	text := result.Content[0].(mcpsdk.TextContent).Text
+	if !strings.Contains(text, "handleRequest") {
+		t.Errorf("expected handleRequest in callers of NewServer (via pending edges), got: %s", text)
+	}
+}
+
 // Ensure server import is used.
 var _ server.ResourceHandlerFunc

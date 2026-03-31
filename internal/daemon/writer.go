@@ -28,7 +28,8 @@ type WriterManager struct {
 	logger        *slog.Logger
 	closed        atomic.Bool
 	started       atomic.Bool         // true after Run() is called
-	mu            sync.Mutex          // protects close sequence
+	draining      atomic.Bool         // true once drain() begins
+	mu            sync.Mutex          // protects close sequence and draining flag
 	vectorDeleter types.VectorDeleter // nil if embeddings disabled
 }
 
@@ -67,6 +68,10 @@ func (wm *WriterManager) Run(ctx context.Context) {
 
 // drain waits for all producers to stop, then processes remaining jobs.
 func (wm *WriterManager) drain() {
+	wm.mu.Lock()
+	wm.draining.Store(true)
+	wm.mu.Unlock()
+
 	wm.logger.Info("writer draining: waiting for producers")
 	wm.producers.Wait()
 
@@ -125,7 +130,17 @@ func (wm *WriterManager) Submit(job types.WriteJob) error {
 }
 
 // AddProducer registers a producer goroutine for shutdown ordering.
-func (wm *WriterManager) AddProducer() { wm.producers.Add(1) }
+// Returns false if the writer is draining or closed; callers must not
+// call RemoveProducer when AddProducer returns false.
+func (wm *WriterManager) AddProducer() bool {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	if wm.draining.Load() || wm.closed.Load() {
+		return false
+	}
+	wm.producers.Add(1)
+	return true
+}
 
 // RemoveProducer unregisters a producer goroutine.
 func (wm *WriterManager) RemoveProducer() { wm.producers.Done() }
