@@ -38,7 +38,7 @@ type NewServerInput struct {
 func NewServer(input NewServerInput) *server.MCPServer {
 	s := server.NewMCPServer(
 		"shaktiman",
-		"0.8.0",
+		"0.9.0",
 		server.WithToolCapabilities(false),
 		server.WithResourceCapabilities(false, false),
 		server.WithInstructions(serverInstructions),

@@ -46,6 +46,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.0] — 2026-03-31
+
+### Added
+
+- **`BatchMetadataStore` interface** (`internal/types/interfaces.go`) — five
+  batch query methods (`BatchGetSymbolIDsForChunks`, `BatchNeighbors`,
+  `BatchGetChunkIDsForSymbols`, `BatchHydrateChunks`, `BatchGetFileHashes`)
+  that eliminate N+1 query patterns on the search and indexing hot paths.
+  All callers detect batch support via type assertion, falling back to
+  legacy per-item queries for non-batch stores.
+- **`HydratedChunk` entity** (`internal/types/entities.go`) — chunk data
+  joined with file path and `is_test` in a single query result, used by
+  `BatchHydrateChunks`.
+- **`EmbedCache` LRU rewrite** (`internal/vector/embed_cache.go`) — replaced
+  O(n) slice-scan eviction with `container/list`-backed doubly-linked list
+  for O(1) move-to-back and eviction.
+- **`SessionStore` LRU rewrite** (`internal/core/session.go`) — replaced
+  O(n) slice-scan with `container/list` + atomic generation counter for O(1)
+  LRU operations and O(1) decay computation.
+- **File content carry-through** (`internal/daemon/scanner.go`,
+  `internal/daemon/enrichment.go`) — `ScannedFile.Content` carries file
+  bytes from scan to `enrichFile`, eliminating a second `os.ReadFile` per
+  changed file on the indexing hot path.
+- **`splitLargeChunks` incremental token counting** (`internal/parser/chunker.go`)
+  — per-line incremental counting replaces O(n²) re-tokenization of the
+  growing buffer; chunk boundaries emitted before the line that would
+  exceed the limit.
+
+### Changed
+
+- MCP server version bumped to `0.9.0`.
+- **Batch structural scores** (`internal/core/ranker.go`) —
+  `computeStructuralScores` uses 3 batch SQL queries instead of ~3N
+  individual queries (one `BatchGetSymbolIDsForChunks` JOIN, one
+  `BatchNeighbors`, one `BatchGetChunkIDsForSymbols` IN-clause).
+- **Batch FTS hydration** (`internal/core/retrieval.go`) —
+  `hydrateFTSResults` uses 1 `BatchHydrateChunks` query instead of 3N
+  per-result queries (`GetChunkByID` + `GetFilePathByID` + `GetFileIsTestByID`).
+- **Batch merge hydration** (`internal/core/engine.go`) — `mergeResults`
+  collects all unhydrated semantic-only chunk IDs, then batch-hydrates in
+  1 query instead of 3N per-result queries.
+- **Batch `filterChanged`** (`internal/daemon/enrichment.go`) —
+  `BatchGetFileHashes` replaces N `GetFileByPath` calls; reduces
+  ~12K queries to ~26 for Kubernetes-scale repos.
+- **Heap-based top-K vector search** (`internal/vector/store.go`) —
+  `BruteForceStore.Search` uses a min-heap of size K, allocating O(K)
+  instead of O(N). 2.1× faster at 100K vectors (81ms → 38ms); allocation
+  reduced from 1.5MB to 1.3KB per search at N=100K.
+- **Fast vector serialization** (`internal/vector/store.go`) —
+  `SaveToDisk` uses `math.Float32bits` direct byte encoding instead of
+  `binary.Write` reflection. 18% faster (207ms → 170ms at 50K vectors);
+  50% allocation reduction (310MB → 156MB).
+- **SQLite cache and mmap tuning** — `cache_size=32MB`, `mmap_size=256MB`;
+  up from default 2MB cache to reduce page thrash at scale.
+- **Prepared statements for chunk/symbol insertion** — eliminates per-row
+  SQL compilation in `processEnrichmentJob`; ~49 VDBE compilations saved
+  per file for 50-chunk files.
+- **`hex.EncodeToString` for SHA-256 hashes** (`internal/daemon/enrichment.go`,
+  `internal/daemon/scanner.go`) — replaces `fmt.Sprintf("%x", ...)` to
+  reduce allocations per hash.
+- **1MB `bufio.Writer` for `SaveToDisk`** — up from default 4KB buffer to
+  match typical write syscall granularity for large embedding files.
+
+---
+
 ## [Unreleased]
 
 ### Added
