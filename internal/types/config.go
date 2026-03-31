@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/BurntSushi/toml"
 )
@@ -41,6 +42,9 @@ type Config struct {
 
 	// Vector backend configuration
 	VectorBackend string // "brute_force" (default) or "hnsw"
+
+	// Test file detection patterns (glob patterns and directory prefixes)
+	TestPatterns []string // e.g. ["*_test.go", "testdata/", "*.test.ts"]
 }
 
 // DefaultConfig returns a Config with sane defaults for the given project root.
@@ -79,6 +83,7 @@ type tomlConfig struct {
 	Search  tomlSearch  `toml:"search"`
 	Context tomlContext `toml:"context"`
 	Vector  tomlVector  `toml:"vector"`
+	Test    tomlTest    `toml:"test"`
 }
 
 type tomlVector struct {
@@ -94,6 +99,10 @@ type tomlSearch struct {
 type tomlContext struct {
 	Enabled      *bool `toml:"enabled"`
 	BudgetTokens *int  `toml:"budget_tokens"`
+}
+
+type tomlTest struct {
+	Patterns []string `toml:"patterns"`
 }
 
 // LoadConfigFromFile reads shaktiman.toml and merges values into cfg.
@@ -150,6 +159,9 @@ func LoadConfigFromFile(cfg Config) (Config, error) {
 		}
 		cfg.VectorBackend = *v
 	}
+	if len(tc.Test.Patterns) > 0 {
+		cfg.TestPatterns = tc.Test.Patterns
+	}
 
 	return cfg, nil
 }
@@ -168,6 +180,10 @@ const sampleConfig = `# Shaktiman configuration
 
 [vector]
 # backend = "brute_force"  # "brute_force" or "hnsw"
+
+[test]
+# patterns = ["*_test.go", "testdata/"]  # Glob patterns identifying test files
+#                                         # Auto-populated after first index
 `
 
 // WriteSampleConfig creates a sample shaktiman.toml with commented-out defaults.
@@ -182,4 +198,35 @@ func WriteSampleConfig(projectRoot string) {
 	if err := os.WriteFile(path, []byte(sampleConfig), 0o644); err != nil {
 		slog.Debug("write sample config", "err", err)
 	}
+}
+
+// langTestPatterns maps each supported language to its default test file patterns.
+// Patterns ending with "/" are directory prefixes; others are basename globs.
+var langTestPatterns = map[string][]string{
+	"go":         {"*_test.go", "testdata/"},
+	"python":     {"test_*.py", "*_test.py"},
+	"typescript": {"*.test.ts", "*.spec.ts", "*.test.tsx", "*.spec.tsx", "__tests__/"},
+	"javascript": {"*.test.js", "*.spec.js", "*.test.jsx", "*.spec.jsx", "*.test.mjs", "*.spec.mjs", "__tests__/"},
+	"java":       {"*Test.java", "*Tests.java", "src/test/"},
+	"groovy":     {"*Test.groovy", "*Spec.groovy"},
+	"rust":       {"tests/"},
+	"bash":       {"test_*.sh", "*_test.sh"},
+}
+
+// DefaultTestPatterns returns a deduplicated, sorted flat list of test file
+// patterns for the given languages. Used to auto-populate [test].patterns in
+// shaktiman.toml after indexing.
+func DefaultTestPatterns(languages []string) []string {
+	seen := make(map[string]bool)
+	var patterns []string
+	for _, lang := range languages {
+		for _, p := range langTestPatterns[lang] {
+			if !seen[p] {
+				seen[p] = true
+				patterns = append(patterns, p)
+			}
+		}
+	}
+	sort.Strings(patterns)
+	return patterns
 }

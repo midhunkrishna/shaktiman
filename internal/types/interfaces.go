@@ -41,6 +41,8 @@ type MetadataStore interface {
 
 	// GetFilePathByID returns the project-relative path for a file ID.
 	GetFilePathByID(ctx context.Context, fileID int64) (string, error)
+	// GetFileIsTestByID returns whether a file is classified as a test file.
+	GetFileIsTestByID(ctx context.Context, fileID int64) (bool, error)
 	// GetIndexStats returns aggregate statistics about the index.
 	GetIndexStats(ctx context.Context) (*IndexStats, error)
 

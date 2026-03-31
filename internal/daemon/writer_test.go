@@ -24,7 +24,7 @@ func TestWriterManager_Started_FalseBeforeRun(t *testing.T) {
 	defer db.Close()
 
 	store := storage.NewStore(db)
-	wm := NewWriterManager(store, 10)
+	wm := NewWriterManager(store, 10, nil)
 
 	if wm.Started() {
 		t.Error("Started() should be false before Run is called")
@@ -44,7 +44,7 @@ func TestWriterManager_Started_TrueAfterRun(t *testing.T) {
 	defer db.Close()
 
 	store := storage.NewStore(db)
-	wm := NewWriterManager(store, 10)
+	wm := NewWriterManager(store, 10, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
@@ -112,7 +112,7 @@ func TestSubmit_BlockedDuringShutdown(t *testing.T) {
 
 	store := storage.NewStore(db)
 	// Channel size 1 — fills quickly
-	wm := NewWriterManager(store, 1)
+	wm := NewWriterManager(store, 1, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
@@ -196,7 +196,7 @@ func TestWriterChannelFull_LogsAtDebug(t *testing.T) {
 	store := storage.NewStore(db)
 
 	// Channel size 1 — will fill after one unprocessed job.
-	wm := NewWriterManager(store, 1)
+	wm := NewWriterManager(store, 1, nil)
 
 	// Capture log output at Debug level.
 	var buf bytes.Buffer

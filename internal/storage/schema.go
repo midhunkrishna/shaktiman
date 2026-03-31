@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const schemaVersion = 3
+const schemaVersion = 4
 
 // schemaV1 contains all DDL statements for schema version 1.
 // Tables: files, chunks, symbols, edges, pending_edges, diff_log, diff_symbols,
@@ -236,6 +236,11 @@ var migrationsV2toV3 = []string{
 	`ALTER TABLE pending_edges ADD COLUMN src_language TEXT DEFAULT ''`,
 }
 
+// migrationsV3toV4 adds test file classification to the files table.
+var migrationsV3toV4 = []string{
+	`ALTER TABLE files ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0`,
+}
+
 // currentSchemaVersion returns the highest version recorded, or 0 if the
 // schema_version table does not yet exist.
 func currentSchemaVersion(tx *sql.Tx) (int, error) {
@@ -291,6 +296,17 @@ func Migrate(db *DB) error {
 						continue
 					}
 					return fmt.Errorf("migrate v2→v3: %w", err)
+				}
+			}
+		}
+
+		if cur < 4 {
+			for _, stmt := range migrationsV3toV4 {
+				if _, err := tx.Exec(stmt); err != nil {
+					if isDuplicateColumnError(err) {
+						continue
+					}
+					return fmt.Errorf("migrate v3→v4: %w", err)
 				}
 			}
 		}

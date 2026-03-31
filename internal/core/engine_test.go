@@ -525,7 +525,7 @@ func TestMergeResults_Deduplication(t *testing.T) {
 		{ChunkID: chunkIDs[1], Score: 0.7}, // new from semantic
 	}
 
-	merged := mergeResults(ctx, store, kwResults, semResults)
+	merged := mergeResults(ctx, store, kwResults, semResults, TestFilter{})
 
 	if len(merged) != 2 {
 		t.Fatalf("expected 2 merged results (deduped), got %d", len(merged))

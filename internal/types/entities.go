@@ -15,6 +15,7 @@ type FileRecord struct {
 	IndexedAt       string // ISO8601
 	EmbeddingStatus string // pending | partial | complete
 	ParseQuality    string // full | partial | error | unparseable
+	IsTest          bool   // true if file matches test file patterns
 }
 
 // ChunkRecord represents a semantic code chunk within a file.

@@ -34,8 +34,8 @@ func (s *Store) UpsertFile(ctx context.Context, file *types.FileRecord) (int64, 
 	var id int64
 	err := s.db.WithWriteTx(func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `
-			INSERT INTO files (path, content_hash, mtime, size, language, indexed_at, embedding_status, parse_quality)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO files (path, content_hash, mtime, size, language, indexed_at, embedding_status, parse_quality, is_test)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(path) DO UPDATE SET
 				content_hash = excluded.content_hash,
 				mtime = excluded.mtime,
@@ -43,11 +43,13 @@ func (s *Store) UpsertFile(ctx context.Context, file *types.FileRecord) (int64, 
 				language = excluded.language,
 				indexed_at = excluded.indexed_at,
 				embedding_status = excluded.embedding_status,
-				parse_quality = excluded.parse_quality`,
+				parse_quality = excluded.parse_quality,
+				is_test = excluded.is_test`,
 			file.Path, file.ContentHash, file.Mtime, file.Size,
 			file.Language, now,
 			coalesce(file.EmbeddingStatus, "pending"),
 			coalesce(file.ParseQuality, "full"),
+			boolToInt(file.IsTest),
 		)
 		if err != nil {
 			return fmt.Errorf("upsert file %s: %w", file.Path, err)
@@ -73,13 +75,14 @@ func (s *Store) UpsertFile(ctx context.Context, file *types.FileRecord) (int64, 
 func (s *Store) GetFileByPath(ctx context.Context, path string) (*types.FileRecord, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, path, content_hash, mtime, size, language, indexed_at,
-		       embedding_status, parse_quality
+		       embedding_status, parse_quality, is_test
 		FROM files WHERE path = ?`, path)
 
 	var f types.FileRecord
 	var indexedAt, language sql.NullString
+	var isTest int
 	err := row.Scan(&f.ID, &f.Path, &f.ContentHash, &f.Mtime, &f.Size,
-		&language, &indexedAt, &f.EmbeddingStatus, &f.ParseQuality)
+		&language, &indexedAt, &f.EmbeddingStatus, &f.ParseQuality, &isTest)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -88,6 +91,7 @@ func (s *Store) GetFileByPath(ctx context.Context, path string) (*types.FileReco
 	}
 	f.Language = language.String
 	f.IndexedAt = indexedAt.String
+	f.IsTest = isTest != 0
 	return &f, nil
 }
 
@@ -95,7 +99,7 @@ func (s *Store) GetFileByPath(ctx context.Context, path string) (*types.FileReco
 func (s *Store) ListFiles(ctx context.Context) ([]types.FileRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, path, content_hash, mtime, size, language, indexed_at,
-		       embedding_status, parse_quality
+		       embedding_status, parse_quality, is_test
 		FROM files ORDER BY path`)
 	if err != nil {
 		return nil, fmt.Errorf("list files: %w", err)
@@ -106,12 +110,14 @@ func (s *Store) ListFiles(ctx context.Context) ([]types.FileRecord, error) {
 	for rows.Next() {
 		var f types.FileRecord
 		var language, indexedAt sql.NullString
+		var isTest int
 		if err := rows.Scan(&f.ID, &f.Path, &f.ContentHash, &f.Mtime, &f.Size,
-			&language, &indexedAt, &f.EmbeddingStatus, &f.ParseQuality); err != nil {
+			&language, &indexedAt, &f.EmbeddingStatus, &f.ParseQuality, &isTest); err != nil {
 			return nil, fmt.Errorf("scan file row: %w", err)
 		}
 		f.Language = language.String
 		f.IndexedAt = indexedAt.String
+		f.IsTest = isTest != 0
 		files = append(files, f)
 	}
 	return files, rows.Err()
@@ -327,6 +333,16 @@ func (s *Store) GetFilePathByID(ctx context.Context, fileID int64) (string, erro
 		return "", fmt.Errorf("get path for file %d: %w", fileID, err)
 	}
 	return path, nil
+}
+
+// GetFileIsTestByID returns the is_test flag for a file ID.
+func (s *Store) GetFileIsTestByID(ctx context.Context, fileID int64) (bool, error) {
+	var isTest int
+	err := s.db.QueryRowContext(ctx, "SELECT is_test FROM files WHERE id = ?", fileID).Scan(&isTest)
+	if err != nil {
+		return false, fmt.Errorf("get is_test for file %d: %w", fileID, err)
+	}
+	return isTest != 0, nil
 }
 
 // ── Stats ──
@@ -694,4 +710,11 @@ func coalesce(val, fallback string) string {
 		return fallback
 	}
 	return val
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

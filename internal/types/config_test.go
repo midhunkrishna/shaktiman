@@ -241,6 +241,115 @@ func TestWriteSampleConfig_MkdirAllFails(t *testing.T) {
 	WriteSampleConfig("/invalid\x00path")
 }
 
+func TestLoadConfigFromFile_TestPatterns(t *testing.T) {
+	dir := t.TempDir()
+	cfgDir := filepath.Join(dir, ".shaktiman")
+	os.MkdirAll(cfgDir, 0o755)
+
+	toml := `[test]
+patterns = ["*_test.go", "testdata/", "e2e/"]
+`
+	os.WriteFile(filepath.Join(cfgDir, "shaktiman.toml"), []byte(toml), 0o644)
+
+	cfg := DefaultConfig(dir)
+	loaded, err := LoadConfigFromFile(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(loaded.TestPatterns) != 3 {
+		t.Fatalf("TestPatterns len = %d, want 3", len(loaded.TestPatterns))
+	}
+	want := []string{"*_test.go", "testdata/", "e2e/"}
+	for i, p := range loaded.TestPatterns {
+		if p != want[i] {
+			t.Errorf("TestPatterns[%d] = %q, want %q", i, p, want[i])
+		}
+	}
+}
+
+func TestLoadConfigFromFile_TestPatternsAbsent(t *testing.T) {
+	dir := t.TempDir()
+	cfgDir := filepath.Join(dir, ".shaktiman")
+	os.MkdirAll(cfgDir, 0o755)
+
+	toml := `[search]
+max_results = 5
+`
+	os.WriteFile(filepath.Join(cfgDir, "shaktiman.toml"), []byte(toml), 0o644)
+
+	cfg := DefaultConfig(dir)
+	loaded, err := LoadConfigFromFile(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if loaded.TestPatterns != nil {
+		t.Errorf("TestPatterns = %v, want nil", loaded.TestPatterns)
+	}
+}
+
+func TestDefaultTestPatterns_GoOnly(t *testing.T) {
+	patterns := DefaultTestPatterns([]string{"go"})
+	want := []string{"*_test.go", "testdata/"}
+	if len(patterns) != len(want) {
+		t.Fatalf("len = %d, want %d: %v", len(patterns), len(want), patterns)
+	}
+	for i, p := range patterns {
+		if p != want[i] {
+			t.Errorf("patterns[%d] = %q, want %q", i, p, want[i])
+		}
+	}
+}
+
+func TestDefaultTestPatterns_MultiLanguage(t *testing.T) {
+	patterns := DefaultTestPatterns([]string{"go", "typescript", "python"})
+	// Should be sorted and deduplicated
+	if len(patterns) == 0 {
+		t.Fatal("expected non-empty patterns")
+	}
+	// Check sorted
+	for i := 1; i < len(patterns); i++ {
+		if patterns[i] < patterns[i-1] {
+			t.Errorf("patterns not sorted: %q before %q", patterns[i-1], patterns[i])
+		}
+	}
+	// Check deduplication: __tests__/ appears in both TS and JS, but we only have TS here
+	seen := make(map[string]bool)
+	for _, p := range patterns {
+		if seen[p] {
+			t.Errorf("duplicate pattern: %q", p)
+		}
+		seen[p] = true
+	}
+}
+
+func TestDefaultTestPatterns_SharedPatternsDeduplicated(t *testing.T) {
+	// typescript and javascript both have __tests__/
+	patterns := DefaultTestPatterns([]string{"typescript", "javascript"})
+	count := 0
+	for _, p := range patterns {
+		if p == "__tests__/" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("__tests__/ appeared %d times, want 1", count)
+	}
+}
+
+func TestDefaultTestPatterns_UnknownLanguage(t *testing.T) {
+	patterns := DefaultTestPatterns([]string{"cobol"})
+	if len(patterns) != 0 {
+		t.Errorf("expected empty patterns for unknown language, got %v", patterns)
+	}
+}
+
+func TestDefaultTestPatterns_Empty(t *testing.T) {
+	patterns := DefaultTestPatterns(nil)
+	if len(patterns) != 0 {
+		t.Errorf("expected empty patterns for nil languages, got %v", patterns)
+	}
+}
+
 func TestWriteSampleConfig_AlreadyExists(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

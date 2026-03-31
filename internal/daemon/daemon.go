@@ -54,7 +54,7 @@ func New(cfg types.Config) (*Daemon, error) {
 
 	store := storage.NewStore(db)
 	engine := core.NewQueryEngine(store, cfg.ProjectRoot)
-	writer := NewWriterManager(store, cfg.WriterChannelSize)
+	writer := NewWriterManager(store, cfg.WriterChannelSize, cfg.TestPatterns)
 
 	// Session-aware ranking
 	sessionStore := core.NewSessionStore(2000)
