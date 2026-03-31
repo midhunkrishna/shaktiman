@@ -171,11 +171,14 @@ var embMagic = [4]byte{'E', 'M', 'B', 'V'}
 
 // SaveToDisk persists all vectors to a binary file using atomic replace.
 // Writes format v2 with CRC32 integrity footer.
-// Snapshots vectors under RLock, then releases before disk I/O.
+// Snapshots vectors under RLock (fast copy), then serializes to disk without
+// holding any lock. Uses math.Float32bits encoding (no reflection overhead).
 func (s *BruteForceStore) SaveToDisk(path string) error {
 	start := time.Now()
 
-	// Snapshot under lock — release before disk I/O to avoid blocking UpsertBatch
+	// Snapshot under lock — release before disk I/O to avoid blocking writers.
+	// Go's RWMutex is writer-preferring: a waiting writer blocks new readers too,
+	// so holding RLock during disk writes would stall both Upsert and Search.
 	s.mu.RLock()
 	snapshot := make(map[int64][]float32, len(s.vectors))
 	dim := s.dim
@@ -197,14 +200,14 @@ func (s *BruteForceStore) SaveToDisk(path string) error {
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName) // clean up on failure
 
-	bw := bufio.NewWriter(tmp)
+	bw := bufio.NewWriterSize(tmp, 1<<20) // 1MB buffer
 	h := crc32.NewIEEE()
 	w := io.MultiWriter(bw, h) // write to both buffer and hasher
 
 	// Header (direct byte encoding — avoids binary.Write reflection overhead)
 	var hdr [16]byte
 	copy(hdr[:4], embMagic[:])
-	binary.LittleEndian.PutUint32(hdr[4:8], 2)          // version
+	binary.LittleEndian.PutUint32(hdr[4:8], 2)
 	binary.LittleEndian.PutUint32(hdr[8:12], uint32(dim))
 	binary.LittleEndian.PutUint32(hdr[12:16], uint32(len(snapshot)))
 	if _, err := w.Write(hdr[:]); err != nil {

@@ -138,11 +138,13 @@ func TestSessionStore_ScoreDecay(t *testing.T) {
 	// Manually insert an entry with lastAccessed in the past
 	key := sessionKey("aged.go", 1)
 	ss.mu.Lock()
-	ss.entries[key] = &sessionEntry{
+	entry := &sessionEntry{
+		key:          key,
 		accessCount:  5,
 		lastAccessed: time.Now().Add(-20 * time.Minute),
 	}
-	ss.order = append(ss.order, key)
+	elem := ss.order.PushBack(entry)
+	ss.entries[key] = elem
 	ss.mu.Unlock()
 
 	// Also record a fresh access
@@ -242,6 +244,97 @@ func TestRecordBatch_ReAccess(t *testing.T) {
 	}
 }
 
+func TestSessionStore_GenerationCounter(t *testing.T) {
+	t.Parallel()
+
+	ss := NewSessionStore(100)
+
+	ss.RecordAccess("target.go", 1)
+	ss.RecordAccess("target.go", 1)
+	ss.RecordAccess("other.go", 1)
+
+	scoreBeforeDecay := ss.Score("target.go", 1)
+
+	// Decay 3 times — "target.go" not in hits
+	for range 3 {
+		ss.DecayAllExcept([]SessionHit{{FilePath: "other.go", StartLine: 1}})
+	}
+
+	scoreAfterDecay := ss.Score("target.go", 1)
+	if scoreAfterDecay >= scoreBeforeDecay {
+		t.Errorf("expected score to decrease after decay: before=%f, after=%f", scoreBeforeDecay, scoreAfterDecay)
+	}
+
+	// "other.go" was in hits — its score should not have decayed from generation
+	otherBefore := ss.Score("other.go", 1)
+
+	// One more decay with "other.go" in hits
+	ss.DecayAllExcept([]SessionHit{{FilePath: "other.go", StartLine: 1}})
+
+	otherAfter := ss.Score("other.go", 1)
+	// other.go's generation is kept current, so decay component should be ~1.0
+	// Score might change slightly due to time-based recency, but should be close
+	if otherAfter < otherBefore*0.9 {
+		t.Errorf("other.go score dropped too much despite being in hits: before=%f, after=%f", otherBefore, otherAfter)
+	}
+}
+
+func TestSessionStore_GenerationEquivalence(t *testing.T) {
+	t.Parallel()
+
+	// Verify that generation-based decay produces the same mathematical result
+	// as the old queriesSinceLastHit approach: decay = exp(-0.1 * queriesSince)
+	ss := NewSessionStore(100)
+	ss.RecordAccess("a.go", 1)
+
+	// Decay 5 times
+	for range 5 {
+		ss.DecayAllExcept(nil)
+	}
+
+	score := ss.Score("a.go", 1)
+	// Expected decay factor: exp(-0.1 * 5) = exp(-0.5) ≈ 0.6065
+	// Score = recency * frequency * decay
+	// recency ≈ 1.0 (just accessed), frequency = log2(2)/4 = 0.25
+	// So score ≈ 1.0 * 0.25 * 0.6065 ≈ 0.15
+	if score <= 0 {
+		t.Errorf("expected positive score, got %f", score)
+	}
+
+	// The key invariant: queriesSince should be 5
+	ss.mu.RLock()
+	elem := ss.entries[sessionKey("a.go", 1)]
+	lastGen := elem.Value.(*sessionEntry).lastGeneration
+	ss.mu.RUnlock()
+	currentGen := ss.generation.Load()
+	queriesSince := currentGen - lastGen
+	if queriesSince != 5 {
+		t.Errorf("expected queriesSince=5, got %d", queriesSince)
+	}
+}
+
+func TestSessionStore_DecayAllExcept_HitReset(t *testing.T) {
+	t.Parallel()
+
+	ss := NewSessionStore(100)
+	ss.RecordAccess("a.go", 1)
+
+	// Decay 3 times without "a.go"
+	for range 3 {
+		ss.DecayAllExcept(nil)
+	}
+
+	scoreDecayed := ss.Score("a.go", 1)
+
+	// Now record "a.go" as a hit via RecordAccess (updates lastGeneration)
+	ss.RecordAccess("a.go", 1)
+
+	scoreRefreshed := ss.Score("a.go", 1)
+	if scoreRefreshed <= scoreDecayed {
+		t.Errorf("expected refreshed score > decayed score: refreshed=%f, decayed=%f", scoreRefreshed, scoreDecayed)
+	}
+}
+
 // ── Benchmarks ──
 
 func BenchmarkSessionStore_Score(b *testing.B) {
@@ -276,5 +369,19 @@ func BenchmarkSessionStore_RecordBatch(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		ss.RecordBatch(hits)
+	}
+}
+
+func BenchmarkSessionStore_DecayAllExcept(b *testing.B) {
+	ss := NewSessionStore(2000)
+	// Pre-populate with 1000 entries
+	for i := range 1000 {
+		ss.RecordAccess(fmt.Sprintf("file%d.go", i), i*10)
+	}
+	hits := []SessionHit{{FilePath: "file0.go", StartLine: 0}}
+
+	b.ResetTimer()
+	for range b.N {
+		ss.DecayAllExcept(hits)
 	}
 }

@@ -190,10 +190,15 @@ func (ep *EnrichmentPipeline) IndexAll(ctx context.Context, input IndexAllInput)
 }
 
 // enrichFile parses a single file and submits the result to the writer.
+// Uses file.Content if available (carried from scan), falls back to reading from disk.
 func (ep *EnrichmentPipeline) enrichFile(ctx context.Context, p *parser.Parser, file ScannedFile) error {
-	content, err := readFileContent(file.AbsPath)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", file.Path, err)
+	content := file.Content
+	if content == nil {
+		var err error
+		content, err = readFileContent(file.AbsPath)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", file.Path, err)
+		}
 	}
 
 	result, err := p.Parse(ctx, parser.ParseInput{

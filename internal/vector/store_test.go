@@ -643,3 +643,101 @@ func TestBruteForceStore_Search_TopKNegative(t *testing.T) {
 		t.Fatalf("expected nil, got %d results", len(results))
 	}
 }
+
+func TestBruteForceStore_SaveToDisk_ConcurrentSearch(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := NewBruteForceStore(3)
+
+	// Populate with enough vectors to make the save non-trivial
+	rng := rand.New(rand.NewSource(42))
+	for i := 0; i < 1000; i++ {
+		vec := []float32{rng.Float32(), rng.Float32(), rng.Float32()}
+		if err := s.Upsert(ctx, int64(i+1), vec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "concurrent.bin")
+	query := []float32{1, 0, 0}
+
+	// Run SaveToDisk and Search concurrently — must not race or deadlock
+	done := make(chan error, 2)
+
+	go func() {
+		done <- s.SaveToDisk(path)
+	}()
+
+	go func() {
+		var lastErr error
+		for range 100 {
+			_, err := s.Search(ctx, query, 5)
+			if err != nil {
+				lastErr = err
+			}
+		}
+		done <- lastErr
+	}()
+
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatalf("concurrent operation failed: %v", err)
+		}
+	}
+
+	// Verify the saved file is valid by loading it back
+	s2 := NewBruteForceStore(3)
+	if err := s2.LoadFromDisk(path); err != nil {
+		t.Fatalf("LoadFromDisk after concurrent save: %v", err)
+	}
+	count, _ := s2.Count(ctx)
+	if count != 1000 {
+		t.Errorf("expected 1000 vectors after load, got %d", count)
+	}
+}
+
+func TestBruteForceStore_SaveToDisk_ConcurrentUpsert(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := NewBruteForceStore(3)
+
+	for i := 0; i < 500; i++ {
+		s.Upsert(ctx, int64(i+1), []float32{float32(i), 0, 0})
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "upsert_concurrent.bin")
+
+	done := make(chan error, 2)
+
+	go func() {
+		done <- s.SaveToDisk(path)
+	}()
+
+	go func() {
+		var lastErr error
+		for i := 500; i < 1000; i++ {
+			if err := s.Upsert(ctx, int64(i+1), []float32{float32(i), 1, 1}); err != nil {
+				lastErr = err
+			}
+		}
+		done <- lastErr
+	}()
+
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatalf("concurrent operation failed: %v", err)
+		}
+	}
+
+	// File should be loadable regardless of race outcome
+	s2 := NewBruteForceStore(3)
+	if err := s2.LoadFromDisk(path); err != nil {
+		t.Fatalf("LoadFromDisk after concurrent upsert: %v", err)
+	}
+	count, _ := s2.Count(ctx)
+	if count < 500 {
+		t.Errorf("expected >= 500 vectors, got %d", count)
+	}
+}

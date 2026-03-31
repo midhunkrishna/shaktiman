@@ -64,3 +64,29 @@ func BenchmarkSaveToDisk(b *testing.B) {
 		store.SaveToDisk(filepath.Join(dir, "bench.bin"))
 	}
 }
+
+func BenchmarkLoadFromDisk(b *testing.B) {
+	rng := rand.New(rand.NewSource(42))
+	store := NewBruteForceStore(768)
+	for i := 0; i < 50000; i++ {
+		vec := make([]float32, 768)
+		for j := range vec {
+			vec[j] = rng.Float32()
+		}
+		store.Upsert(context.Background(), int64(i+1), vec)
+	}
+	dir := b.TempDir()
+	path := filepath.Join(dir, "bench.bin")
+	if err := store.SaveToDisk(path); err != nil {
+		b.Fatalf("SaveToDisk: %v", err)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		s := NewBruteForceStore(768)
+		if err := s.LoadFromDisk(path); err != nil {
+			b.Fatalf("LoadFromDisk: %v", err)
+		}
+	}
+}
