@@ -380,7 +380,7 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 	if err := store.DeleteEdgesByFile(ctx, tx, fileID); err != nil {
 		return nil, fmt.Errorf("delete old edges for %s: %w", job.FilePath, err)
 	}
-	if err := store.InsertEdges(ctx, tx, fileID, job.Edges, symbolIDs); err != nil {
+	if err := store.InsertEdges(ctx, tx, fileID, job.Edges, symbolIDs, job.File.Language); err != nil {
 		return nil, fmt.Errorf("insert edges for %s: %w", job.FilePath, err)
 	}
 

@@ -381,7 +381,7 @@ func TestComputeStructuralScores_WithGraphEdges(t *testing.T) {
 		}
 		return store.InsertEdges(ctx, tx, fileID1, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
-		}, symMap)
+		}, symMap, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges: %v", err)

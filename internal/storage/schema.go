@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 // schemaV1 contains all DDL statements for schema version 1.
 // Tables: files, chunks, symbols, edges, pending_edges, diff_log, diff_symbols,
@@ -229,6 +229,13 @@ var migrationsV1toV2 = []string{
 	`CREATE INDEX IF NOT EXISTS idx_chunks_embedded ON chunks(embedded, id)`,
 }
 
+// migrationsV2toV3 adds qualified name and source language to pending_edges
+// for disambiguation of short-name collisions and cross-language misresolution.
+var migrationsV2toV3 = []string{
+	`ALTER TABLE pending_edges ADD COLUMN dst_qualified_name TEXT DEFAULT ''`,
+	`ALTER TABLE pending_edges ADD COLUMN src_language TEXT DEFAULT ''`,
+}
+
 // currentSchemaVersion returns the highest version recorded, or 0 if the
 // schema_version table does not yet exist.
 func currentSchemaVersion(tx *sql.Tx) (int, error) {
@@ -273,6 +280,17 @@ func Migrate(db *DB) error {
 						continue
 					}
 					return fmt.Errorf("migrate v1→v2: %w", err)
+				}
+			}
+		}
+
+		if cur < 3 {
+			for _, stmt := range migrationsV2toV3 {
+				if _, err := tx.Exec(stmt); err != nil {
+					if isDuplicateColumnError(err) {
+						continue
+					}
+					return fmt.Errorf("migrate v2→v3: %w", err)
 				}
 			}
 		}
