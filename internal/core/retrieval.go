@@ -8,9 +8,25 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
+// TestFilter controls test file filtering during retrieval.
+type TestFilter struct {
+	ExcludeTests bool // drop test files from results
+	TestOnly     bool // keep only test files
+}
+
 // KeywordSearch performs FTS5 search and returns hydrated scored results.
-func KeywordSearch(ctx context.Context, store types.MetadataStore, query string, limit int) ([]types.ScoredResult, error) {
-	ftsResults, err := store.KeywordSearch(ctx, query, limit)
+// When filter excludes or selects test files, FTS limit is doubled to
+// compensate for filtered-out results.
+func KeywordSearch(ctx context.Context, store types.MetadataStore, query string, limit int, filter TestFilter) ([]types.ScoredResult, error) {
+	ftsLimit := limit
+	if filter.ExcludeTests || filter.TestOnly {
+		ftsLimit = limit * 2
+		if ftsLimit > 400 {
+			ftsLimit = 400
+		}
+	}
+
+	ftsResults, err := store.KeywordSearch(ctx, query, ftsLimit)
 	if err != nil {
 		return nil, fmt.Errorf("keyword search %q: %w", query, err)
 	}
@@ -19,11 +35,11 @@ func KeywordSearch(ctx context.Context, store types.MetadataStore, query string,
 		return nil, nil
 	}
 
-	return hydrateFTSResults(ctx, store, ftsResults)
+	return hydrateFTSResults(ctx, store, ftsResults, filter)
 }
 
 // hydrateFTSResults enriches FTS results with full chunk data.
-func hydrateFTSResults(ctx context.Context, store types.MetadataStore, ftsResults []types.FTSResult) ([]types.ScoredResult, error) {
+func hydrateFTSResults(ctx context.Context, store types.MetadataStore, ftsResults []types.FTSResult, filter TestFilter) ([]types.ScoredResult, error) {
 	results := make([]types.ScoredResult, 0, len(ftsResults))
 
 	for _, fts := range ftsResults {
@@ -33,6 +49,20 @@ func hydrateFTSResults(ctx context.Context, store types.MetadataStore, ftsResult
 		}
 		if chunk == nil {
 			continue // chunk was deleted between FTS search and hydration
+		}
+
+		// Apply test file filter before full hydration
+		if filter.ExcludeTests || filter.TestOnly {
+			isTest, err := store.GetFileIsTestByID(ctx, chunk.FileID)
+			if err != nil {
+				return nil, fmt.Errorf("check is_test for chunk %d: %w", fts.ChunkID, err)
+			}
+			if filter.ExcludeTests && isTest {
+				continue
+			}
+			if filter.TestOnly && !isTest {
+				continue
+			}
 		}
 
 		// Get the file path

@@ -49,6 +49,83 @@ func TestLanguageForExt(t *testing.T) {
 	}
 }
 
+func TestIsTestFile(t *testing.T) {
+	t.Parallel()
+
+	goPatterns := []string{"*_test.go", "testdata/"}
+	pyPatterns := []string{"test_*.py", "*_test.py"}
+	tsPatterns := []string{"*.test.ts", "*.spec.ts", "*.test.tsx", "*.spec.tsx", "__tests__/"}
+	jsPatterns := []string{"*.test.js", "*.spec.js", "__tests__/"}
+	javaPatterns := []string{"*Test.java", "*Tests.java", "src/test/"}
+	groovyPatterns := []string{"*Test.groovy", "*Spec.groovy"}
+	bashPatterns := []string{"test_*.sh", "*_test.sh"}
+
+	tests := []struct {
+		name     string
+		path     string
+		patterns []string
+		want     bool
+	}{
+		// Go
+		{"go test file", "internal/mcp/server_test.go", goPatterns, true},
+		{"go impl file", "internal/mcp/server.go", goPatterns, false},
+		{"go export_test", "internal/types/export_test.go", goPatterns, true},
+		{"go testdata dir", "testdata/go_project/server.go", goPatterns, true},
+		{"go testdata nested", "internal/testdata/fixture.go", goPatterns, true},
+		{"go testutils not test", "internal/testutils.go", goPatterns, false},
+
+		// Python
+		{"py test_ prefix", "tests/test_auth.py", pyPatterns, true},
+		{"py _test suffix", "auth_test.py", pyPatterns, true},
+		{"py impl file", "auth.py", pyPatterns, false},
+		{"py conftest", "conftest.py", pyPatterns, false},
+
+		// TypeScript
+		{"ts test file", "src/auth.test.ts", tsPatterns, true},
+		{"ts spec file", "src/auth.spec.ts", tsPatterns, true},
+		{"ts tsx test", "src/Button.test.tsx", tsPatterns, true},
+		{"ts impl file", "src/auth.ts", tsPatterns, false},
+		{"ts __tests__ dir", "__tests__/auth.ts", tsPatterns, true},
+		{"ts nested __tests__", "src/__tests__/auth.ts", tsPatterns, true},
+
+		// JavaScript
+		{"js test file", "src/auth.test.js", jsPatterns, true},
+		{"js spec file", "src/auth.spec.js", jsPatterns, true},
+		{"js impl file", "src/auth.js", jsPatterns, false},
+
+		// Java
+		{"java test class", "src/AuthTest.java", javaPatterns, true},
+		{"java tests class", "src/AuthTests.java", javaPatterns, true},
+		{"java src/test dir", "src/test/java/Auth.java", javaPatterns, true},
+		{"java impl", "src/main/java/Auth.java", javaPatterns, false},
+
+		// Groovy
+		{"groovy test", "AuthTest.groovy", groovyPatterns, true},
+		{"groovy spec", "AuthSpec.groovy", groovyPatterns, true},
+		{"groovy impl", "Auth.groovy", groovyPatterns, false},
+
+		// Bash
+		{"bash test_ prefix", "test_deploy.sh", bashPatterns, true},
+		{"bash _test suffix", "deploy_test.sh", bashPatterns, true},
+		{"bash impl", "deploy.sh", bashPatterns, false},
+
+		// Edge cases
+		{"empty patterns", "server_test.go", nil, false},
+		{"empty patterns slice", "server_test.go", []string{}, false},
+		{"custom e2e dir", "e2e/login.test.ts", []string{"e2e/"}, true},
+		{"custom pattern", "fixtures/data.json", []string{"fixtures/"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IsTestFile(tt.path, tt.patterns)
+			if got != tt.want {
+				t.Errorf("IsTestFile(%q, %v) = %v, want %v", tt.path, tt.patterns, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestContentHash(t *testing.T) {
 	t.Parallel()
 
@@ -85,7 +162,7 @@ func TestEnrichFile_Modify(t *testing.T) {
 	store, db := newEnrichTestStore(t)
 	defer db.Close()
 
-	wm := NewWriterManager(store, 100)
+	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
 	_ = wm.AddProducer()
@@ -136,7 +213,7 @@ func TestEnrichFile_Delete(t *testing.T) {
 	store, db := newEnrichTestStore(t)
 	defer db.Close()
 
-	wm := NewWriterManager(store, 100)
+	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
 	_ = wm.AddProducer()
@@ -198,7 +275,7 @@ func TestEnrichFile_SkipUnchanged(t *testing.T) {
 	defer db.Close()
 
 	// Phase 1: index the file
-	wm1 := NewWriterManager(store, 100)
+	wm1 := NewWriterManager(store, 100, nil)
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	go wm1.Run(ctx1)
 	_ = wm1.AddProducer()
@@ -229,7 +306,7 @@ func TestEnrichFile_SkipUnchanged(t *testing.T) {
 	<-wm1.Done()
 
 	// Phase 2: call again with same content
-	wm2 := NewWriterManager(store, 100)
+	wm2 := NewWriterManager(store, 100, nil)
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	go wm2.Run(ctx2)
 	_ = wm2.AddProducer()
@@ -251,7 +328,7 @@ func TestEnrichFile_UnsupportedLanguage(t *testing.T) {
 	store, db := newEnrichTestStore(t)
 	defer db.Close()
 
-	wm := NewWriterManager(store, 100)
+	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go wm.Run(ctx)
@@ -282,7 +359,7 @@ func TestEnrichFile_LargeFile(t *testing.T) {
 	store, db := newEnrichTestStore(t)
 	defer db.Close()
 
-	wm := NewWriterManager(store, 100)
+	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go wm.Run(ctx)
@@ -318,7 +395,7 @@ func TestEnrichFile_UnreadableFile(t *testing.T) {
 	store, db := newEnrichTestStore(t)
 	defer db.Close()
 
-	wm := NewWriterManager(store, 100)
+	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go wm.Run(ctx)

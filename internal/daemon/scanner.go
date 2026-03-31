@@ -68,6 +68,41 @@ func LanguageForExt(ext string) (string, bool) {
 	return lang, ok
 }
 
+// IsTestFile reports whether path matches any of the given test file patterns.
+// Patterns ending with "/" are treated as directory prefixes — the path matches
+// if any component of its directory hierarchy equals the prefix (without the
+// trailing slash). All other patterns are matched against the file's basename
+// using filepath.Match.
+func IsTestFile(path string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	base := filepath.Base(path)
+	for _, p := range patterns {
+		if strings.HasSuffix(p, "/") {
+			dir := strings.TrimSuffix(p, "/")
+			if matchesDirComponent(path, dir) {
+				return true
+			}
+			continue
+		}
+		if matched, _ := filepath.Match(p, base); matched {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesDirComponent reports whether any directory component of path equals dir.
+func matchesDirComponent(path, dir string) bool {
+	// Check if the path starts with dir/ (top-level match)
+	if strings.HasPrefix(path, dir+"/") {
+		return true
+	}
+	// Check interior components: /dir/
+	return strings.Contains(path, "/"+dir+"/")
+}
+
 // ScanRepo walks the project tree and returns all indexable source files.
 func ScanRepo(ctx context.Context, input ScanInput) (*ScanResult, error) {
 	logger := slog.Default().With("component", "scanner")

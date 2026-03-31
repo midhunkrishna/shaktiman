@@ -21,12 +21,12 @@ import (
 func searchToolDef(cfg types.Config) mcpsdk.Tool {
 	return mcpsdk.NewTool("search",
 		mcpsdk.WithDescription(
-			`Search indexed code by keyword or semantic query.
-Use this INSTEAD of Grep for code discovery — returns 10-50x fewer tokens.
-Default mode is "locate": returns compact file pointers (~12 tokens per result vs ~500 for Grep).
-Supports semantic matching (e.g. "error handling" finds try/catch, recover, Result types).
-Use locate to discover relevant files, then Read specific files you need.
-Set mode="full" only when you need inline source code.`),
+			`Ranked code discovery. Narrows a large codebase to the most relevant files for a query.
+Use to decide what to Read — avoids spending context on files that turn out irrelevant.
+Best for conceptual queries: "error handling", "auth flow", "database setup".
+Default "locate" mode returns compact pointers (~12 tokens/result). Use mode="full" for inline source.
+Excludes test files by default. Use scope="test" for test files only.
+For exact strings or regex, use Grep.`),
 		mcpsdk.WithString("query",
 			mcpsdk.Required(),
 			mcpsdk.Description("Search query text"),
@@ -47,10 +47,26 @@ Set mode="full" only when you need inline source code.`),
 		mcpsdk.WithString("path",
 			mcpsdk.Description("Filter results to this file or directory prefix (e.g. 'internal/mcp/' or 'main.go')"),
 		),
+		mcpsdk.WithString("scope",
+			mcpsdk.Description(`Result scope: "impl" (default, excludes test files), "test" (test files only), or "all"`),
+			mcpsdk.Enum("impl", "test", "all"),
+		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
 		mcpsdk.WithDestructiveHintAnnotation(false),
 		mcpsdk.WithIdempotentHintAnnotation(true),
 	)
+}
+
+// scopeToFilter converts a scope string ("impl", "test", "all") to core.TestFilter flags.
+func scopeToFilter(scope string) (excludeTests, testOnly bool) {
+	switch scope {
+	case "test":
+		return false, true
+	case "all":
+		return false, false
+	default: // "impl"
+		return true, false
+	}
 }
 
 // searchHandler returns an MCP tool handler for the search tool.
@@ -83,8 +99,10 @@ func searchHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 
 		explain := req.GetBool("explain", false)
 		pathFilter := req.GetString("path", "")
+		scope := req.GetString("scope", "impl")
+		excludeTests, testOnly := scopeToFilter(scope)
 
-		// Over-fetch when path filter is set to compensate for post-filtering.
+		// Over-fetch when path or scope filter is set to compensate for post-filtering.
 		engineMax := maxResults
 		if pathFilter != "" {
 			engineMax = maxResults * 3
@@ -94,10 +112,12 @@ func searchHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 		}
 
 		results, err := engine.Search(ctx, core.SearchInput{
-			Query:      query,
-			MaxResults: engineMax,
-			Explain:    explain,
-			MinScore:   minScore,
+			Query:        query,
+			MaxResults:   engineMax,
+			Explain:      explain,
+			MinScore:     minScore,
+			ExcludeTests: excludeTests,
+			TestOnly:     testOnly,
 		})
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("search failed: ", err)), nil
@@ -132,17 +152,21 @@ func searchHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 func contextToolDef(cfg types.Config) mcpsdk.Tool {
 	return mcpsdk.NewTool("context",
 		mcpsdk.WithDescription(fmt.Sprintf(
-			`Assemble a cross-file context overview fitted to a token budget.
-Use this INSTEAD of reading multiple files — returns only the relevant chunks, ranked and deduplicated.
-Returns ranked code chunks for multi-file understanding within a strict token budget.
+			`Cross-file understanding within a token budget.
+Instead of reading many files to understand a topic, returns only the relevant chunks — ranked, deduplicated, fitted to your budget.
 Use smaller budgets (1024-2048) for focused queries. Default budget: %d tokens.
-For single-file reading, prefer the Read tool instead.`, cfg.ContextBudgetTokens)),
+Excludes test files by default. Use scope="test" for test files only.
+For reading a specific known file, use Read.`, cfg.ContextBudgetTokens)),
 		mcpsdk.WithString("query",
 			mcpsdk.Required(),
 			mcpsdk.Description("What you need context for"),
 		),
 		mcpsdk.WithNumber("budget_tokens",
 			mcpsdk.Description(fmt.Sprintf("Token budget (256-32768, default %d)", cfg.ContextBudgetTokens)),
+		),
+		mcpsdk.WithString("scope",
+			mcpsdk.Description(`Result scope: "impl" (default, excludes test files), "test" (test files only), or "all"`),
+			mcpsdk.Enum("impl", "test", "all"),
 		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
 		mcpsdk.WithDestructiveHintAnnotation(false),
@@ -167,9 +191,14 @@ func contextHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 			return mcpsdk.NewToolResultError("budget_tokens must be between 256 and 32768"), nil
 		}
 
+		scope := req.GetString("scope", "impl")
+		excludeTests, testOnly := scopeToFilter(scope)
+
 		pkg, err := engine.Context(ctx, core.ContextInput{
 			Query:        query,
 			BudgetTokens: budget,
+			ExcludeTests: excludeTests,
+			TestOnly:     testOnly,
 		})
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("context assembly failed: ", err)), nil
@@ -189,15 +218,20 @@ func contextHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 func symbolsToolDef() mcpsdk.Tool {
 	return mcpsdk.NewTool("symbols",
 		mcpsdk.WithDescription(
-			`Look up symbols (functions, types, classes, methods) by exact name.
-Use this INSTEAD of Grep for finding definitions — returns structured data with file path, line, signature, and visibility.
-More precise than text search: finds the definition, not every mention.`),
+			`Find where a function, type, or class is defined by exact name.
+Returns file path, line number, signature, and visibility — without reading the whole file.
+Excludes test files by default. Use scope="test" for test files only.
+For finding every mention of a string (not just definitions), use Grep.`),
 		mcpsdk.WithString("name",
 			mcpsdk.Required(),
 			mcpsdk.Description("Symbol name to search for"),
 		),
 		mcpsdk.WithString("kind",
 			mcpsdk.Description("Optional kind filter: function, class, method, type, interface, variable"),
+		),
+		mcpsdk.WithString("scope",
+			mcpsdk.Description(`Result scope: "impl" (default, excludes test files), "test" (test files only), or "all"`),
+			mcpsdk.Enum("impl", "test", "all"),
 		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
 		mcpsdk.WithDestructiveHintAnnotation(false),
@@ -218,11 +252,25 @@ func symbolsHandler(store *storage.Store) handlerFunc {
 		}
 
 		kindFilter := req.GetString("kind", "")
+		scope := req.GetString("scope", "impl")
+		excludeTests, testOnly := scopeToFilter(scope)
 
 		var results []format.SymbolResult
 		for _, s := range syms {
 			if kindFilter != "" && s.Kind != kindFilter {
 				continue
+			}
+			if excludeTests || testOnly {
+				isTest, err := store.GetFileIsTestByID(ctx, s.FileID)
+				if err != nil {
+					continue
+				}
+				if excludeTests && isTest {
+					continue
+				}
+				if testOnly && !isTest {
+					continue
+				}
 			}
 			path, _ := store.GetFilePathByID(ctx, s.FileID)
 			results = append(results, format.SymbolResult{
@@ -247,6 +295,18 @@ func symbolsHandler(store *storage.Store) handlerFunc {
 					sym, err := store.GetSymbolByID(ctx, c.SrcSymbolID)
 					if err != nil || sym == nil {
 						continue
+					}
+					if excludeTests || testOnly {
+						isTest, err := store.GetFileIsTestByID(ctx, sym.FileID)
+						if err != nil {
+							continue
+						}
+						if excludeTests && isTest {
+							continue
+						}
+						if testOnly && !isTest {
+							continue
+						}
 					}
 					path, _ := store.GetFilePathByID(ctx, sym.FileID)
 					refs = append(refs, format.SymbolRef{
@@ -286,9 +346,10 @@ func symbolsHandler(store *storage.Store) handlerFunc {
 func dependenciesToolDef() mcpsdk.Tool {
 	return mcpsdk.NewTool("dependencies",
 		mcpsdk.WithDescription(
-			`Show callers/callees of a symbol using the pre-built dependency graph.
-No equivalent in built-in tools — traces call chains across files instantly.
-Use to understand how a function is used or what it depends on.`),
+			`Trace callers or callees of a symbol across the codebase in one call.
+Replaces multiple rounds of searching and reading to follow call chains.
+Excludes test files by default. Use scope="test" for test files only.
+No equivalent in built-in tools.`),
 		mcpsdk.WithString("symbol",
 			mcpsdk.Required(),
 			mcpsdk.Description("Symbol name to find dependencies for"),
@@ -298,6 +359,10 @@ Use to understand how a function is used or what it depends on.`),
 		),
 		mcpsdk.WithNumber("depth",
 			mcpsdk.Description("BFS depth 1-5 (default 2)"),
+		),
+		mcpsdk.WithString("scope",
+			mcpsdk.Description(`Result scope: "impl" (default, excludes test files), "test" (test files only), or "all"`),
+			mcpsdk.Enum("impl", "test", "all"),
 		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
 		mcpsdk.WithDestructiveHintAnnotation(false),
@@ -358,11 +423,26 @@ func dependenciesHandler(store *storage.Store) handlerFunc {
 			return withResultCount(mcpsdk.NewToolResultText("[]"), 0), nil
 		}
 
+		scope := req.GetString("scope", "impl")
+		excludeTests, testOnly := scopeToFilter(scope)
+
 		var results []format.DepResult
 		for _, nID := range neighborIDs {
 			sym, err := store.GetSymbolByID(ctx, nID)
 			if err != nil || sym == nil {
 				continue
+			}
+			if excludeTests || testOnly {
+				isTest, err := store.GetFileIsTestByID(ctx, sym.FileID)
+				if err != nil {
+					continue
+				}
+				if excludeTests && isTest {
+					continue
+				}
+				if testOnly && !isTest {
+					continue
+				}
 			}
 			path, _ := store.GetFilePathByID(ctx, sym.FileID)
 			results = append(results, format.DepResult{
@@ -387,13 +467,18 @@ func diffToolDef() mcpsdk.Tool {
 	return mcpsdk.NewTool("diff",
 		mcpsdk.WithDescription(
 			`Show recent file changes and which symbols were added, modified, or removed.
-More structured than git log — returns symbol-level change tracking with timestamps.
-Use to understand what changed recently without parsing raw diffs.`),
+Complements git log with structured, symbol-level change tracking.
+Excludes test files by default. Use scope="test" for test files only.
+Use to see which definitions were affected by recent changes.`),
 		mcpsdk.WithString("since",
 			mcpsdk.Description("Time window, e.g. '24h', '1h', '30m' (default: 24h)"),
 		),
 		mcpsdk.WithNumber("limit",
 			mcpsdk.Description("Maximum diffs to return (default: 50)"),
+		),
+		mcpsdk.WithString("scope",
+			mcpsdk.Description(`Result scope: "impl" (default, excludes test files), "test" (test files only), or "all"`),
+			mcpsdk.Enum("impl", "test", "all"),
 		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
 		mcpsdk.WithDestructiveHintAnnotation(false),
@@ -426,8 +511,23 @@ func diffHandler(store *storage.Store) handlerFunc {
 			return mcpsdk.NewToolResultError(sanitizeError("diff query failed: ", err)), nil
 		}
 
+		scope := req.GetString("scope", "impl")
+		excludeTests, testOnly := scopeToFilter(scope)
+
 		var results []format.DiffResult
 		for _, d := range diffs {
+			if excludeTests || testOnly {
+				isTest, err := store.GetFileIsTestByID(ctx, d.FileID)
+				if err != nil {
+					continue
+				}
+				if excludeTests && isTest {
+					continue
+				}
+				if testOnly && !isTest {
+					continue
+				}
+			}
 			path, _ := store.GetFilePathByID(ctx, d.FileID)
 			dr := format.DiffResult{
 				FileID:       d.FileID,
@@ -534,9 +634,8 @@ func enrichmentStatusHandler(store *storage.Store, vs types.VectorStore, ew *vec
 func summaryToolDef() mcpsdk.Tool {
 	return mcpsdk.NewTool("summary",
 		mcpsdk.WithDescription(
-			`Show workspace overview: files, languages, symbols, and index health.
-Use this to understand codebase structure before searching.
-Returns total files, chunks, symbols, language breakdown, and index quality metrics.`),
+			`Quick codebase snapshot: file count, languages, symbol count, and index health.
+Start here to orient in an unfamiliar codebase — gives structure at a glance without reading files.`),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
 		mcpsdk.WithDestructiveHintAnnotation(false),
 		mcpsdk.WithIdempotentHintAnnotation(true),

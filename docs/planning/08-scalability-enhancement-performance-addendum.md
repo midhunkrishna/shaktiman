@@ -1,8 +1,10 @@
 # Shaktiman: Performance Addendum
 
 > Companion to `08-scalability-enhancement.md`. Covers hot path analysis, measurement strategy,
-> and prioritized optimizations for the current codebase (82 files, 699 chunks, 694 symbols).
+> and prioritized optimizations for the current codebase.
 > All findings are from static analysis unless marked [measured].
+>
+> **Last verified**: 2026-03-30. Line numbers and file paths updated to match current codebase.
 
 ---
 
@@ -59,9 +61,9 @@ go tool trace trace.out
 | SQLite writer connections | 1 (serialized) | `internal/storage/db.go:73` |
 | SQLite reader connections | 4 | `internal/storage/db.go:109` |
 | Enrichment workers | GOMAXPROCS/2 | Config default |
-| Embed batch size | 32 | `internal/vector/embedding.go:302` |
-| Writer channel capacity | 500 | `internal/daemon/writer.go:41-43` |
-| Embed worker queue capacity | 1000 | `internal/vector/embedding.go:309` |
+| Embed batch size | 128 | `internal/vector/embed_worker.go:46`, `internal/types/config.go:62` |
+| Writer channel capacity | 500 | `internal/daemon/writer.go:43` (config default) |
+| Embed worker queue capacity | 1000 | `internal/vector/embed_worker.go:52` |
 
 ### Paths Requiring Measurement
 
@@ -120,16 +122,21 @@ IndexProject -> ScanRepo -> IndexAll
 
 ### 2.3 Embedding Path
 
+**Updated**: `queueEmbeddings` was removed. The hot path now uses cursor-based pagination via `RunFromDB`.
+
 ```
-EmbedProject -> queueEmbeddings -> embedWorker.Run
-  queueEmbeddings:
-    GetChunksNeedingEmbedding (loads ALL chunks into memory)
-    for each: vectorStore.Has (RLock per check)
-  embedWorker.Run:
-    batch of 32 -> OllamaClient.EmbedBatch (HTTP)
-                -> store.UpsertBatch
-                -> onBatchDone -> MarkChunksEmbedded
+EmbedProject -> embedFromDB (daemon.go:223-253) -> embedWorker.RunFromDB
+  RunFromDB (embed_worker.go):
+    loop:
+      source.GetEmbedPage(cursor, 256) -- cursor-based pagination
+      reconcileAndEmbed:
+        vectorStore.HasBatch per page (not 141K at once)
+        batch of 128 -> OllamaClient.EmbedBatch (HTTP)
+                     -> store.UpsertBatch
+                     -> onBatchDone -> MarkChunksEmbedded
 ```
+
+> **Note**: The old `GetChunksNeedingEmbedding` (loads ALL chunks) still exists at `metadata.go:377-398` but is no longer on the hot path. The per-chunk `Has()` reconciliation is now scoped to page-sized batches (256), not the full corpus.
 
 ### 2.4 Vector Search Path
 
@@ -192,14 +199,21 @@ func computeStructuralScores(ctx context.Context, store types.MetadataStore,
 - `BatchGetSymbolIDsForChunks(ctx, chunkIDs) map[int64]int64` -- single JOIN query
 - `BatchNeighbors(ctx, symbolIDs, depth) map[int64][]int64` -- single CTE with `IN` clause
 
+> **Adversarial notes (2026-03-30)**:
+> 1. **CTE seed attribution**: A single CTE seeded with `WHERE src_symbol_id IN (...)` produces a **union** of all reachable subgraphs, not per-symbol neighbor sets. The `map[int64][]int64` return type requires knowing which seed produced which neighbor. Fix: either run N separate CTEs, or modify the CTE to carry a `seed_id` column through recursion.
+> 2. **BatchGetSymbolIDsForChunks fallback**: `lookupSymbolForChunk` (ranker.go:180-197) falls back to `syms[0].ID` when no same-file match exists. The batch JOIN query must replicate this fallback (e.g., `ROW_NUMBER() PARTITION BY name ORDER BY CASE WHEN file_id = chunk_file_id THEN 0 ELSE 1 END`).
+> 3. **IN clause limit**: Chunk the IN clause at 500 for `SQLITE_MAX_VARIABLE_NUMBER` (default 999).
+> 4. **CTE row limit**: Add `LIMIT` on the recursive CTE member to prevent blowup on densely connected hub symbols.
+> 5. **Interface bloat**: Consider a separate `BatchMetadataStore` interface with type assertion rather than expanding `MetadataStore` (applies to QW-2, ALG-3, ALG-4 as well).
+
 **Expected impact**: Reduce search-path SQL queries from ~160 to ~4. At ~0.1ms per query, saves ~15ms per search.
-**Risk**: Low. New methods are additive; old path remains as fallback.
+**Risk**: ~~Low~~ Medium. CTE seed attribution and fallback logic add implementation complexity. New methods are additive; old path remains as fallback.
 
 ---
 
 ### QW-2: Batch `filterChanged` into Single Query [S2]
 
-**File**: `/Users/minimac/p/shaktiman/internal/daemon/enrichment.go:221-233`
+**File**: `/Users/minimac/p/shaktiman/internal/daemon/enrichment.go:233-245`
 
 **Issue**: `filterChanged` calls `GetFileByPath` once per file. For Kubernetes (12,867 files), that is 12,867 sequential SELECT queries.
 
@@ -244,7 +258,7 @@ For very large file lists, chunk the `IN` clause into groups of 500 (SQLite `SQL
 
 ### QW-3: Avoid Full Snapshot Copy in `SaveToDisk` [S2]
 
-**File**: `/Users/minimac/p/shaktiman/internal/vector/store.go:147-159`
+**File**: `/Users/minimac/p/shaktiman/internal/vector/store.go:152-164`
 
 **Issue**: `SaveToDisk` copies every vector slice under RLock. At 141K vectors x 768 dims x 4 bytes = ~412MB of allocations just for the snapshot, doubling peak memory to ~870MB.
 
@@ -296,8 +310,10 @@ func (s *BruteForceStore) SaveToDisk(path string) error {
 
 **Tradeoff**: RLock is held longer (disk I/O duration instead of memory copy duration). For buffered writes to local SSD this is typically <1s even at 141K vectors. `UpsertBatch` (which needs write lock) will block during this window. Acceptable for a periodic save operation.
 
+> **CRITICAL (adversarial, 2026-03-30)**: **Must co-implement with IO-4.** The current `binary.Write(w, binary.LittleEndian, vec)` uses reflection internally (141K reflection calls under RLock). Without IO-4, the RLock duration is dominated by reflection overhead, not I/O, and can exceed 1s. Additionally, Go's `sync.RWMutex` is writer-preferring: once `UpsertBatch` is waiting for a write lock, all subsequent `Search` calls (which need RLock) queue behind it. A long `SaveToDisk` therefore transitively blocks **all** searches, not just writes. Add a context/timeout to `SaveToDisk` or implement IO-4 first.
+
 **Expected impact**: Eliminates ~412MB transient allocation. Peak memory drops from ~870MB to ~435MB at 141K vectors.
-**Risk**: Medium. RLock held during I/O. Mitigated by buffered writer and local-only file access.
+**Risk**: ~~Medium~~ High without IO-4. Medium with IO-4. RLock held during I/O transitively blocks searches via RWMutex writer-preference.
 
 ---
 
@@ -349,11 +365,13 @@ func (s *BruteForceStore) Search(_ context.Context, query []float32, topK int) (
 **Expected impact**: Allocation drops from O(n) to O(K). For K=20, n=141K: 141K structs to 20 structs. Sort time: O(n log n) to O(n log K). At 141K: ~17*141K to ~4.3*141K comparisons.
 **Risk**: Low. Standard algorithm change.
 
+> **Caveat (adversarial)**: Guard `topK <= 0` -- `heap.Pop` on an empty heap panics. Add early return for `topK <= 0`.
+
 ---
 
 ### QW-5: Optimize `cosineSimilarity` with SIMD-Friendly Loop [S3]
 
-**File**: `/Users/minimac/p/shaktiman/internal/vector/store.go:322-336`
+**File**: `/Users/minimac/p/shaktiman/internal/vector/store.go:329-341`
 
 **Issue**: The inner loop converts `float32` to `float64` per element, preventing compiler auto-vectorization. This is the innermost hot loop for vector search (called 141K times per search).
 
@@ -391,7 +409,7 @@ func cosineSimilarity(a, b []float32) float64 {
 
 ### QW-6: Pre-allocate `[]byte` for `readFileContent` [S4]
 
-**File**: `/Users/minimac/p/shaktiman/internal/daemon/enrichment.go:324-333`
+**File**: `/Users/minimac/p/shaktiman/internal/daemon/enrichment.go:340-349`
 
 **Issue**: `os.ReadFile` allocates a new byte slice per file. During cold indexing of 12K files, this creates 12K allocations. The `Stat` call already provides the file size.
 
@@ -452,7 +470,7 @@ Then in `enrichFile`, use `file.Content` instead of calling `readFileContent(fil
 
 ### QW-8: Use `fmt.Appendf` / `hex.EncodeToString` for Hash [S5]
 
-**File**: `/Users/minimac/p/shaktiman/internal/daemon/enrichment.go:318-320` and `/Users/minimac/p/shaktiman/internal/daemon/scanner.go:179`
+**File**: `/Users/minimac/p/shaktiman/internal/daemon/enrichment.go:334-336` and `/Users/minimac/p/shaktiman/internal/daemon/scanner.go:179`
 
 **Issue**: `fmt.Sprintf("%x", sha256.Sum256(content))` allocates for the format string. Called once per file.
 
@@ -509,18 +527,22 @@ func (p *Parser) splitLargeChunks(chunks []types.ChunkRecord) []types.ChunkRecor
 
 A simpler fix: estimate token count from byte length (`len/4` is a reasonable approximation for code), and only call the full tokenizer on the final split chunks.
 
+> **Adversarial note (2026-03-30)**: The `len/4` approximation can **underestimate** tokens for dense code (short identifiers, operators) and produce chunks exceeding `maxChunkTokens`. **Must add a final-pass exact tokenizer check** on assembled chunks to guarantee the size invariant. The "proper fix" (tokenize once, split on token boundaries) is strictly better than the `len/4` approximation.
+>
+> Chunk boundary changes are safe: re-indexing deletes old chunks and creates new ones (`writer.go:303`), but all embeddings for affected files become stale. First search after re-index may lack embeddings until `RunFromDB` catches up.
+
 **Expected impact**: For files with large functions (>1024 tokens), reduces parse time significantly. A 2000-line function currently generates ~2000 tiktoken calls; this reduces it to 1-2.
-**Risk**: Medium. Approximation-based splitting may produce slightly different chunk boundaries. Validate with existing tests.
+**Risk**: Medium. Approximation-based splitting may produce oversized chunks without a final exact-tokenizer pass. Prefer the tokenize-once approach.
 
 ---
 
 ### ALG-2: LRU `moveToEnd` / `evictIfNeeded` Is O(n) [S3]
 
-**File**: `/Users/minimac/p/shaktiman/internal/vector/embedding.go:501-508` (EmbedCache) and `/Users/minimac/p/shaktiman/internal/core/session.go:168-176` (SessionStore)
+**File**: `/Users/minimac/p/shaktiman/internal/vector/embed_cache.go:59-67` (EmbedCache) and `/Users/minimac/p/shaktiman/internal/core/session.go:168-176` (SessionStore)
 
 **Issue**: Both `EmbedCache.moveToEnd` and `SessionStore.moveToBack` do linear scans of the `order` slice to find the key. `evictIfNeeded` and `moveToEnd` both manipulate the slice by copying. With 2000-entry SessionStore and frequent Score/RecordBatch calls, this is O(n) per access.
 
-Additionally, `c.order = c.order[1:]` in eviction leaks the underlying array -- the slice header moves forward but the backing array retains all elements.
+Additionally, `c.order = c.order[1:]` in eviction leaks the underlying array -- the slice header moves forward but the backing array retains all elements. (Note: this leak is self-correcting -- when `len == cap` triggers reallocation, the old array becomes GC-eligible. Worst-case waste is ~32KB for SessionStore.)
 
 **Fix**: Replace `[]string` + `map` with `container/list` + `map[string]*list.Element` (standard doubly-linked-list LRU pattern).
 
@@ -594,11 +616,11 @@ func (s *Store) BatchHydrateFTS(ctx context.Context, chunkIDs []int64) ([]Hydrat
 
 **File**: `/Users/minimac/p/shaktiman/internal/storage/metadata.go:377-398`
 
-**Issue**: Loads ALL chunks with their full content text for files not yet embedding-complete. At Kubernetes scale (141K chunks, average ~200 bytes content each), this allocates ~28MB of strings in a single query. The scalability plan (Phase 1.1) addresses this with cursor-based pagination.
+**Issue**: Loads ALL chunks with their full content text for files not yet embedding-complete. At Kubernetes scale (141K chunks, average ~200 bytes content each), this allocates ~28MB of strings in a single query.
 
-**Additional concern**: `queueEmbeddings` in `/Users/minimac/p/shaktiman/internal/daemon/daemon.go:198-226` then iterates this list calling `vectorStore.Has()` per chunk (141K RLock/RUnlock cycles).
+> **Partially addressed (2026-03-30)**: The hot embedding path now uses cursor-based `GetEmbedPage` (lines 408-426) via `RunFromDB` in `embed_worker.go`. The old `GetChunksNeedingEmbedding` method still exists but is no longer on the hot path. The `queueEmbeddings` function was removed from `daemon.go` and replaced by `embedFromDB` (lines 223-253). Per-chunk `Has()` reconciliation is now scoped to page-sized batches (256) in `reconcileAndEmbed`, not 141K at once.
 
-**Fix**: Already addressed in scalability plan Phase 1.1 (`RunFromDB` with DB cursor). This addendum notes that the `Has()` reconciliation loop should also be batched:
+**Remaining improvement**: The `HasBatch` pattern below is still useful for the page-scoped reconciliation to avoid per-chunk RLock/RUnlock within each page:
 
 ```go
 // Instead of per-chunk Has():
@@ -613,16 +635,16 @@ func (s *BruteForceStore) HasBatch(_ context.Context, chunkIDs []int64) map[int6
 }
 ```
 
-**Expected impact**: Single lock acquisition instead of 141K.
+**Expected impact**: Single lock acquisition per page instead of 256 per page. Lower severity than originally documented since the hot path is now page-scoped.
 **Risk**: Low.
 
 ---
 
 ### MEM-2: `processEnrichmentJob` Allocates Multiple Intermediate Slices [S4]
 
-**File**: `/Users/minimac/p/shaktiman/internal/daemon/writer.go:196-358`
+**File**: `/Users/minimac/p/shaktiman/internal/daemon/writer.go:225-393`
 
-**Issue**: Per file enrichment job: allocates `chunkIDs` slice, `symbolIDs` map, `newSymbolNames` slice, `staleChunkIDs` slice, `diffSymbols` slice, `newSymbolSet` map. For a file with 50 chunks and 30 symbols, this is ~8 allocations per file, or ~100K allocations for 12K files.
+**Issue**: Per file enrichment job: allocates `chunkIDs` slice, `symbolIDs` map, `newSymbolNames` slice, `staleChunkIDs` slice, `diffSymbols` slice, `newSymbolSet` map, `oldSymbols` map (added since original analysis for diff tracking and edge insertion). For a file with 50 chunks and 30 symbols, this is ~10+ allocations per file, or ~120K+ allocations for 12K files.
 
 **Fix**: Pool or pre-allocate reusable buffers. Since `processJob` runs on a single goroutine (WriterManager), buffers can be reused without synchronization.
 
@@ -658,7 +680,7 @@ type writerBuffers struct {
 
 ### MEM-4: `EmbedCache.Get` Always Copies [S5]
 
-**File**: `/Users/minimac/p/shaktiman/internal/vector/embedding.go:464-475`
+**File**: `/Users/minimac/p/shaktiman/internal/vector/embed_cache.go:22-33`
 
 **Issue**: `Get` copies the 768-element `[]float32` vector (3KB) every time. The copy is defensive (prevents mutation), but the caller (`embedQuery`) never mutates the result.
 
@@ -673,7 +695,7 @@ type writerBuffers struct {
 
 ### IO-1: Prepared Statements Not Used in `processEnrichmentJob` [S3]
 
-**File**: `/Users/minimac/p/shaktiman/internal/daemon/writer.go:280-291`
+**File**: `/Users/minimac/p/shaktiman/internal/daemon/writer.go:310-321`
 
 **Issue**: Chunk insertion uses individual `tx.ExecContext` per chunk. For a file with 50 chunks, this compiles 50 identical SQL statements within the same transaction. The standalone `InsertChunks` method in `metadata.go:135-173` correctly uses `tx.PrepareContext`, but the writer's inline version does not.
 
@@ -702,11 +724,11 @@ for i, c := range job.Chunks {
 
 ### IO-2: `MarkChunksEmbedded` Does Per-File Chunk Enumeration [S3]
 
-**File**: `/Users/minimac/p/shaktiman/internal/storage/metadata.go:408-473`
+**File**: `/Users/minimac/p/shaktiman/internal/storage/metadata.go:559-637`
 
-**Issue**: For each file touched by the batch, queries all chunk IDs (`SELECT id FROM chunks WHERE file_id = ?`) and checks each against the `embeddedSet`. This is an N+1 within a write transaction.
+**Issue**: Partially improved since original analysis. Now uses batched `UPDATE chunks SET embedded = 1 WHERE id IN (...)` (good), but still does per-file `SELECT COUNT(*) FROM chunks WHERE file_id = ? AND embedded = 0` (lines 616-618) to determine file-level embedding status.
 
-**Fix**: Use SQL aggregation instead:
+**Fix**: Replace per-file COUNT with SQL aggregation:
 
 ```go
 func (s *Store) MarkChunksEmbedded(ctx context.Context, chunkIDs []int64) error {
@@ -717,24 +739,33 @@ func (s *Store) MarkChunksEmbedded(ctx context.Context, chunkIDs []int64) error 
         // Build IN clause
         ph, args := buildInClause(chunkIDs)
 
-        // Single query: for each file, count total chunks and count embedded chunks
+        // BUG FIX (adversarial, 2026-03-30): Original SQL checked `id IN (batch)` which
+        // counts batch membership, not embedded status. Must check `embedded = 1`.
         _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+            UPDATE chunks SET embedded = 1 WHERE id IN (%s)
+        `, ph), args...)
+        if err != nil {
+            return err
+        }
+
+        // Single query: for each affected file, check if all chunks are embedded
+        _, err = tx.ExecContext(ctx, fmt.Sprintf(`
             UPDATE files SET embedding_status = CASE
                 WHEN (SELECT COUNT(*) FROM chunks WHERE file_id = files.id) =
-                     (SELECT COUNT(*) FROM chunks WHERE file_id = files.id AND id IN (%s))
+                     (SELECT COUNT(*) FROM chunks WHERE file_id = files.id AND embedded = 1)
                 THEN 'complete'
                 ELSE 'partial'
             END
             WHERE id IN (SELECT DISTINCT file_id FROM chunks WHERE id IN (%s))
-        `, ph, ph), append(args, args...)...)
+        `, ph), args...)
         return err
     })
 }
 ```
 
-**Caveat**: This marks files based only on the current batch. The existing bug (from scalability plan 1.2) of not tracking cumulative embedding still applies. This optimization is relevant after Phase 1.2 adds the `embedded` column.
+**Caveat**: The `embedded` column now exists on the chunks table. The per-file COUNT pattern is the remaining inefficiency.
 
-**Expected impact**: Eliminates per-file inner queries. For a batch touching 10 files, removes ~10 queries.
+**Expected impact**: Eliminates per-file COUNT queries. For a batch touching 10 files, removes ~10 queries.
 **Risk**: Medium. SQL is more complex. Test thoroughly.
 
 ---
@@ -768,23 +799,11 @@ func openReader(path string, inMemory bool) (*sql.DB, error) {
 
 ### IO-4: `binary.Write` Is Slow for Vector Persistence [S4]
 
-**File**: `/Users/minimac/p/shaktiman/internal/vector/store.go:194-204`
+**File**: `/Users/minimac/p/shaktiman/internal/vector/store.go:200-209`
 
 **Issue**: `binary.Write` uses reflection internally to handle the `interface{}` parameter. For writing `[]float32` vectors, this adds unnecessary overhead per vector.
 
-**Fix**: Use `unsafe` or `encoding/binary` with a direct byte slice conversion:
-
-```go
-import "unsafe"
-
-func writeFloat32Slice(w io.Writer, vec []float32) error {
-    b := unsafe.Slice((*byte)(unsafe.Pointer(&vec[0])), len(vec)*4)
-    _, err := w.Write(b)
-    return err
-}
-```
-
-Or safer: pre-allocate a byte buffer and use `math.Float32bits`:
+**Fix**: Pre-allocate a byte buffer and use `math.Float32bits` with explicit endianness:
 ```go
 buf := make([]byte, len(vec)*4)
 for i, v := range vec {
@@ -792,6 +811,10 @@ for i, v := range vec {
 }
 w.Write(buf)
 ```
+
+> **Adversarial note (2026-03-30)**: Do NOT use `unsafe.Slice` -- it is endianness-dependent and would produce corrupt files on big-endian targets (s390x, ppc64). The `math.Float32bits` approach is endianness-safe and nearly as fast.
+>
+> **CRITICAL dependency**: QW-3 (hold RLock during I/O) depends on this optimization. Without it, `binary.Write` reflection overhead under RLock creates multi-second write stalls. **Implement IO-4 before or alongside QW-3.**
 
 **Expected impact**: 2-5x faster vector serialization. At 141K vectors, saves seconds during SaveToDisk.
 **Risk**: Low for the `math.Float32bits` approach. Medium for `unsafe`.
@@ -802,7 +825,7 @@ w.Write(buf)
 
 ### CONC-1: `WriterManager.Submit` Takes Mutex on Every Submit [S3]
 
-**File**: `/Users/minimac/p/shaktiman/internal/daemon/writer.go:92-123`
+**File**: `/Users/minimac/p/shaktiman/internal/daemon/writer.go:99-130`
 
 **Issue**: Every `Submit` call acquires `wm.mu` for the non-blocking channel send attempt. During cold indexing with N worker goroutines, all workers contend on this mutex. The mutex is needed for safe close coordination, but the fast path (channel not full, not closed) pays for it unnecessarily.
 
@@ -856,11 +879,13 @@ func (wm *WriterManager) SubmitFromProducer(job types.WriteJob) error {
 **Expected impact**: Eliminates mutex contention during cold indexing. With 4 workers submitting concurrently, removes ~4 * fileCount mutex lock/unlock cycles.
 **Risk**: Medium. Requires careful analysis of the close ordering invariant.
 
+> **Adversarial note (2026-03-30)**: Analysis revealed a **pre-existing deadlock** in the shutdown path. When `ctx.Done()` fires, `Run()` calls `drain()` which waits on `producers.Wait()`. But `drain()` stops consuming from the channel. If a producer's `Submit` blocks on a full channel (capacity 500), `producers.Wait()` never returns. The channel capacity (500) makes this extremely unlikely in practice, but `SubmitFromProducer` surfaces it. Consider adding a drain goroutine that continues consuming during shutdown.
+
 ---
 
 ### CONC-2: `EmbedCache` Uses `sync.Mutex` Instead of `sync.RWMutex` [S4]
 
-**File**: `/Users/minimac/p/shaktiman/internal/vector/embedding.go:448-509`
+**File**: `/Users/minimac/p/shaktiman/internal/vector/embed_cache.go:1-67`
 
 **Issue**: `EmbedCache.Get` acquires an exclusive `sync.Mutex` even though reads could be concurrent. During search, `embedQuery` calls `Get` on the cache; if multiple MCP search requests arrive concurrently, they serialize on the cache mutex.
 
@@ -1121,17 +1146,19 @@ go test -tags sqlite_fts5 -bench=BenchmarkSearchE2E -benchtime=10x -count=5 | \
 
 | Optimization | Risk | Mitigation |
 |---|---|---|
-| QW-1 (batch structural scores) | Low | New methods additive; old path kept as fallback |
+| QW-1 (batch structural scores) | **Medium** | CTE seed attribution + fallback logic add complexity; chunk IN clause |
 | QW-2 (batch filterChanged) | Low | Chunked IN clause handles SQLite limits |
-| QW-3 (no snapshot copy) | Medium | RLock held during I/O; monitor save duration; set buffer size |
-| QW-4 (heap for top-K) | Low | Standard algorithm; benchmark confirms correctness |
+| QW-3 (no snapshot copy) | **High** | **Must co-implement with IO-4**; RWMutex writer-preference blocks searches transitively |
+| QW-4 (heap for top-K) | Low | Standard algorithm; guard topK <= 0 |
 | QW-5 (SIMD cosine) | Low | Unit test for numerical equivalence |
 | QW-7 (avoid double read) | Medium | Peak memory increase; clear content after parse |
-| ALG-1 (token counting) | Medium | Approximation may shift chunk boundaries; validate with tests |
-| ALG-2 (LRU O(1)) | Low | Standard `container/list` pattern |
+| ALG-1 (token counting) | Medium | `len/4` can underestimate; must add final exact-tokenizer pass |
+| ALG-2 (LRU O(1)) | Low | Standard `container/list` pattern; memory leak is self-correcting |
 | IO-1 (prepared stmts) | Very low | Strictly internal to existing transaction |
+| IO-2 (MarkChunksEmbedded) | **Medium** | Original proposed SQL was incorrect (checked batch membership, not embedded status); fixed |
 | IO-3 (cache_size + mmap) | Low | Bounded memory increase |
-| CONC-1 (submit fast path) | Medium | Close ordering invariant must be maintained |
+| IO-4 (faster serialization) | Low | **Use `math.Float32bits` only**; `unsafe.Slice` is endianness-dependent |
+| CONC-1 (submit fast path) | **High** | Pre-existing deadlock in shutdown when channel full; needs drain goroutine |
 | CONC-3 (generation counter) | Low | Semantically equivalent to current decay |
 
 ---
@@ -1149,13 +1176,13 @@ Ordered by impact/effort ratio. "Effort" is implementation + testing time.
 | 5 | QW-2: Batch filterChanged | S2 | High at scale (12K queries to 26) | Low (new store method) | **High** | None |
 | 6 | ALG-2: O(1) LRU | S3 | Medium (2000 entries) | Low (standard pattern) | **Medium** | None |
 | 7 | IO-1: Prepared statements | S3 | Medium (~49 VDBE skips/file) | Very low (10 LOC) | **Medium** | None |
-| 8 | QW-3: Eliminate snapshot copy | S2 | High (412MB at 141K) | Medium (test tradeoff) | **Medium** | None |
+| 8 | QW-3: Eliminate snapshot copy | S2 | High (412MB at 141K) | Medium (test tradeoff) | **Medium** | **IO-4 (mandatory)** |
 | 9 | CONC-3: Generation counter | S4 | Medium (lock contention) | Low (30 LOC) | **Medium** | None |
 | 10 | ALG-3: Batch hydrateFTSResults | S3 | Medium (40 queries to 1) | Low (new store method) | **Medium** | None |
 | 11 | ALG-4: Batch mergeResults | S3 | Medium (40 queries to 1) | Low (new store method) | **Medium** | ALG-3 |
 | 12 | IO-3: SQLite cache_size + mmap | S4 | Medium at scale | Very low (2 lines) | **Medium** | None |
 | 13 | QW-7: Avoid double file read | S3 | Medium (60MB I/O at 12K files) | Medium (struct change) | **Medium** | None |
-| 14 | MEM-1: Batch Has() check | S1 | Low (already in plan) | Very low (10 LOC) | **Low** (covered by plan) | Phase 1.1 |
+| 14 | MEM-1: Batch Has() check | ~~S1~~ S4 | Low (partially addressed -- now page-scoped) | Very low (10 LOC) | **Low** | Phase 1.1 (partially done) |
 | 15 | IO-4: Faster vector serialization | S4 | Medium (large stores) | Low (30 LOC) | **Low** | None |
 | 16 | QW-6: Pre-allocate readFileContent | S4 | Low | Very low | **Low** | None |
 | 17 | QW-8: hex.EncodeToString | S5 | Negligible | Very low | **Low** | None |
@@ -1167,25 +1194,26 @@ Ordered by impact/effort ratio. "Effort" is implementation + testing time.
 ### Recommended Implementation Order
 
 **Batch 1 (Quick wins, independent, high ROI):**
-1. QW-4: Heap for top-K (50 LOC, immediate memory + CPU win)
+1. QW-4: Heap for top-K (50 LOC, immediate memory + CPU win; guard topK <= 0)
 2. QW-5: SIMD cosine similarity (20 LOC, immediate CPU win)
 3. IO-1: Prepared statements in writer (10 LOC, no risk)
-4. QW-8: hex.EncodeToString (5 LOC, trivial)
-5. IO-3: SQLite cache_size + mmap (2 lines, trivial)
+4. IO-4: Faster vector serialization with `math.Float32bits` (30 LOC; **prerequisite for QW-3**)
+5. QW-8: hex.EncodeToString (5 LOC, trivial)
+6. IO-3: SQLite cache_size + mmap (2 lines, trivial)
 
 **Batch 2 (New store methods, medium effort):**
-6. QW-1: Batch structural scores (biggest search latency win)
-7. ALG-3 + ALG-4: Batch hydration queries
-8. QW-2: Batch filterChanged
+7. QW-1: Batch structural scores (biggest search latency win; note CTE seed attribution complexity)
+8. ALG-3 + ALG-4: Batch hydration queries
+9. QW-2: Batch filterChanged
 
 **Batch 3 (Algorithmic, requires care):**
-9. ALG-1: Fix O(n^2) token counting
-10. ALG-2: O(1) LRU for EmbedCache + SessionStore
-11. CONC-3: Generation counter for SessionStore
+10. ALG-1: Fix O(n^2) token counting (use tokenize-once approach, not `len/4`)
+11. ALG-2: O(1) LRU for EmbedCache + SessionStore
+12. CONC-3: Generation counter for SessionStore
 
-**Batch 4 (Memory, after Phase 1):**
-12. QW-3: Eliminate snapshot copy in SaveToDisk
-13. QW-7: Avoid double file read
+**Batch 4 (Memory, IO-4 must be done first):**
+13. QW-3: Eliminate snapshot copy in SaveToDisk (IO-4 is mandatory prerequisite)
+14. QW-7: Avoid double file read
 
 ---
 
@@ -1195,7 +1223,7 @@ Ordered by impact/effort ratio. "Effort" is implementation + testing time.
 |---|---|---|
 | QW-1 through QW-8 | Independent | Can be done before, during, or after any phase |
 | ALG-1 through ALG-4 | Independent | Additive improvements to current code |
-| MEM-1 (batch Has) | Phase 1.1 | Enhances the planned RunFromDB implementation |
+| MEM-1 (batch Has) | Phase 1.1 | **Partially done** -- RunFromDB with cursor pagination implemented; per-page HasBatch would further reduce lock cycles |
 | QW-3 (no snapshot) | Phase 1.3 | Reduces crash window impact; compatible with faster save interval |
 | IO-3 (cache_size) | Phase 3 | Helps all backends; especially relevant if SQLite stays default |
 | QW-4 + QW-5 (vector perf) | Phase 3.2 | Irrelevant if HNSW replaces BruteForceStore; valuable until then |

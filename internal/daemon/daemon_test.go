@@ -297,7 +297,7 @@ func TestWriterManager_ProcessJob(t *testing.T) {
 	}
 
 	store := storage.NewStore(db)
-	wm := NewWriterManager(store, 10)
+	wm := NewWriterManager(store, 10, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
@@ -2275,7 +2275,7 @@ func TestSubmit_AfterClose(t *testing.T) {
 	defer db.Close()
 
 	store := storage.NewStore(db)
-	wm := NewWriterManager(store, 10)
+	wm := NewWriterManager(store, 10, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
@@ -2316,7 +2316,7 @@ func TestWriterManager_ReindexWithChangedSymbols(t *testing.T) {
 	}
 
 	store := storage.NewStore(db)
-	wm := NewWriterManager(store, 100)
+	wm := NewWriterManager(store, 100, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
@@ -2450,7 +2450,7 @@ func TestIndexAll_WithProgress(t *testing.T) {
 	}
 
 	store := storage.NewStore(db)
-	wm := NewWriterManager(store, 100)
+	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
 
@@ -2548,7 +2548,7 @@ func TestWriterManager_DeleteJob(t *testing.T) {
 	}
 
 	store := storage.NewStore(db)
-	wm := NewWriterManager(store, 10)
+	wm := NewWriterManager(store, 10, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
@@ -2630,7 +2630,7 @@ func TestIndexAll_AllUpToDate(t *testing.T) {
 	}
 
 	store := storage.NewStore(db)
-	wm := NewWriterManager(store, 100)
+	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
 
@@ -2677,7 +2677,7 @@ func TestIndexAll_EnrichError(t *testing.T) {
 	}
 
 	store := storage.NewStore(db)
-	wm := NewWriterManager(store, 100)
+	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
 

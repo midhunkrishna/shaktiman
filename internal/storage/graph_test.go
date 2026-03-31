@@ -875,8 +875,8 @@ func TestMigration_V2toV3(t *testing.T) {
 	// Verify schema version is 3
 	var version int
 	db.QueryRowContext(ctx, "SELECT MAX(version) FROM schema_version").Scan(&version)
-	if version != 3 {
-		t.Errorf("schema version=%d, want 3", version)
+	if version != schemaVersion {
+		t.Errorf("schema version=%d, want %d", version, schemaVersion)
 	}
 }
 

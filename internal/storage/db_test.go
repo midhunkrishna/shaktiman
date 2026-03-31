@@ -223,6 +223,181 @@ func TestMigrate_DuplicateColumnRecovery(t *testing.T) {
 	}
 }
 
+func TestIsTestColumnMigration(t *testing.T) {
+	t.Parallel()
+
+	db, err := Open(OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Insert a file and verify is_test defaults to 0
+	err = db.WithWriteTx(func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO files (path, content_hash, mtime, embedding_status, parse_quality)
+			VALUES ('server.go', 'hash1', 1.0, 'pending', 'full')`)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("insert test data: %v", err)
+	}
+
+	var isTest int
+	err = db.QueryRowContext(ctx, "SELECT is_test FROM files WHERE path = 'server.go'").Scan(&isTest)
+	if err != nil {
+		t.Fatalf("query is_test column: %v", err)
+	}
+	if isTest != 0 {
+		t.Errorf("is_test = %d, want 0 (default)", isTest)
+	}
+
+	// Insert a test file with is_test = 1
+	err = db.WithWriteTx(func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO files (path, content_hash, mtime, embedding_status, parse_quality, is_test)
+			VALUES ('server_test.go', 'hash2', 1.0, 'pending', 'full', 1)`)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("insert test file: %v", err)
+	}
+
+	err = db.QueryRowContext(ctx, "SELECT is_test FROM files WHERE path = 'server_test.go'").Scan(&isTest)
+	if err != nil {
+		t.Fatalf("query is_test for test file: %v", err)
+	}
+	if isTest != 1 {
+		t.Errorf("is_test = %d, want 1", isTest)
+	}
+
+	// Verify idempotent re-migration
+	if err := Migrate(db); err != nil {
+		t.Fatalf("re-Migrate: %v", err)
+	}
+}
+
+func TestUpsertFile_IsTest(t *testing.T) {
+	t.Parallel()
+
+	db, err := Open(OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Upsert a test file
+	id, err := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "server_test.go", ContentHash: "h1", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full", IsTest: true,
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("expected non-zero file ID")
+	}
+
+	// Read it back
+	f, err := store.GetFileByPath(ctx, "server_test.go")
+	if err != nil {
+		t.Fatalf("GetFileByPath: %v", err)
+	}
+	if !f.IsTest {
+		t.Error("GetFileByPath: IsTest = false, want true")
+	}
+
+	// Upsert an impl file
+	_, err = store.UpsertFile(ctx, &types.FileRecord{
+		Path: "server.go", ContentHash: "h2", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full", IsTest: false,
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile impl: %v", err)
+	}
+
+	f2, err := store.GetFileByPath(ctx, "server.go")
+	if err != nil {
+		t.Fatalf("GetFileByPath impl: %v", err)
+	}
+	if f2.IsTest {
+		t.Error("GetFileByPath impl: IsTest = true, want false")
+	}
+
+	// Verify ListFiles also populates IsTest
+	files, err := store.ListFiles(ctx)
+	if err != nil {
+		t.Fatalf("ListFiles: %v", err)
+	}
+	testCount := 0
+	for _, fi := range files {
+		if fi.IsTest {
+			testCount++
+		}
+	}
+	if testCount != 1 {
+		t.Errorf("ListFiles: %d test files, want 1", testCount)
+	}
+}
+
+func TestGetFileIsTestByID(t *testing.T) {
+	t.Parallel()
+
+	db, err := Open(OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Insert test and impl files
+	testID, _ := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "auth_test.go", ContentHash: "h1", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full", IsTest: true,
+	})
+	implID, _ := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "auth.go", ContentHash: "h2", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full", IsTest: false,
+	})
+
+	isTest, err := store.GetFileIsTestByID(ctx, testID)
+	if err != nil {
+		t.Fatalf("GetFileIsTestByID test: %v", err)
+	}
+	if !isTest {
+		t.Error("expected true for test file")
+	}
+
+	isTest, err = store.GetFileIsTestByID(ctx, implID)
+	if err != nil {
+		t.Fatalf("GetFileIsTestByID impl: %v", err)
+	}
+	if isTest {
+		t.Error("expected false for impl file")
+	}
+
+	// Non-existent ID
+	_, err = store.GetFileIsTestByID(ctx, 9999)
+	if err == nil {
+		t.Error("expected error for non-existent file")
+	}
+}
+
 func TestOpen_InvalidPath(t *testing.T) {
 	t.Parallel()
 

@@ -47,17 +47,21 @@ func (e *QueryEngine) SetSessionStore(ss *SessionStore) {
 
 // SearchInput configures a search operation.
 type SearchInput struct {
-	Query      string
-	MaxResults int
-	Explain    bool
-	Mode       string  // "locate" or "full"; consumed by formatting layer only
-	MinScore   float64 // 0.0-1.0; results below this score are dropped post-ranking
+	Query        string
+	MaxResults   int
+	Explain      bool
+	Mode         string  // "locate" or "full"; consumed by formatting layer only
+	MinScore     float64 // 0.0-1.0; results below this score are dropped post-ranking
+	ExcludeTests bool    // filter out test files from results
+	TestOnly     bool    // return only test file results
 }
 
 // ContextInput configures a context assembly operation.
 type ContextInput struct {
 	Query        string
 	BudgetTokens int
+	ExcludeTests bool // filter out test files from context chunks
+	TestOnly     bool // include only test file chunks
 }
 
 // Search executes a search and returns scored results using the best available level.
@@ -137,8 +141,10 @@ func (e *QueryEngine) determineLevel(ctx context.Context) FallbackLevel {
 
 // searchSemantic runs hybrid search with semantic + keyword candidates.
 func (e *QueryEngine) searchSemantic(ctx context.Context, input SearchInput, level FallbackLevel) ([]types.ScoredResult, error) {
+	filter := TestFilter{ExcludeTests: input.ExcludeTests, TestOnly: input.TestOnly}
+
 	// Get keyword candidates
-	kwResults, err := KeywordSearch(ctx, e.store, input.Query, input.MaxResults*2)
+	kwResults, err := KeywordSearch(ctx, e.store, input.Query, input.MaxResults*2, filter)
 	if err != nil {
 		return nil, fmt.Errorf("keyword search: %w", err)
 	}
@@ -164,7 +170,7 @@ func (e *QueryEngine) searchSemantic(ctx context.Context, input SearchInput, lev
 	}
 
 	// Merge keyword + semantic candidates (union)
-	merged := mergeResults(ctx, e.store, kwResults, semResults)
+	merged := mergeResults(ctx, e.store, kwResults, semResults, filter)
 
 	// Apply hybrid ranking
 	ranked := HybridRank(ctx, HybridRankInput{
@@ -188,7 +194,8 @@ func (e *QueryEngine) searchSemantic(ctx context.Context, input SearchInput, lev
 
 // searchKeyword runs keyword-only search with structural + change signals.
 func (e *QueryEngine) searchKeyword(ctx context.Context, input SearchInput) ([]types.ScoredResult, error) {
-	results, err := KeywordSearch(ctx, e.store, input.Query, input.MaxResults)
+	filter := TestFilter{ExcludeTests: input.ExcludeTests, TestOnly: input.TestOnly}
+	results, err := KeywordSearch(ctx, e.store, input.Query, input.MaxResults, filter)
 	if err != nil {
 		return nil, fmt.Errorf("keyword search: %w", err)
 	}
@@ -217,8 +224,10 @@ func (e *QueryEngine) searchKeyword(ctx context.Context, input SearchInput) ([]t
 
 func (e *QueryEngine) contextSemantic(ctx context.Context, input ContextInput, level FallbackLevel) (*types.ContextPackage, error) {
 	results, err := e.searchSemantic(ctx, SearchInput{
-		Query:      input.Query,
-		MaxResults: 200,
+		Query:        input.Query,
+		MaxResults:   200,
+		ExcludeTests: input.ExcludeTests,
+		TestOnly:     input.TestOnly,
 	}, level)
 	if err != nil {
 		return nil, err
@@ -238,7 +247,8 @@ func (e *QueryEngine) contextSemantic(ctx context.Context, input ContextInput, l
 }
 
 func (e *QueryEngine) contextKeyword(ctx context.Context, input ContextInput) (*types.ContextPackage, error) {
-	results, err := KeywordSearch(ctx, e.store, input.Query, 200)
+	filter := TestFilter{ExcludeTests: input.ExcludeTests, TestOnly: input.TestOnly}
+	results, err := KeywordSearch(ctx, e.store, input.Query, 200, filter)
 	if err != nil {
 		return nil, fmt.Errorf("keyword search for context: %w", err)
 	}
@@ -311,7 +321,8 @@ func filterByScore(results []types.ScoredResult, minScore float64) []types.Score
 }
 
 // mergeResults creates a union of keyword and semantic results, hydrating vector-only entries.
-func mergeResults(ctx context.Context, store types.MetadataStore, kwResults []types.ScoredResult, semResults []types.VectorResult) []types.ScoredResult {
+// The filter is applied to vector-only results during hydration (keyword results are already filtered).
+func mergeResults(ctx context.Context, store types.MetadataStore, kwResults []types.ScoredResult, semResults []types.VectorResult, filter TestFilter) []types.ScoredResult {
 	seen := make(map[int64]bool, len(kwResults)+len(semResults))
 	merged := make([]types.ScoredResult, 0, len(kwResults)+len(semResults))
 
@@ -331,6 +342,21 @@ func mergeResults(ctx context.Context, store types.MetadataStore, kwResults []ty
 		if err != nil || chunk == nil {
 			continue
 		}
+
+		// Apply test file filter to vector-only results
+		if filter.ExcludeTests || filter.TestOnly {
+			isTest, err := store.GetFileIsTestByID(ctx, chunk.FileID)
+			if err != nil {
+				continue
+			}
+			if filter.ExcludeTests && isTest {
+				continue
+			}
+			if filter.TestOnly && !isTest {
+				continue
+			}
+		}
+
 		path, _ := store.GetFilePathByID(ctx, chunk.FileID)
 
 		merged = append(merged, types.ScoredResult{

@@ -9,6 +9,21 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/vector"
 )
 
+// serverInstructions is returned to the client during MCP initialize.
+// It tells the LLM how shaktiman reduces context usage during exploration.
+const serverInstructions = `Shaktiman is a pre-built code index that reduces context usage during codebase exploration.
+
+Instead of searching and reading many files to find what's relevant, use shaktiman to narrow down first:
+
+- summary → orient in an unfamiliar codebase (size, languages, health) without reading files
+- search → find the most relevant files for a topic, then Read only those files
+- context → understand a topic across files within a token budget, instead of reading many files
+- symbols → find a definition by exact name without reading the whole file
+- dependencies → trace a call chain in one call instead of searching and reading repeatedly
+
+All tools exclude test files by default. Use scope="test" when you need test code.
+Use Grep for exact string or regex matching. Use Glob for finding files by name.`
+
 // NewServerInput configures the MCP server. CS-5: >2 args → input struct.
 type NewServerInput struct {
 	Engine      *core.QueryEngine
@@ -26,6 +41,7 @@ func NewServer(input NewServerInput) *server.MCPServer {
 		"0.7.0",
 		server.WithToolCapabilities(false),
 		server.WithResourceCapabilities(false, false),
+		server.WithInstructions(serverInstructions),
 	)
 
 	cfg := input.Config

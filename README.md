@@ -128,50 +128,52 @@ Create a `.mcp.json` file in the root of your project, and add:
 We also need to tell Claude to use the mcp server. Add this to the projects `CLAUDE.md` file. A full template is available at [`docs/reference/sample_claude.md`](docs/reference/sample_claude.md).
 
 ```
-## MCP Tools (via shaktimand) — MANDATORY
+## MCP Tools (via shaktimand)
 
-**STOP RULE: Before calling Grep, Glob, or Bash grep/find/rg — ask:
-"Can `mcp__shaktiman__*` answer this?" If yes, use MCP. No exceptions.**
+Shaktiman is a pre-built code index that reduces context usage during exploration.
+Use it to narrow down before reading files — not as a replacement for Grep or Glob.
 
-This applies to the main agent AND all subagents. When delegating to any subagent,
-explicitly instruct it to use `mcp__shaktiman__*` tools. Subagents do not automatically
-inherit these instructions.
+### When to use shaktiman vs built-in tools
 
-### Subagent delegation template
-
-When spawning any subagent that needs to read or search code, include this in the prompt:
-
-> **HARD RULE: Do NOT call Grep or Glob. Use `mcp__shaktiman__search`,
-> `mcp__shaktiman__symbols`, and `mcp__shaktiman__dependencies` for ALL code search,
-> caller tracing, and file discovery. The ONLY exceptions are: reading a file by exact
-> known path (use Read), finding non-code files (.md, .json, .yaml), or when MCP tools
-> return no results.**
-
-### Tool mapping
-
-| Instead of | Use | For |
+| Task | Tool | Why |
 |---|---|---|
-| Grep, Glob | `mcp__shaktiman__search` | Finding code by keyword or concept |
-| Read (whole files) | `mcp__shaktiman__context` | Getting code context for a task (budget-fitted, ranked, deduplicated) |
-| Grep (definitions) | `mcp__shaktiman__symbols` | Looking up function/class/type definitions by name |
-| Grep (find callers) | `mcp__shaktiman__dependencies` | Finding all call sites of a function (essential for refactoring) |
-| (no equivalent) | `mcp__shaktiman__diff` | Recent file changes and affected symbols |
-| (no equivalent) | `mcp__shaktiman__enrichment_status` | Checking indexing progress |
-| (no equivalent) | `mcp__shaktiman__summary` | Workspace overview (files, languages, symbols, health) |
+| Orient in unfamiliar codebase | `mcp__shaktiman__summary` | Codebase snapshot without reading files |
+| Find code related to a concept | `mcp__shaktiman__search` | Ranked discovery — read only the top hits |
+| Understand a topic across files | `mcp__shaktiman__context` | Token-budgeted chunks instead of reading many files |
+| Find where a symbol is defined | `mcp__shaktiman__symbols` | Definition + signature without reading the file |
+| Trace callers/callees | `mcp__shaktiman__dependencies` | Full call chain in one call |
+| See what changed recently | `mcp__shaktiman__diff` | Symbol-level change tracking |
+| Search for test code specifically | Any tool with `scope:"test"` | All tools exclude test files by default |
+| Find exact string or regex | Grep | Shaktiman ranks by relevance, not pattern match |
+| Find files by name/extension | Glob | Shaktiman indexes content, not filenames |
+| Read a specific known file | Read | Direct file access |
 
-### Common mistakes — do NOT do these
+### Signs you should use shaktiman instead
 
-| Bad | Good | Why |
+| You notice... | Use | Why |
 |---|---|---|
-| `Grep ".FuncName("` to find callers | `dependencies symbol:"FuncName" direction:"callers"` | Structured, finds indirect callers |
-| `Grep "mock.*Server"` in test file | `search query:"mock server" path:"internal/"` | Semantic match, fewer tokens |
-| `Glob "*_test.go"` to find tests | `search query:"func Test" path:"pkg/"` | Finds by content, not filename |
+| First time in a codebase, no context yet | `summary` | File count, languages, symbol count at a glance |
+| Query is conceptual, not a literal pattern | `search` | Top-N ranked by relevance, not every literal match |
+| Grep returned many matches, need to pick which to read | `search` with the same terms | Ranked results — read 3 files, not 30 |
+| Need a function/type definition | `symbols name:"Name"` | File, line, signature without reading the file |
+| Need callers, callees, or blast radius | `dependencies symbol:"Name"` | Structural call graph. Grep misses indirect calls. |
+| Polyglot repo, Grep patterns differ by language | `symbols` or `dependencies` | Language-agnostic — same query regardless of syntax |
 
-### Fallback to Grep/Glob — ONLY when ALL of these are true
+### Discovery workflow
 
-- [ ] You tried MCP search/symbols/dependencies first and got insufficient results, OR
-- [ ] The file is non-code (.md, .json, .yaml, .toml) that Shaktiman doesn't index, OR
-- [ ] You need the exact file path for Read/Edit (not searching)
+1. `mcp__shaktiman__summary` → orient (size, languages, health)
+2. `mcp__shaktiman__search` → narrow to relevant files (~12 tokens/result)
+3. `Read` → read only the files that matter
+4. `Edit` → make changes
+
+### Subagent delegation
+
+Subagents don't inherit these instructions. When spawning subagents that explore code, include:
+
+> Use `mcp__shaktiman__search`, `mcp__shaktiman__symbols`, and `mcp__shaktiman__dependencies`
+> for code discovery before reading files. All tools exclude test files by default —
+> use `scope:"test"` when looking for test code. Use Grep for exact string/regex matching.
+> Use Glob for finding files by name. Use Read for known file paths.
 ```
 
 That's it. Claude Code will now have access to these tools:

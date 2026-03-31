@@ -31,6 +31,7 @@ type WriterManager struct {
 	draining      atomic.Bool         // true once drain() begins
 	mu            sync.Mutex          // protects close sequence and draining flag
 	vectorDeleter types.VectorDeleter // nil if embeddings disabled
+	testPatterns  []string            // glob patterns for test file detection
 }
 
 // SetVectorDeleter attaches a vector deleter for cleaning up stale embeddings
@@ -40,12 +41,13 @@ func (wm *WriterManager) SetVectorDeleter(vd types.VectorDeleter) {
 }
 
 // NewWriterManager creates a writer with the given channel capacity (IP-5: 500).
-func NewWriterManager(store *storage.Store, chanSize int) *WriterManager {
+func NewWriterManager(store *storage.Store, chanSize int, testPatterns []string) *WriterManager {
 	return &WriterManager{
-		ch:    make(chan types.WriteJob, chanSize),
-		done:  make(chan struct{}),
-		store: store,
-		logger: slog.Default().With("component", "writer"),
+		ch:           make(chan types.WriteJob, chanSize),
+		done:         make(chan struct{}),
+		store:        store,
+		logger:       slog.Default().With("component", "writer"),
+		testPatterns: testPatterns,
 	}
 }
 
@@ -156,7 +158,7 @@ func (wm *WriterManager) processJob(ctx context.Context, job types.WriteJob) {
 	var staleChunkIDs []int64
 	err := wm.store.DB().WithWriteTx(func(tx *sql.Tx) error {
 		var txErr error
-		staleChunkIDs, txErr = processWriteJob(ctx, tx, wm.store, wm.logger, job)
+		staleChunkIDs, txErr = processWriteJob(ctx, tx, wm.store, wm.logger, job, wm.testPatterns)
 		return txErr
 	})
 	if err != nil {
@@ -186,10 +188,10 @@ func (wm *WriterManager) processJob(ctx context.Context, job types.WriteJob) {
 
 // processWriteJob executes a single write job within a transaction.
 // Returns IDs of chunks that were deleted (for vector store cleanup).
-func processWriteJob(ctx context.Context, tx *sql.Tx, store *storage.Store, logger *slog.Logger, job types.WriteJob) ([]int64, error) {
+func processWriteJob(ctx context.Context, tx *sql.Tx, store *storage.Store, logger *slog.Logger, job types.WriteJob, testPatterns []string) ([]int64, error) {
 	switch job.Type {
 	case types.WriteJobEnrichment:
-		return processEnrichmentJob(ctx, tx, store, logger, job)
+		return processEnrichmentJob(ctx, tx, store, logger, job, testPatterns)
 	case types.WriteJobFileDelete:
 		stale := collectChunkIDsByPath(ctx, tx, job.FilePath)
 		_, err := tx.ExecContext(ctx, "DELETE FROM files WHERE path = ?", job.FilePath)
@@ -222,7 +224,7 @@ func collectChunkIDsByPath(ctx context.Context, tx *sql.Tx, path string) []int64
 
 // processEnrichmentJob handles an enrichment write: upsert file, replace chunks + symbols.
 // Returns IDs of old chunks that were replaced (for vector store cleanup).
-func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store, logger *slog.Logger, job types.WriteJob) ([]int64, error) {
+func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store, logger *slog.Logger, job types.WriteJob, testPatterns []string) ([]int64, error) {
 	if job.File == nil {
 		return nil, fmt.Errorf("enrichment job for %s has nil file", job.FilePath)
 	}
@@ -258,9 +260,10 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 	}
 
 	// Upsert file — reset embedding_status to 'pending' since chunks are changing
+	isTest := IsTestFile(job.File.Path, testPatterns)
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO files (path, content_hash, mtime, size, language, indexed_at, embedding_status, parse_quality)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO files (path, content_hash, mtime, size, language, indexed_at, embedding_status, parse_quality, is_test)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(path) DO UPDATE SET
 			content_hash = excluded.content_hash,
 			mtime = excluded.mtime,
@@ -268,10 +271,11 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 			language = excluded.language,
 			indexed_at = excluded.indexed_at,
 			embedding_status = 'pending',
-			parse_quality = excluded.parse_quality`,
+			parse_quality = excluded.parse_quality,
+			is_test = excluded.is_test`,
 		job.File.Path, job.File.ContentHash, job.File.Mtime, job.File.Size,
 		job.File.Language, time.Now().UTC().Format(time.RFC3339Nano),
-		job.File.EmbeddingStatus, job.File.ParseQuality); err != nil {
+		job.File.EmbeddingStatus, job.File.ParseQuality, boolToInt(isTest)); err != nil {
 		return nil, fmt.Errorf("upsert file %s: %w", job.FilePath, err)
 	}
 
@@ -539,4 +543,11 @@ func coalesce(val, fallback string) string {
 		return fallback
 	}
 	return val
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

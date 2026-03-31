@@ -1356,5 +1356,237 @@ func TestDependenciesHandler_FoundSymbolWithPendingEdges(t *testing.T) {
 	}
 }
 
+// ── Scope filtering tests ──
+
+// setupStoreWithTestFiles creates a store with both test and impl files,
+// including symbols and edges, for testing scope filtering.
+func setupStoreWithTestFiles(t *testing.T) *storage.Store {
+	t.Helper()
+	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	store := storage.NewStore(db)
+	ctx := context.Background()
+
+	// Impl file
+	implID, err := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "internal/mcp/server.go", ContentHash: "h1", Mtime: 1.0,
+		Language: "go", EmbeddingStatus: "pending", ParseQuality: "full", IsTest: false,
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile impl: %v", err)
+	}
+	implChunkIDs, err := store.InsertChunks(ctx, implID, []types.ChunkRecord{
+		{ChunkIndex: 0, SymbolName: "NewServer", Kind: "function",
+			StartLine: 1, EndLine: 20,
+			Content: "func NewServer() *Server { return &Server{} }", TokenCount: 15},
+	})
+	if err != nil {
+		t.Fatalf("InsertChunks impl: %v", err)
+	}
+	if _, err := store.InsertSymbols(ctx, implID, []types.SymbolRecord{
+		{ChunkID: implChunkIDs[0], Name: "NewServer", Kind: "function", Line: 1, Signature: "()", Visibility: "exported"},
+	}); err != nil {
+		t.Fatalf("InsertSymbols impl: %v", err)
+	}
+
+	// Test file
+	testID, err := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "internal/mcp/server_test.go", ContentHash: "h2", Mtime: 1.0,
+		Language: "go", EmbeddingStatus: "pending", ParseQuality: "full", IsTest: true,
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile test: %v", err)
+	}
+	testChunkIDs, err := store.InsertChunks(ctx, testID, []types.ChunkRecord{
+		{ChunkIndex: 0, SymbolName: "TestNewServer", Kind: "function",
+			StartLine: 1, EndLine: 15,
+			Content: "func TestNewServer(t *testing.T) { NewServer() }", TokenCount: 12},
+	})
+	if err != nil {
+		t.Fatalf("InsertChunks test: %v", err)
+	}
+	if _, err := store.InsertSymbols(ctx, testID, []types.SymbolRecord{
+		{ChunkID: testChunkIDs[0], Name: "TestNewServer", Kind: "function", Line: 1, Signature: "(t *testing.T)", Visibility: "exported"},
+	}); err != nil {
+		t.Fatalf("InsertSymbols test: %v", err)
+	}
+
+	// Resolve edge: TestNewServer -> NewServer
+	implSyms, err := store.GetSymbolByName(ctx, "NewServer")
+	if err != nil || len(implSyms) == 0 {
+		t.Fatalf("GetSymbolByName NewServer: err=%v, len=%d", err, len(implSyms))
+	}
+	testSyms, err := store.GetSymbolByName(ctx, "TestNewServer")
+	if err != nil || len(testSyms) == 0 {
+		t.Fatalf("GetSymbolByName TestNewServer: err=%v, len=%d", err, len(testSyms))
+	}
+	if err := store.DB().WithWriteTx(func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			"INSERT INTO edges (src_symbol_id, dst_symbol_id, kind, file_id) VALUES (?, ?, 'calls', ?)",
+			testSyms[0].ID, implSyms[0].ID, testID)
+		return err
+	}); err != nil {
+		t.Fatalf("insert edge: %v", err)
+	}
+
+	return store
+}
+
+func TestSearchHandler_Scope_DefaultExcludesTests(t *testing.T) {
+	t.Parallel()
+	store := setupStoreWithTestFiles(t)
+	engine := core.NewQueryEngine(store, t.TempDir())
+	cfg := types.DefaultConfig(t.TempDir())
+	cfg.SearchMinScore = 0 // disable score threshold for test
+	handler := searchHandler(engine, cfg)
+
+	result, err := handler(context.Background(), makeSearchRequest(map[string]any{
+		"query": "NewServer",
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	text := result.Content[0].(mcpsdk.TextContent).Text
+	if strings.Contains(text, "server_test.go") {
+		t.Errorf("default scope should exclude test files, got: %s", text)
+	}
+	if !strings.Contains(text, "server.go") {
+		t.Errorf("default scope should include impl files, got: %s", text)
+	}
+}
+
+func TestSearchHandler_Scope_Test(t *testing.T) {
+	t.Parallel()
+	store := setupStoreWithTestFiles(t)
+	engine := core.NewQueryEngine(store, t.TempDir())
+	cfg := types.DefaultConfig(t.TempDir())
+	cfg.SearchMinScore = 0
+	handler := searchHandler(engine, cfg)
+
+	result, err := handler(context.Background(), makeSearchRequest(map[string]any{
+		"query": "NewServer",
+		"scope": "test",
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	text := result.Content[0].(mcpsdk.TextContent).Text
+	// Check that impl file (without _test) is NOT present — but test file IS
+	if strings.Contains(text, "internal/mcp/server.go") && !strings.Contains(text, "_test.go") {
+		t.Errorf("scope=test should exclude impl files, got: %s", text)
+	}
+	if !strings.Contains(text, "server_test.go") {
+		t.Errorf("scope=test should include test files, got: %s", text)
+	}
+}
+
+func TestSearchHandler_Scope_All(t *testing.T) {
+	t.Parallel()
+	store := setupStoreWithTestFiles(t)
+	engine := core.NewQueryEngine(store, t.TempDir())
+	cfg := types.DefaultConfig(t.TempDir())
+	cfg.SearchMinScore = 0
+	handler := searchHandler(engine, cfg)
+
+	result, err := handler(context.Background(), makeSearchRequest(map[string]any{
+		"query": "NewServer",
+		"scope": "all",
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	text := result.Content[0].(mcpsdk.TextContent).Text
+	if !strings.Contains(text, "server.go") {
+		t.Errorf("scope=all should include impl files, got: %s", text)
+	}
+	if !strings.Contains(text, "server_test.go") {
+		t.Errorf("scope=all should include test files, got: %s", text)
+	}
+}
+
+func TestSymbolsHandler_Scope_DefaultExcludesTests(t *testing.T) {
+	t.Parallel()
+	store := setupStoreWithTestFiles(t)
+	handler := symbolsHandler(store)
+
+	result, err := handler(context.Background(), makeToolRequest(map[string]any{
+		"name": "TestNewServer",
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	// Default scope is impl — TestNewServer is in a test file, should be excluded
+	text := result.Content[0].(mcpsdk.TextContent).Text
+	if text != "null" && text != "[]" {
+		var syms []json.RawMessage
+		if json.Unmarshal([]byte(text), &syms) == nil && len(syms) > 0 {
+			t.Errorf("default scope should exclude test symbols, got: %s", text)
+		}
+	}
+}
+
+func TestSymbolsHandler_Scope_Test(t *testing.T) {
+	t.Parallel()
+	store := setupStoreWithTestFiles(t)
+	handler := symbolsHandler(store)
+
+	result, err := handler(context.Background(), makeToolRequest(map[string]any{
+		"name":  "TestNewServer",
+		"scope": "test",
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	text := result.Content[0].(mcpsdk.TextContent).Text
+	if !strings.Contains(text, "TestNewServer") {
+		t.Errorf("scope=test should include test symbols, got: %s", text)
+	}
+}
+
+func TestDependenciesHandler_Scope_DefaultExcludesTests(t *testing.T) {
+	t.Parallel()
+	store := setupStoreWithTestFiles(t)
+	handler := dependenciesHandler(store)
+
+	// NewServer callers should exclude TestNewServer (in test file)
+	result, err := handler(context.Background(), makeToolRequest(map[string]any{
+		"symbol":    "NewServer",
+		"direction": "callers",
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	text := result.Content[0].(mcpsdk.TextContent).Text
+	if strings.Contains(text, "TestNewServer") {
+		t.Errorf("default scope should exclude test callers, got: %s", text)
+	}
+}
+
+func TestDependenciesHandler_Scope_All(t *testing.T) {
+	t.Parallel()
+	store := setupStoreWithTestFiles(t)
+	handler := dependenciesHandler(store)
+
+	result, err := handler(context.Background(), makeToolRequest(map[string]any{
+		"symbol":    "NewServer",
+		"direction": "callers",
+		"scope":     "all",
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	text := result.Content[0].(mcpsdk.TextContent).Text
+	if !strings.Contains(text, "TestNewServer") {
+		t.Errorf("scope=all should include test callers, got: %s", text)
+	}
+}
+
 // Ensure server import is used.
 var _ server.ResourceHandlerFunc
