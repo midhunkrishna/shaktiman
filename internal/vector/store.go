@@ -161,6 +161,11 @@ func (s *BruteForceStore) Close() error {
 	return nil
 }
 
+// Healthy always returns true for the in-memory brute-force store.
+func (s *BruteForceStore) Healthy(_ context.Context) bool {
+	return true
+}
+
 // Dim returns the vector dimensionality.
 func (s *BruteForceStore) Dim() int {
 	return s.dim

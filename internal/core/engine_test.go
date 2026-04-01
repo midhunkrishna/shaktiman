@@ -939,6 +939,10 @@ func (f *failingVectorStore) Close() error {
 	return nil
 }
 
+func (f *failingVectorStore) Healthy(_ context.Context) bool {
+	return true
+}
+
 func TestSearch_KeywordWithMinScore(t *testing.T) {
 	t.Parallel()
 	engine, store := setupTestEngine(t)

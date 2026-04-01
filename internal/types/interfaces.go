@@ -93,6 +93,10 @@ type VectorStore interface {
 	Has(ctx context.Context, chunkID int64) (bool, error)
 	Count(ctx context.Context) (int, error)
 	Close() error
+	// Healthy returns true if the store is reachable and operational.
+	// In-process backends (BruteForce, HNSW) always return true.
+	// External backends (Qdrant, pgvector) perform a connectivity check.
+	Healthy(ctx context.Context) bool
 }
 
 // VectorPersister is optionally implemented by vector stores that need
@@ -146,4 +150,79 @@ type EmbedProgress struct {
 	Total    int
 	Skipped  int    // chunks that could not be embedded after retries
 	Warning  string // non-empty during transient issues (e.g., circuit breaker retry)
+}
+
+// TxHandle is an opaque transaction handle. Each backend defines its own
+// concrete type (e.g., *sql.Tx for SQLite, pgx.Tx for Postgres).
+// Methods that participate in transactions accept TxHandle.
+type TxHandle interface {
+	// Unexported marker method prevents external implementations.
+	txHandle()
+}
+
+// DiffStore provides diff log and symbol change tracking.
+type DiffStore interface {
+	InsertDiffLog(ctx context.Context, tx TxHandle, entry DiffLogEntry) (int64, error)
+	InsertDiffSymbols(ctx context.Context, tx TxHandle, diffID int64, symbols []DiffSymbolEntry) error
+	GetRecentDiffs(ctx context.Context, input RecentDiffsInput) ([]DiffLogEntry, error)
+	GetDiffSymbols(ctx context.Context, diffID int64) ([]DiffSymbolEntry, error)
+}
+
+// GraphMutator provides graph write operations (edges, pending edges).
+// Extends the existing read-only Neighbors method on MetadataStore.
+type GraphMutator interface {
+	InsertEdges(ctx context.Context, tx TxHandle, fileID int64, edges []EdgeRecord, symbolIDs map[string]int64, language string) error
+	ResolvePendingEdges(ctx context.Context, tx TxHandle, newSymbolNames []string) error
+	DeleteEdgesByFile(ctx context.Context, tx TxHandle, fileID int64) error
+	PendingEdgeCallers(ctx context.Context, dstName string) ([]int64, error)
+	PendingEdgeCallersWithKind(ctx context.Context, dstName string) ([]PendingEdgeCaller, error)
+}
+
+// EmbeddingReconciler provides embedding state management for crash recovery.
+type EmbeddingReconciler interface {
+	CountChunksEmbedded(ctx context.Context) (int, error)
+	ResetAllEmbeddedFlags(ctx context.Context) error
+	GetEmbeddedChunkIDs(ctx context.Context, afterID int64, limit int) ([]int64, error)
+	ResetEmbeddedFlags(ctx context.Context, chunkIDs []int64) error
+	EmbeddingReadiness(ctx context.Context, vectorCount int) (float64, error)
+}
+
+// StoreLifecycle provides backend-specific startup and bulk-write hooks.
+// Returned as a separate value by the factory — not embedded in WriterStore.
+// SQLite: manages FTS5 triggers and index rebuild.
+// Postgres: nil (generated tsvector columns handle FTS automatically).
+type StoreLifecycle interface {
+	OnStartup(ctx context.Context) error
+	OnBulkWriteBegin(ctx context.Context) error
+	OnBulkWriteEnd(ctx context.Context) error
+}
+
+// MetricsWriter persists MCP tool call metrics.
+type MetricsWriter interface {
+	RecordToolCalls(ctx context.Context, records []ToolCallRecord) error
+}
+
+// ToolCallRecord holds a single MCP tool invocation metric.
+type ToolCallRecord struct {
+	SessionID         string
+	ToolName          string
+	ArgsBytes         int
+	ResponseBytes     int
+	ResponseTokensEst int
+	ResultCount       int
+	DurationMs        int64
+	IsError           bool
+}
+
+// WriterStore is the composite interface required by the daemon's write path.
+// The daemon's writer.go and enrichment.go depend on all of these capabilities.
+// StoreLifecycle is NOT embedded here — it is returned separately by the
+// factory and may be nil (e.g., Postgres needs no lifecycle hooks).
+type WriterStore interface {
+	MetadataStore
+	DiffStore
+	GraphMutator
+	EmbeddingReconciler
+	EmbedSource
+	WithWriteTx(ctx context.Context, fn func(tx TxHandle) error) error
 }
