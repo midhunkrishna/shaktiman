@@ -207,7 +207,7 @@ func processWriteJob(ctx context.Context, tx *sql.Tx, store *storage.Store, logg
 // collectChunkIDsByPath returns all chunk IDs for a file path (before deletion).
 func collectChunkIDsByPath(ctx context.Context, tx *sql.Tx, path string) []int64 {
 	rows, err := tx.QueryContext(ctx,
-		"SELECT c.id FROM chunks c JOIN files f ON c.file_id = f.id WHERE f.path = ?", path)
+		"SELECT c.id FROM chunks c JOIN files f ON c.file_id = f.id WHERE f.path = ? AND c.embedded = 1", path)
 	if err != nil {
 		return nil
 	}
@@ -291,7 +291,7 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 	// Collect old chunk IDs for vector store cleanup before deleting
 	var staleChunkIDs []int64
 	{
-		rows, qerr := tx.QueryContext(ctx, "SELECT id FROM chunks WHERE file_id = ?", fileID)
+		rows, qerr := tx.QueryContext(ctx, "SELECT id FROM chunks WHERE file_id = ? AND embedded = 1", fileID)
 		if qerr == nil {
 			for rows.Next() {
 				var cid int64

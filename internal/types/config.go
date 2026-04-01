@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -41,7 +42,24 @@ type Config struct {
 	ContextBudgetTokens int  // 256-32768, default 4096
 
 	// Vector backend configuration
-	VectorBackend string // "brute_force" (default) or "hnsw"
+	VectorBackend string // "brute_force" (default), "hnsw", "qdrant", or "pgvector"
+
+	// Database backend configuration
+	DatabaseBackend string // "sqlite" (default) or "postgres"
+
+	// PostgreSQL configuration (used when DatabaseBackend = "postgres")
+	PostgresConnString string
+	PostgresMaxOpen    int    // connection pool max open (default: 20)
+	PostgresMaxIdle    int    // connection pool max idle (default: 10)
+	PostgresSchema     string // Postgres schema name (default: "public")
+
+	// Qdrant configuration (used when VectorBackend = "qdrant")
+	QdrantURL        string // Qdrant HTTP API URL (e.g. "http://localhost:6334")
+	QdrantCollection string // collection name (default: "shaktiman")
+	QdrantAPIKey     string // optional API key (prefer env var SHAKTIMAN_QDRANT_API_KEY)
+
+	// Embedding timeout
+	EmbedTimeout time.Duration // HTTP timeout per embedding request (default: 120s)
 
 	// Test file detection patterns (glob patterns and directory prefixes)
 	TestPatterns []string // e.g. ["*_test.go", "testdata/", "*.test.ts"]
@@ -73,17 +91,30 @@ func DefaultConfig(projectRoot string) Config {
 		ContextEnabled:      true,
 		ContextBudgetTokens: 4096,
 
-		VectorBackend: "brute_force",
+		VectorBackend:   "brute_force",
+		DatabaseBackend: "sqlite",
+
+		PostgresMaxOpen: 20,
+		PostgresMaxIdle: 10,
+		PostgresSchema:  "public",
+
+		QdrantCollection: "shaktiman",
+
+		EmbedTimeout: 120 * time.Second,
 	}
 }
 
 // tomlConfig mirrors the TOML file structure for deserialization.
 // Pointer fields distinguish "key present" from "key absent".
 type tomlConfig struct {
-	Search  tomlSearch  `toml:"search"`
-	Context tomlContext `toml:"context"`
-	Vector  tomlVector  `toml:"vector"`
-	Test    tomlTest    `toml:"test"`
+	Database  tomlDatabase  `toml:"database"`
+	Postgres  tomlPostgres  `toml:"postgres"`
+	Search    tomlSearch    `toml:"search"`
+	Context   tomlContext   `toml:"context"`
+	Vector    tomlVector    `toml:"vector"`
+	Qdrant    tomlQdrant    `toml:"qdrant"`
+	Embedding tomlEmbedding `toml:"embedding"`
+	Test      tomlTest      `toml:"test"`
 }
 
 type tomlVector struct {
@@ -103,6 +134,31 @@ type tomlContext struct {
 
 type tomlTest struct {
 	Patterns []string `toml:"patterns"`
+}
+
+type tomlDatabase struct {
+	Backend *string `toml:"backend"`
+}
+
+type tomlPostgres struct {
+	ConnectionString *string `toml:"connection_string"`
+	MaxOpenConns     *int    `toml:"max_open_conns"`
+	MaxIdleConns     *int    `toml:"max_idle_conns"`
+	Schema           *string `toml:"schema"`
+}
+
+type tomlQdrant struct {
+	URL        *string `toml:"url"`
+	Collection *string `toml:"collection"`
+	APIKey     *string `toml:"api_key"`
+}
+
+type tomlEmbedding struct {
+	OllamaURL *string `toml:"ollama_url"`
+	Model     *string `toml:"model"`
+	Dims      *int    `toml:"dims"`
+	BatchSize *int    `toml:"batch_size"`
+	Timeout   *string `toml:"timeout"`
 }
 
 // LoadConfigFromFile reads shaktiman.toml and merges values into cfg.
@@ -154,32 +210,144 @@ func LoadConfigFromFile(cfg Config) (Config, error) {
 		cfg.MaxBudgetTokens = *v
 	}
 	if v := tc.Vector.Backend; v != nil {
-		if *v != "brute_force" && *v != "hnsw" {
-			return cfg, fmt.Errorf("config: vector.backend must be 'brute_force' or 'hnsw', got %q", *v)
+		switch *v {
+		case "brute_force", "hnsw", "qdrant", "pgvector":
+			cfg.VectorBackend = *v
+		default:
+			return cfg, fmt.Errorf("config: vector.backend must be 'brute_force', 'hnsw', 'qdrant', or 'pgvector', got %q", *v)
 		}
-		cfg.VectorBackend = *v
 	}
 	if len(tc.Test.Patterns) > 0 {
 		cfg.TestPatterns = tc.Test.Patterns
 	}
 
+	// [database] section
+	if v := tc.Database.Backend; v != nil {
+		if *v != "sqlite" && *v != "postgres" {
+			return cfg, fmt.Errorf("config: database.backend must be 'sqlite' or 'postgres', got %q", *v)
+		}
+		cfg.DatabaseBackend = *v
+	}
+
+	// [postgres] section
+	if v := tc.Postgres.ConnectionString; v != nil {
+		cfg.PostgresConnString = *v
+	}
+	if v := tc.Postgres.MaxOpenConns; v != nil {
+		if *v < 1 {
+			return cfg, fmt.Errorf("config: postgres.max_open_conns must be >= 1, got %d", *v)
+		}
+		cfg.PostgresMaxOpen = *v
+	}
+	if v := tc.Postgres.MaxIdleConns; v != nil {
+		if *v < 0 {
+			return cfg, fmt.Errorf("config: postgres.max_idle_conns must be >= 0, got %d", *v)
+		}
+		cfg.PostgresMaxIdle = *v
+	}
+	if v := tc.Postgres.Schema; v != nil {
+		cfg.PostgresSchema = *v
+	}
+
+	// [qdrant] section
+	if v := tc.Qdrant.URL; v != nil {
+		cfg.QdrantURL = *v
+	}
+	if v := tc.Qdrant.Collection; v != nil {
+		cfg.QdrantCollection = *v
+	}
+	if v := tc.Qdrant.APIKey; v != nil {
+		cfg.QdrantAPIKey = *v
+	}
+
+	// [embedding] section
+	if v := tc.Embedding.OllamaURL; v != nil {
+		cfg.OllamaURL = *v
+	}
+	if v := tc.Embedding.Model; v != nil {
+		cfg.EmbeddingModel = *v
+	}
+	if v := tc.Embedding.Dims; v != nil {
+		if *v < 1 || *v > 4096 {
+			return cfg, fmt.Errorf("config: embedding.dims must be 1-4096, got %d", *v)
+		}
+		cfg.EmbeddingDims = *v
+	}
+	if v := tc.Embedding.BatchSize; v != nil {
+		if *v < 1 {
+			return cfg, fmt.Errorf("config: embedding.batch_size must be >= 1, got %d", *v)
+		}
+		cfg.EmbedBatchSize = *v
+	}
+	if v := tc.Embedding.Timeout; v != nil {
+		d, err := time.ParseDuration(*v)
+		if err != nil {
+			return cfg, fmt.Errorf("config: embedding.timeout: %w", err)
+		}
+		cfg.EmbedTimeout = d
+	}
+
+	// Environment variable overrides for secrets (highest priority after CLI flags)
+	if v := os.Getenv("SHAKTIMAN_POSTGRES_URL"); v != "" {
+		cfg.PostgresConnString = v
+	}
+	if v := os.Getenv("SHAKTIMAN_QDRANT_API_KEY"); v != "" {
+		cfg.QdrantAPIKey = v
+	}
+
 	return cfg, nil
+}
+
+// ValidateBackendConfig checks that the configured backend combination is valid.
+// Call after all config sources (defaults, TOML, env, CLI) have been merged.
+func ValidateBackendConfig(cfg Config) error {
+	if cfg.VectorBackend == "pgvector" && cfg.DatabaseBackend != "postgres" {
+		return fmt.Errorf("config: vector.backend 'pgvector' requires database.backend 'postgres'")
+	}
+	if cfg.DatabaseBackend == "postgres" && cfg.PostgresConnString == "" {
+		return fmt.Errorf("config: database.backend 'postgres' requires postgres.connection_string or SHAKTIMAN_POSTGRES_URL")
+	}
+	if cfg.VectorBackend == "qdrant" && cfg.QdrantURL == "" {
+		return fmt.Errorf("config: vector.backend 'qdrant' requires qdrant.url")
+	}
+	return nil
 }
 
 const sampleConfig = `# Shaktiman configuration
 # Uncomment and modify values to override defaults.
 
+[database]
+# backend = "sqlite"             # "sqlite" (default) or "postgres"
+
+[postgres]
+# connection_string = "postgres://user:pass@localhost:5432/shaktiman?sslmode=disable"
+# max_open_conns = 20            # Connection pool max open (default: 20)
+# max_idle_conns = 10            # Connection pool max idle (default: 10)
+# schema = "public"              # Postgres schema (default: "public")
+
 [search]
-# max_results = 10        # Max results per search (1-200)
-# default_mode = "locate"  # "locate" (headers only) or "full" (with source code)
-# min_score = 0.15         # Drop results below this relevance score (0.0-1.0)
+# max_results = 10               # Max results per search (1-200)
+# default_mode = "locate"        # "locate" (headers only) or "full" (with source code)
+# min_score = 0.15               # Drop results below this relevance score (0.0-1.0)
 
 [context]
-# enabled = true           # Set false to disable the context tool entirely
-# budget_tokens = 4096     # Default token budget for context assembly (256-32768)
+# enabled = true                 # Set false to disable the context tool entirely
+# budget_tokens = 4096           # Default token budget for context assembly (256-32768)
 
 [vector]
-# backend = "brute_force"  # "brute_force" or "hnsw"
+# backend = "brute_force"        # "brute_force", "hnsw", "qdrant", or "pgvector"
+
+[qdrant]
+# url = "http://localhost:6334"  # Qdrant HTTP API URL
+# collection = "shaktiman"       # Collection name (default: "shaktiman")
+# api_key = ""                   # API key (prefer env var SHAKTIMAN_QDRANT_API_KEY)
+
+[embedding]
+# ollama_url = "http://localhost:11434"  # Ollama API base URL
+# model = "nomic-embed-text"             # Embedding model name
+# dims = 768                             # Vector dimensionality
+# batch_size = 128                       # Texts per batch request
+# timeout = "120s"                       # HTTP timeout per request
 
 [test]
 # patterns = ["*_test.go", "testdata/"]  # Glob patterns identifying test files

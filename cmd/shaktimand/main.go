@@ -75,6 +75,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := types.ValidateBackendConfig(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 

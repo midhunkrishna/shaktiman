@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -25,6 +26,24 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if cfg.VectorBackend != "brute_force" {
 		t.Errorf("VectorBackend = %q, want brute_force", cfg.VectorBackend)
+	}
+	if cfg.DatabaseBackend != "sqlite" {
+		t.Errorf("DatabaseBackend = %q, want sqlite", cfg.DatabaseBackend)
+	}
+	if cfg.PostgresMaxOpen != 20 {
+		t.Errorf("PostgresMaxOpen = %d, want 20", cfg.PostgresMaxOpen)
+	}
+	if cfg.PostgresMaxIdle != 10 {
+		t.Errorf("PostgresMaxIdle = %d, want 10", cfg.PostgresMaxIdle)
+	}
+	if cfg.PostgresSchema != "public" {
+		t.Errorf("PostgresSchema = %q, want public", cfg.PostgresSchema)
+	}
+	if cfg.QdrantCollection != "shaktiman" {
+		t.Errorf("QdrantCollection = %q, want shaktiman", cfg.QdrantCollection)
+	}
+	if cfg.EmbedTimeout != 120*time.Second {
+		t.Errorf("EmbedTimeout = %v, want 120s", cfg.EmbedTimeout)
 	}
 }
 
@@ -140,6 +159,238 @@ max_results = 5
 	}
 }
 
+func TestLoadConfigFromFile_DatabaseSection(t *testing.T) {
+	dir := t.TempDir()
+	cfgDir := filepath.Join(dir, ".shaktiman")
+	os.MkdirAll(cfgDir, 0o755)
+
+	tomlData := `[database]
+backend = "postgres"
+
+[postgres]
+connection_string = "postgres://localhost:5432/shaktiman"
+max_open_conns = 30
+max_idle_conns = 15
+schema = "myschema"
+`
+	os.WriteFile(filepath.Join(cfgDir, "shaktiman.toml"), []byte(tomlData), 0o644)
+
+	cfg := DefaultConfig(dir)
+	loaded, err := LoadConfigFromFile(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if loaded.DatabaseBackend != "postgres" {
+		t.Errorf("DatabaseBackend = %q, want postgres", loaded.DatabaseBackend)
+	}
+	if loaded.PostgresConnString != "postgres://localhost:5432/shaktiman" {
+		t.Errorf("PostgresConnString = %q", loaded.PostgresConnString)
+	}
+	if loaded.PostgresMaxOpen != 30 {
+		t.Errorf("PostgresMaxOpen = %d, want 30", loaded.PostgresMaxOpen)
+	}
+	if loaded.PostgresMaxIdle != 15 {
+		t.Errorf("PostgresMaxIdle = %d, want 15", loaded.PostgresMaxIdle)
+	}
+	if loaded.PostgresSchema != "myschema" {
+		t.Errorf("PostgresSchema = %q, want myschema", loaded.PostgresSchema)
+	}
+}
+
+func TestLoadConfigFromFile_QdrantSection(t *testing.T) {
+	dir := t.TempDir()
+	cfgDir := filepath.Join(dir, ".shaktiman")
+	os.MkdirAll(cfgDir, 0o755)
+
+	tomlData := `[vector]
+backend = "qdrant"
+
+[qdrant]
+url = "http://localhost:6334"
+collection = "my_index"
+api_key = "secret"
+`
+	os.WriteFile(filepath.Join(cfgDir, "shaktiman.toml"), []byte(tomlData), 0o644)
+
+	cfg := DefaultConfig(dir)
+	loaded, err := LoadConfigFromFile(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if loaded.VectorBackend != "qdrant" {
+		t.Errorf("VectorBackend = %q, want qdrant", loaded.VectorBackend)
+	}
+	if loaded.QdrantURL != "http://localhost:6334" {
+		t.Errorf("QdrantURL = %q", loaded.QdrantURL)
+	}
+	if loaded.QdrantCollection != "my_index" {
+		t.Errorf("QdrantCollection = %q, want my_index", loaded.QdrantCollection)
+	}
+	if loaded.QdrantAPIKey != "secret" {
+		t.Errorf("QdrantAPIKey = %q, want secret", loaded.QdrantAPIKey)
+	}
+}
+
+func TestLoadConfigFromFile_EmbeddingSection(t *testing.T) {
+	dir := t.TempDir()
+	cfgDir := filepath.Join(dir, ".shaktiman")
+	os.MkdirAll(cfgDir, 0o755)
+
+	tomlData := `[embedding]
+ollama_url = "http://remote:11434"
+model = "all-minilm"
+dims = 384
+batch_size = 64
+timeout = "60s"
+`
+	os.WriteFile(filepath.Join(cfgDir, "shaktiman.toml"), []byte(tomlData), 0o644)
+
+	cfg := DefaultConfig(dir)
+	loaded, err := LoadConfigFromFile(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if loaded.OllamaURL != "http://remote:11434" {
+		t.Errorf("OllamaURL = %q", loaded.OllamaURL)
+	}
+	if loaded.EmbeddingModel != "all-minilm" {
+		t.Errorf("EmbeddingModel = %q, want all-minilm", loaded.EmbeddingModel)
+	}
+	if loaded.EmbeddingDims != 384 {
+		t.Errorf("EmbeddingDims = %d, want 384", loaded.EmbeddingDims)
+	}
+	if loaded.EmbedBatchSize != 64 {
+		t.Errorf("EmbedBatchSize = %d, want 64", loaded.EmbedBatchSize)
+	}
+	if loaded.EmbedTimeout != 60*time.Second {
+		t.Errorf("EmbedTimeout = %v, want 60s", loaded.EmbedTimeout)
+	}
+}
+
+func TestLoadConfigFromFile_EnvVarOverrides(t *testing.T) {
+	dir := t.TempDir()
+	cfgDir := filepath.Join(dir, ".shaktiman")
+	os.MkdirAll(cfgDir, 0o755)
+
+	tomlData := `[postgres]
+connection_string = "postgres://toml-value"
+
+[qdrant]
+api_key = "toml-key"
+`
+	os.WriteFile(filepath.Join(cfgDir, "shaktiman.toml"), []byte(tomlData), 0o644)
+
+	// Env vars override TOML
+	t.Setenv("SHAKTIMAN_POSTGRES_URL", "postgres://env-value")
+	t.Setenv("SHAKTIMAN_QDRANT_API_KEY", "env-key")
+
+	cfg := DefaultConfig(dir)
+	loaded, err := LoadConfigFromFile(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if loaded.PostgresConnString != "postgres://env-value" {
+		t.Errorf("PostgresConnString = %q, want postgres://env-value (env should override TOML)", loaded.PostgresConnString)
+	}
+	if loaded.QdrantAPIKey != "env-key" {
+		t.Errorf("QdrantAPIKey = %q, want env-key (env should override TOML)", loaded.QdrantAPIKey)
+	}
+}
+
+func TestLoadConfigFromFile_PgvectorBackend(t *testing.T) {
+	dir := t.TempDir()
+	cfgDir := filepath.Join(dir, ".shaktiman")
+	os.MkdirAll(cfgDir, 0o755)
+
+	tomlData := `[vector]
+backend = "pgvector"
+`
+	os.WriteFile(filepath.Join(cfgDir, "shaktiman.toml"), []byte(tomlData), 0o644)
+
+	cfg := DefaultConfig(dir)
+	loaded, err := LoadConfigFromFile(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if loaded.VectorBackend != "pgvector" {
+		t.Errorf("VectorBackend = %q, want pgvector", loaded.VectorBackend)
+	}
+}
+
+func TestValidateBackendConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		modify  func(*Config)
+		wantErr bool
+	}{
+		{
+			name:    "default config is valid",
+			modify:  func(c *Config) {},
+			wantErr: false,
+		},
+		{
+			name: "pgvector requires postgres",
+			modify: func(c *Config) {
+				c.VectorBackend = "pgvector"
+				c.DatabaseBackend = "sqlite"
+			},
+			wantErr: true,
+		},
+		{
+			name: "pgvector with postgres is valid",
+			modify: func(c *Config) {
+				c.VectorBackend = "pgvector"
+				c.DatabaseBackend = "postgres"
+				c.PostgresConnString = "postgres://localhost/db"
+			},
+			wantErr: false,
+		},
+		{
+			name: "postgres requires connection string",
+			modify: func(c *Config) {
+				c.DatabaseBackend = "postgres"
+				c.PostgresConnString = ""
+			},
+			wantErr: true,
+		},
+		{
+			name: "postgres with connection string is valid",
+			modify: func(c *Config) {
+				c.DatabaseBackend = "postgres"
+				c.PostgresConnString = "postgres://localhost/db"
+			},
+			wantErr: false,
+		},
+		{
+			name: "qdrant requires url",
+			modify: func(c *Config) {
+				c.VectorBackend = "qdrant"
+				c.QdrantURL = ""
+			},
+			wantErr: true,
+		},
+		{
+			name: "qdrant with url is valid",
+			modify: func(c *Config) {
+				c.VectorBackend = "qdrant"
+				c.QdrantURL = "http://localhost:6334"
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig("/tmp/proj")
+			tt.modify(&cfg)
+			err := ValidateBackendConfig(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateBackendConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoadConfigFromFile_InvalidValues(t *testing.T) {
 	tests := []struct {
 		name string
@@ -152,7 +403,14 @@ func TestLoadConfigFromFile_InvalidValues(t *testing.T) {
 		{"min_score negative", `[search]` + "\n" + `min_score = -0.1`},
 		{"budget too low", `[context]` + "\n" + `budget_tokens = 100`},
 		{"budget too high", `[context]` + "\n" + `budget_tokens = 99999`},
-		{"invalid backend", `[vector]` + "\n" + `backend = "faiss"`},
+		{"invalid vector backend", `[vector]` + "\n" + `backend = "faiss"`},
+		{"invalid database backend", `[database]` + "\n" + `backend = "mysql"`},
+		{"postgres max_open_conns < 1", `[postgres]` + "\n" + `max_open_conns = 0`},
+		{"postgres max_idle_conns < 0", `[postgres]` + "\n" + `max_idle_conns = -1`},
+		{"embedding dims too high", `[embedding]` + "\n" + `dims = 5000`},
+		{"embedding dims too low", `[embedding]` + "\n" + `dims = 0`},
+		{"embedding batch_size < 1", `[embedding]` + "\n" + `batch_size = 0`},
+		{"embedding invalid timeout", `[embedding]` + "\n" + `timeout = "not-a-duration"`},
 	}
 
 	for _, tt := range tests {
@@ -208,6 +466,25 @@ func TestWriteSampleConfig(t *testing.T) {
 	if !contains(content, "# backend") {
 		t.Error("expected commented backend")
 	}
+	// New sections
+	if !contains(content, "[database]") {
+		t.Error("expected [database] section")
+	}
+	if !contains(content, "[postgres]") {
+		t.Error("expected [postgres] section")
+	}
+	if !contains(content, "[qdrant]") {
+		t.Error("expected [qdrant] section")
+	}
+	if !contains(content, "[embedding]") {
+		t.Error("expected [embedding] section")
+	}
+	if !contains(content, "# connection_string") {
+		t.Error("expected commented connection_string")
+	}
+	if !contains(content, "# ollama_url") {
+		t.Error("expected commented ollama_url")
+	}
 
 	// Loading the sample should produce default config (all commented out)
 	cfg := DefaultConfig(dir)
@@ -239,6 +516,47 @@ func TestWriteSampleConfig_MkdirAllFails(t *testing.T) {
 	// Use a path with a null byte -- os.MkdirAll will fail with EINVAL.
 	// WriteSampleConfig should silently return (log and exit), not panic.
 	WriteSampleConfig("/invalid\x00path")
+}
+
+func TestLoadConfigFromFile_BackwardCompatibility(t *testing.T) {
+	// Old TOML files without new sections should parse without error
+	// and retain default values for new fields.
+	dir := t.TempDir()
+	cfgDir := filepath.Join(dir, ".shaktiman")
+	os.MkdirAll(cfgDir, 0o755)
+
+	oldToml := `[search]
+max_results = 25
+
+[vector]
+backend = "hnsw"
+`
+	os.WriteFile(filepath.Join(cfgDir, "shaktiman.toml"), []byte(oldToml), 0o644)
+
+	cfg := DefaultConfig(dir)
+	loaded, err := LoadConfigFromFile(cfg)
+	if err != nil {
+		t.Fatalf("old TOML should parse without error: %v", err)
+	}
+	if loaded.SearchMaxResults != 25 {
+		t.Errorf("SearchMaxResults = %d, want 25", loaded.SearchMaxResults)
+	}
+	if loaded.VectorBackend != "hnsw" {
+		t.Errorf("VectorBackend = %q, want hnsw", loaded.VectorBackend)
+	}
+	// New fields should retain defaults
+	if loaded.DatabaseBackend != "sqlite" {
+		t.Errorf("DatabaseBackend = %q, want sqlite", loaded.DatabaseBackend)
+	}
+	if loaded.PostgresMaxOpen != 20 {
+		t.Errorf("PostgresMaxOpen = %d, want 20", loaded.PostgresMaxOpen)
+	}
+	if loaded.QdrantCollection != "shaktiman" {
+		t.Errorf("QdrantCollection = %q, want shaktiman", loaded.QdrantCollection)
+	}
+	if loaded.EmbedTimeout != 120*time.Second {
+		t.Errorf("EmbedTimeout = %v, want 120s", loaded.EmbedTimeout)
+	}
 }
 
 func TestLoadConfigFromFile_TestPatterns(t *testing.T) {
