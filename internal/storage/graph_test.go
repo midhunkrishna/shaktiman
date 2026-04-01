@@ -81,7 +81,7 @@ func TestInsertEdges_Resolved(t *testing.T) {
 	}
 
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, fileID, edges, symbolIDs, "")
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, fileID, edges, symbolIDs, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges: %v", err)
@@ -116,7 +116,7 @@ func TestInsertEdges_Pending(t *testing.T) {
 	}
 
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, fileID, edges, symbolIDs, "")
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, fileID, edges, symbolIDs, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges: %v", err)
@@ -158,7 +158,7 @@ func TestResolvePendingEdges(t *testing.T) {
 	}
 
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, fileID, edges, symbolIDs, "")
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, fileID, edges, symbolIDs, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges: %v", err)
@@ -169,7 +169,7 @@ func TestResolvePendingEdges(t *testing.T) {
 
 	// Resolve pending edges
 	err = db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.ResolvePendingEdges(ctx, tx, []string{"FuncZ"})
+		return store.ResolvePendingEdges(ctx, SqliteTxHandle{Tx: tx}, []string{"FuncZ"})
 	})
 	if err != nil {
 		t.Fatalf("ResolvePendingEdges: %v", err)
@@ -210,7 +210,7 @@ func TestNeighbors_Outgoing(t *testing.T) {
 
 	// Insert A -> B
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, fileID, []types.EdgeRecord{
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, fileID, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
 		}, map[string]int64{"FuncA": symAID, "FuncB": symBID}, "")
 	})
@@ -226,7 +226,7 @@ func TestNeighbors_Outgoing(t *testing.T) {
 	}
 
 	err = db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, bFileID, []types.EdgeRecord{
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, bFileID, []types.EdgeRecord{
 			{SrcSymbolName: "FuncB", DstSymbolName: "FuncC", Kind: "calls"},
 		}, map[string]int64{"FuncB": symBID, "FuncC": symCID}, "")
 	})
@@ -266,7 +266,7 @@ func TestNeighbors_Incoming(t *testing.T) {
 
 	// Insert A -> B
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, fileID, []types.EdgeRecord{
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, fileID, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
 		}, map[string]int64{"FuncA": symAID, "FuncB": symBID}, "")
 	})
@@ -282,7 +282,7 @@ func TestNeighbors_Incoming(t *testing.T) {
 	}
 
 	err = db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, bFileID, []types.EdgeRecord{
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, bFileID, []types.EdgeRecord{
 			{SrcSymbolName: "FuncB", DstSymbolName: "FuncC", Kind: "calls"},
 		}, map[string]int64{"FuncB": symBID, "FuncC": symCID}, "")
 	})
@@ -321,12 +321,12 @@ func TestDeleteEdgesByFile_RemovesTargetEdges(t *testing.T) {
 
 	// Insert edge A->B (owned by file A) and C->B (owned by file C).
 	if err := db.WithWriteTx(func(tx *sql.Tx) error {
-		if err := store.InsertEdges(ctx, tx, fileIDA, []types.EdgeRecord{
+		if err := store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, fileIDA, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
 		}, map[string]int64{"FuncA": symIDA, "FuncB": symIDB}, ""); err != nil {
 			return err
 		}
-		return store.InsertEdges(ctx, tx, fileIDC, []types.EdgeRecord{
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, fileIDC, []types.EdgeRecord{
 			{SrcSymbolName: "FuncC", DstSymbolName: "FuncB", Kind: "calls"},
 		}, map[string]int64{"FuncC": symIDC, "FuncB": symIDB}, "")
 	}); err != nil {
@@ -335,7 +335,7 @@ func TestDeleteEdgesByFile_RemovesTargetEdges(t *testing.T) {
 
 	// Delete edges owned by file A.
 	if err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.DeleteEdgesByFile(ctx, tx, fileIDA)
+		return store.DeleteEdgesByFile(ctx, SqliteTxHandle{Tx: tx}, fileIDA)
 	}); err != nil {
 		t.Fatalf("DeleteEdgesByFile: %v", err)
 	}
@@ -370,12 +370,12 @@ func TestNeighbors_Both(t *testing.T) {
 
 	// A->B and C->B
 	if err := db.WithWriteTx(func(tx *sql.Tx) error {
-		if err := store.InsertEdges(ctx, tx, fileIDA, []types.EdgeRecord{
+		if err := store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, fileIDA, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
 		}, map[string]int64{"FuncA": symIDA, "FuncB": symIDB}, ""); err != nil {
 			return err
 		}
-		return store.InsertEdges(ctx, tx, fileIDC, []types.EdgeRecord{
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, fileIDC, []types.EdgeRecord{
 			{SrcSymbolName: "FuncC", DstSymbolName: "FuncB", Kind: "calls"},
 		}, map[string]int64{"FuncC": symIDC, "FuncB": symIDB}, "")
 	}); err != nil {
@@ -424,7 +424,7 @@ func TestNeighbors_DepthClampBelow(t *testing.T) {
 	_, _, symIDB := insertTestFileChunkSymbol(t, store, "b.go", "FuncB")
 
 	if err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, fileID, []types.EdgeRecord{
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, fileID, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
 		}, map[string]int64{"FuncA": symIDA, "FuncB": symIDB}, "")
 	}); err != nil {
@@ -450,7 +450,7 @@ func TestNeighbors_DepthClampAbove(t *testing.T) {
 	_, _, symIDB := insertTestFileChunkSymbol(t, store, "b.go", "FuncB")
 
 	if err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, fileID, []types.EdgeRecord{
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, fileID, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
 		}, map[string]int64{"FuncA": symIDA, "FuncB": symIDB}, "")
 	}); err != nil {
@@ -486,7 +486,7 @@ func TestInsertEdges_SkipUnknownSrc(t *testing.T) {
 	}
 
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, fileID, edges, symbolIDs, "")
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, fileID, edges, symbolIDs, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges: %v", err)
@@ -522,7 +522,7 @@ func TestInsertEdges_CrossFileLookup(t *testing.T) {
 	}
 
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, fileIDA, edges, symbolIDs, "")
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, fileIDA, edges, symbolIDs, "")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges: %v", err)
@@ -547,7 +547,7 @@ func TestResolvePendingEdges_NoMatch(t *testing.T) {
 
 	// Insert pending edge for FuncZ.
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, fileID, []types.EdgeRecord{
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, fileID, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncZ", Kind: "calls"},
 		}, map[string]int64{"FuncA": symIDA}, "")
 	})
@@ -557,7 +557,7 @@ func TestResolvePendingEdges_NoMatch(t *testing.T) {
 
 	// Resolve with a name that does NOT match any pending edge.
 	err = db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.ResolvePendingEdges(ctx, tx, []string{"FuncNope"})
+		return store.ResolvePendingEdges(ctx, SqliteTxHandle{Tx: tx}, []string{"FuncNope"})
 	})
 	if err != nil {
 		t.Fatalf("ResolvePendingEdges: %v", err)
@@ -586,7 +586,7 @@ func TestInsertEdges_QualifiedNameAndLanguageStored(t *testing.T) {
 	symbolIDs := map[string]int64{"MyService": symAID}
 
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, fileID, edges, symbolIDs, "java")
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, fileID, edges, symbolIDs, "java")
 	})
 	if err != nil {
 		t.Fatalf("InsertEdges: %v", err)
@@ -618,7 +618,7 @@ func TestResolvePendingEdges_LanguageFilter(t *testing.T) {
 
 	// Insert pending edge from Java for "Config"
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, javaFileID, []types.EdgeRecord{
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, javaFileID, []types.EdgeRecord{
 			{SrcSymbolName: "App", DstSymbolName: "Config", DstQualifiedName: "com.example.Config", Kind: "imports"},
 		}, map[string]int64{"App": javaSymID}, "java")
 	})
@@ -630,7 +630,7 @@ func TestResolvePendingEdges_LanguageFilter(t *testing.T) {
 	insertTestFileChunkSymbolWithLang(t, store, "config.py", "Config", "python")
 
 	err = db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.ResolvePendingEdges(ctx, tx, []string{"Config"})
+		return store.ResolvePendingEdges(ctx, SqliteTxHandle{Tx: tx}, []string{"Config"})
 	})
 	if err != nil {
 		t.Fatalf("ResolvePendingEdges: %v", err)
@@ -662,7 +662,7 @@ func TestResolvePendingEdges_SameLanguageResolves(t *testing.T) {
 	javaFileID, _, javaSymID := insertTestFileChunkSymbolWithLang(t, store, "App.java", "App", "java")
 
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, javaFileID, []types.EdgeRecord{
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, javaFileID, []types.EdgeRecord{
 			{SrcSymbolName: "App", DstSymbolName: "Config", DstQualifiedName: "com.example.Config", Kind: "imports"},
 		}, map[string]int64{"App": javaSymID}, "java")
 	})
@@ -674,7 +674,7 @@ func TestResolvePendingEdges_SameLanguageResolves(t *testing.T) {
 	_, _, javaConfigID := insertTestFileChunkSymbolWithLang(t, store, "Config.java", "Config", "java")
 
 	err = db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.ResolvePendingEdges(ctx, tx, []string{"Config"})
+		return store.ResolvePendingEdges(ctx, SqliteTxHandle{Tx: tx}, []string{"Config"})
 	})
 	if err != nil {
 		t.Fatalf("ResolvePendingEdges: %v", err)
@@ -759,7 +759,7 @@ func TestIntegration_CrossLanguageNoMisresolution(t *testing.T) {
 
 	// Java imports Config — should NOT resolve to Python Config
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, javaFileID, []types.EdgeRecord{
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, javaFileID, []types.EdgeRecord{
 			{SrcSymbolName: "App", DstSymbolName: "Config", DstQualifiedName: "com.example.Config", Kind: "imports"},
 		}, map[string]int64{"App": javaSymID}, "java")
 	})
@@ -889,7 +889,7 @@ func TestResolvePendingEdges_BackwardCompat_EmptyLanguage(t *testing.T) {
 	fileID, _, symAID := insertTestFileChunkSymbol(t, store, "a.go", "FuncA")
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
 		// Insert with empty language (like pre-migration data)
-		return store.InsertEdges(ctx, tx, fileID, []types.EdgeRecord{
+		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, fileID, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncZ", Kind: "calls"},
 		}, map[string]int64{"FuncA": symAID}, "")
 	})
@@ -902,7 +902,7 @@ func TestResolvePendingEdges_BackwardCompat_EmptyLanguage(t *testing.T) {
 
 	// Resolve — should work even with empty src_language (backward compat fallback)
 	err = db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.ResolvePendingEdges(ctx, tx, []string{"FuncZ"})
+		return store.ResolvePendingEdges(ctx, SqliteTxHandle{Tx: tx}, []string{"FuncZ"})
 	})
 	if err != nil {
 		t.Fatalf("ResolvePendingEdges: %v", err)

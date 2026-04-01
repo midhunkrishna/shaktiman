@@ -379,7 +379,7 @@ func TestComputeStructuralScores_WithGraphEdges(t *testing.T) {
 			"FuncA": symIDs1[0],
 			"FuncB": symIDs2[0],
 		}
-		return store.InsertEdges(ctx, tx, fileID1, []types.EdgeRecord{
+		return store.InsertEdges(ctx, storage.SqliteTxHandle{Tx: tx}, fileID1, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
 		}, symMap, "")
 	})

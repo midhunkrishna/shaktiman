@@ -156,8 +156,8 @@ type EmbedProgress struct {
 // concrete type (e.g., *sql.Tx for SQLite, pgx.Tx for Postgres).
 // Methods that participate in transactions accept TxHandle.
 type TxHandle interface {
-	// Unexported marker method prevents external implementations.
-	txHandle()
+	// IsTxHandle is a marker method identifying transaction handle implementations.
+	IsTxHandle()
 }
 
 // DiffStore provides diff log and symbol change tracking.

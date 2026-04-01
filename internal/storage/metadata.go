@@ -10,6 +10,9 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
+// Compile-time check: *Store satisfies WriterStore.
+var _ types.WriterStore = (*Store)(nil)
+
 // Store provides metadata CRUD operations backed by SQLite.
 type Store struct {
 	db *DB
@@ -23,6 +26,11 @@ func NewStore(db *DB) *Store {
 // DB returns the underlying database for direct access when needed.
 func (s *Store) DB() *DB {
 	return s.db
+}
+
+// WithWriteTx executes fn within a write transaction using an opaque TxHandle.
+func (s *Store) WithWriteTx(ctx context.Context, fn func(tx types.TxHandle) error) error {
+	return s.db.WithWriteTxCtx(ctx, fn)
 }
 
 // ── File operations ──

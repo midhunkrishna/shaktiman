@@ -14,10 +14,11 @@ import (
 // database IDs from the current file. Uses tx to see uncommitted symbols.
 // language is the source file's language, used for language-filtered lookup
 // and stored on pending_edges for cross-language misresolution prevention.
-func (s *Store) InsertEdges(ctx context.Context, tx *sql.Tx, fileID int64, edges []types.EdgeRecord, symbolIDs map[string]int64, language string) error {
+func (s *Store) InsertEdges(ctx context.Context, txh types.TxHandle, fileID int64, edges []types.EdgeRecord, symbolIDs map[string]int64, language string) error {
 	if len(edges) == 0 {
 		return nil
 	}
+	tx := txh.(SqliteTxHandle).Tx
 
 	edgeStmt, err := tx.PrepareContext(ctx, `
 		INSERT OR IGNORE INTO edges (src_symbol_id, dst_symbol_id, kind, file_id)
@@ -64,10 +65,11 @@ func (s *Store) InsertEdges(ctx context.Context, tx *sql.Tx, fileID int64, edges
 // ResolvePendingEdges attempts to resolve pending edges whose dst_symbol_name
 // matches any of the given newly-inserted symbol names. Uses src_language
 // to ensure a Java import never resolves to a Python symbol.
-func (s *Store) ResolvePendingEdges(ctx context.Context, tx *sql.Tx, newSymbolNames []string) error {
+func (s *Store) ResolvePendingEdges(ctx context.Context, txh types.TxHandle, newSymbolNames []string) error {
 	if len(newSymbolNames) == 0 {
 		return nil
 	}
+	tx := txh.(SqliteTxHandle).Tx
 
 	placeholders := make([]string, len(newSymbolNames))
 	args := make([]any, len(newSymbolNames))
@@ -271,7 +273,8 @@ func (s *Store) PendingEdgeCallersWithKind(ctx context.Context, dstName string) 
 }
 
 // DeleteEdgesByFile removes all edges originating from a given file.
-func (s *Store) DeleteEdgesByFile(ctx context.Context, tx *sql.Tx, fileID int64) error {
+func (s *Store) DeleteEdgesByFile(ctx context.Context, txh types.TxHandle, fileID int64) error {
+	tx := txh.(SqliteTxHandle).Tx
 	if _, err := tx.ExecContext(ctx, "DELETE FROM edges WHERE file_id = ?", fileID); err != nil {
 		return fmt.Errorf("delete edges for file %d: %w", fileID, err)
 	}
