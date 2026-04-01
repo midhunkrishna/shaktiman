@@ -4,7 +4,6 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/shaktimanai/shaktiman/internal/core"
-	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 	"github.com/shaktimanai/shaktiman/internal/vector"
 )
@@ -27,7 +26,7 @@ Use Grep for exact string or regex matching. Use Glob for finding files by name.
 // NewServerInput configures the MCP server. CS-5: >2 args → input struct.
 type NewServerInput struct {
 	Engine      *core.QueryEngine
-	Store       *storage.Store
+	Store       types.WriterStore
 	VectorStore types.VectorStore
 	EmbedWorker *vector.EmbedWorker
 	Recorder    *MetricsRecorder // nil disables metrics persistence

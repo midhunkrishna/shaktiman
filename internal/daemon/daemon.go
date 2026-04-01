@@ -22,8 +22,9 @@ import (
 // Daemon manages the lifecycle of the Shaktiman indexing system.
 type Daemon struct {
 	cfg              types.Config
-	db               *storage.DB
-	store            *storage.Store
+	db               *storage.DB              // retained for Close() and metrics; not exposed
+	store            types.WriterStore
+	lifecycle        types.StoreLifecycle     // nil if backend needs no lifecycle hooks
 	writer           *WriterManager
 	engine           *core.QueryEngine
 	logger           *slog.Logger
@@ -52,8 +53,10 @@ func New(cfg types.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("run migrations: %w", err)
 	}
 
-	store := storage.NewStore(db)
-	engine := core.NewQueryEngine(store, cfg.ProjectRoot)
+	concreteStore := storage.NewStore(db)
+	var store types.WriterStore = concreteStore
+	lifecycle := storage.NewSQLiteLifecycle(concreteStore)
+	engine := core.NewQueryEngine(concreteStore, cfg.ProjectRoot)
 	writer := NewWriterManager(store, cfg.WriterChannelSize, cfg.TestPatterns)
 
 	// Session-aware ranking
@@ -64,6 +67,7 @@ func New(cfg types.Config) (*Daemon, error) {
 		cfg:       cfg,
 		db:        db,
 		store:     store,
+		lifecycle: lifecycle,
 		writer:    writer,
 		engine:    engine,
 		logger:    slog.Default().With("component", "daemon"),
@@ -140,19 +144,12 @@ func (d *Daemon) Start(ctx context.Context) error {
 		go d.periodicEmbeddingSave(embedCtx)
 	}
 
-	pipeline := NewEnrichmentPipeline(d.store, d.writer, d.cfg.EnrichmentWorkers)
+	pipeline := NewEnrichmentPipeline(d.store, d.writer, d.cfg.EnrichmentWorkers, d.lifecycle)
 
-	// Recover FTS triggers in case of previous crash between disable/enable
-	if err := d.store.EnsureFTSTriggers(ctx); err != nil {
-		d.logger.Warn("FTS trigger recovery failed", "err", err)
-	}
-	// Rebuild FTS if stale (crash during cold index left FTS out of sync)
-	if stale, err := d.store.IsFTSStale(ctx); err != nil {
-		d.logger.Warn("FTS staleness check failed", "err", err)
-	} else if stale {
-		d.logger.Warn("FTS index is stale, rebuilding")
-		if err := d.store.RebuildFTS(ctx); err != nil {
-			d.logger.Error("FTS rebuild on startup failed", "err", err)
+	// Run backend-specific startup hooks (FTS trigger recovery for SQLite)
+	if d.lifecycle != nil {
+		if err := d.lifecycle.OnStartup(ctx); err != nil {
+			d.logger.Warn("store lifecycle startup failed", "err", err)
 		}
 	}
 
@@ -485,7 +482,7 @@ func (d *Daemon) Engine() *core.QueryEngine {
 }
 
 // Store returns the metadata store.
-func (d *Daemon) Store() *storage.Store {
+func (d *Daemon) Store() types.WriterStore {
 	return d.store
 }
 
@@ -565,7 +562,7 @@ func (d *Daemon) IndexProject(ctx context.Context, onProgress func(IndexProgress
 		return fmt.Errorf("scan repo: %w", err)
 	}
 
-	pipeline := NewEnrichmentPipeline(d.store, d.writer, d.cfg.EnrichmentWorkers)
+	pipeline := NewEnrichmentPipeline(d.store, d.writer, d.cfg.EnrichmentWorkers, d.lifecycle)
 	if err := pipeline.IndexAll(ctx, IndexAllInput{
 		ProjectRoot: d.cfg.ProjectRoot,
 		Files:       scanResult.Files,

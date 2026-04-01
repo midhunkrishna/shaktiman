@@ -167,7 +167,7 @@ func TestEnrichFile_Modify(t *testing.T) {
 	go wm.Run(ctx)
 	_ = wm.AddProducer()
 
-	pipeline := NewEnrichmentPipeline(store, wm, 1)
+	pipeline := NewEnrichmentPipeline(store, wm, 1, nil)
 
 	dir := t.TempDir()
 	goFile := filepath.Join(dir, "main.go")
@@ -218,7 +218,7 @@ func TestEnrichFile_Delete(t *testing.T) {
 	go wm.Run(ctx)
 	_ = wm.AddProducer()
 
-	pipeline := NewEnrichmentPipeline(store, wm, 1)
+	pipeline := NewEnrichmentPipeline(store, wm, 1, nil)
 
 	dir := t.TempDir()
 	goFile := filepath.Join(dir, "del.go")
@@ -280,7 +280,7 @@ func TestEnrichFile_SkipUnchanged(t *testing.T) {
 	go wm1.Run(ctx1)
 	_ = wm1.AddProducer()
 
-	pipeline := NewEnrichmentPipeline(store, wm1, 1)
+	pipeline := NewEnrichmentPipeline(store, wm1, 1, nil)
 
 	dir := t.TempDir()
 	goFile := filepath.Join(dir, "same.go")
@@ -334,7 +334,7 @@ func TestEnrichFile_UnsupportedLanguage(t *testing.T) {
 	go wm.Run(ctx)
 	_ = wm.AddProducer()
 
-	pipeline := NewEnrichmentPipeline(store, wm, 1)
+	pipeline := NewEnrichmentPipeline(store, wm, 1, nil)
 
 	dir := t.TempDir()
 	txtFile := filepath.Join(dir, "readme.txt")
@@ -365,7 +365,7 @@ func TestEnrichFile_LargeFile(t *testing.T) {
 	go wm.Run(ctx)
 	_ = wm.AddProducer()
 
-	pipeline := NewEnrichmentPipeline(store, wm, 1)
+	pipeline := NewEnrichmentPipeline(store, wm, 1, nil)
 
 	dir := t.TempDir()
 	largeFile := filepath.Join(dir, "huge.go")
@@ -401,7 +401,7 @@ func TestEnrichFile_UnreadableFile(t *testing.T) {
 	go wm.Run(ctx)
 	_ = wm.AddProducer()
 
-	pipeline := NewEnrichmentPipeline(store, wm, 1)
+	pipeline := NewEnrichmentPipeline(store, wm, 1, nil)
 
 	// Use a non-existent file path
 	err := pipeline.EnrichFile(context.Background(), FileChangeEvent{

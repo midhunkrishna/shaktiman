@@ -24,7 +24,7 @@ type WriterManager struct {
 	ch            chan types.WriteJob
 	producers     sync.WaitGroup
 	done          chan struct{}
-	store         *storage.Store
+	store         types.WriterStore
 	logger        *slog.Logger
 	closed        atomic.Bool
 	started       atomic.Bool         // true after Run() is called
@@ -41,7 +41,7 @@ func (wm *WriterManager) SetVectorDeleter(vd types.VectorDeleter) {
 }
 
 // NewWriterManager creates a writer with the given channel capacity (IP-5: 500).
-func NewWriterManager(store *storage.Store, chanSize int, testPatterns []string) *WriterManager {
+func NewWriterManager(store types.WriterStore, chanSize int, testPatterns []string) *WriterManager {
 	return &WriterManager{
 		ch:           make(chan types.WriteJob, chanSize),
 		done:         make(chan struct{}),
@@ -156,7 +156,8 @@ func (wm *WriterManager) Started() bool { return wm.started.Load() }
 func (wm *WriterManager) processJob(ctx context.Context, job types.WriteJob) {
 	start := time.Now()
 	var staleChunkIDs []int64
-	err := wm.store.DB().WithWriteTx(func(tx *sql.Tx) error {
+	err := wm.store.WithWriteTx(ctx, func(txh types.TxHandle) error {
+		tx := txh.(storage.SqliteTxHandle).Tx
 		var txErr error
 		staleChunkIDs, txErr = processWriteJob(ctx, tx, wm.store, wm.logger, job, wm.testPatterns)
 		return txErr
@@ -188,7 +189,7 @@ func (wm *WriterManager) processJob(ctx context.Context, job types.WriteJob) {
 
 // processWriteJob executes a single write job within a transaction.
 // Returns IDs of chunks that were deleted (for vector store cleanup).
-func processWriteJob(ctx context.Context, tx *sql.Tx, store *storage.Store, logger *slog.Logger, job types.WriteJob, testPatterns []string) ([]int64, error) {
+func processWriteJob(ctx context.Context, tx *sql.Tx, store types.WriterStore, logger *slog.Logger, job types.WriteJob, testPatterns []string) ([]int64, error) {
 	switch job.Type {
 	case types.WriteJobEnrichment:
 		return processEnrichmentJob(ctx, tx, store, logger, job, testPatterns)
@@ -224,7 +225,7 @@ func collectChunkIDsByPath(ctx context.Context, tx *sql.Tx, path string) []int64
 
 // processEnrichmentJob handles an enrichment write: upsert file, replace chunks + symbols.
 // Returns IDs of old chunks that were replaced (for vector store cleanup).
-func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store, logger *slog.Logger, job types.WriteJob, testPatterns []string) ([]int64, error) {
+func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store types.WriterStore, logger *slog.Logger, job types.WriteJob, testPatterns []string) ([]int64, error) {
 	if job.File == nil {
 		return nil, fmt.Errorf("enrichment job for %s has nil file", job.FilePath)
 	}
@@ -444,7 +445,7 @@ func fetchOldSymbols(ctx context.Context, tx *sql.Tx, fileID int64) map[string]o
 }
 
 // computeAndRecordDiff computes symbol-level diffs and records them.
-func computeAndRecordDiff(ctx context.Context, tx *sql.Tx, store *storage.Store,
+func computeAndRecordDiff(ctx context.Context, tx *sql.Tx, store types.WriterStore,
 	fileID int64, oldHash string, job types.WriteJob,
 	oldSymbols map[string]oldSymbolInfo, newSymbolIDs map[string]int64) {
 	txh := storage.SqliteTxHandle{Tx: tx}
@@ -525,7 +526,7 @@ func computeAndRecordDiff(ctx context.Context, tx *sql.Tx, store *storage.Store,
 }
 
 // recordAddDiff records a diff for a newly added file.
-func recordAddDiff(ctx context.Context, tx *sql.Tx, store *storage.Store,
+func recordAddDiff(ctx context.Context, tx *sql.Tx, store types.WriterStore,
 	fileID int64, hash string, totalLines int,
 	symbols []types.SymbolRecord, symbolIDs map[string]int64) {
 	txh := storage.SqliteTxHandle{Tx: tx}

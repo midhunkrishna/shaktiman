@@ -12,7 +12,6 @@ import (
 
 	"github.com/shaktimanai/shaktiman/internal/core"
 	"github.com/shaktimanai/shaktiman/internal/format"
-	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 	"github.com/shaktimanai/shaktiman/internal/vector"
 )
@@ -239,7 +238,7 @@ For finding every mention of a string (not just definitions), use Grep.`),
 	)
 }
 
-func symbolsHandler(store *storage.Store) handlerFunc {
+func symbolsHandler(store types.WriterStore) handlerFunc {
 	return func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		name, err := req.RequireString("name")
 		if err != nil {
@@ -370,7 +369,7 @@ No equivalent in built-in tools.`),
 	)
 }
 
-func dependenciesHandler(store *storage.Store) handlerFunc {
+func dependenciesHandler(store types.WriterStore) handlerFunc {
 	return func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		symbolName, err := req.RequireString("symbol")
 		if err != nil {
@@ -486,7 +485,7 @@ Use to see which definitions were affected by recent changes.`),
 	)
 }
 
-func diffHandler(store *storage.Store) handlerFunc {
+func diffHandler(store types.WriterStore) handlerFunc {
 	return func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		sinceStr := req.GetString("since", "24h")
 		duration, err := time.ParseDuration(sinceStr)
@@ -503,7 +502,7 @@ func diffHandler(store *storage.Store) handlerFunc {
 		}
 
 		since := time.Now().Add(-duration)
-		diffs, err := store.GetRecentDiffs(ctx, storage.RecentDiffsInput{
+		diffs, err := store.GetRecentDiffs(ctx, types.RecentDiffsInput{
 			Since: since,
 			Limit: limit,
 		})
@@ -568,7 +567,7 @@ Returns chunk counts, embedding percentage, and circuit breaker state.`),
 	)
 }
 
-func enrichmentStatusHandler(store *storage.Store, vs types.VectorStore, ew *vector.EmbedWorker) handlerFunc {
+func enrichmentStatusHandler(store types.WriterStore, vs types.VectorStore, ew *vector.EmbedWorker) handlerFunc {
 	return func(ctx context.Context, _ mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		stats, err := store.GetIndexStats(ctx)
 		if err != nil {
@@ -642,7 +641,7 @@ Start here to orient in an unfamiliar codebase — gives structure at a glance w
 	)
 }
 
-func summaryHandler(store *storage.Store, vs types.VectorStore) handlerFunc {
+func summaryHandler(store types.WriterStore, vs types.VectorStore) handlerFunc {
 	return func(ctx context.Context, _ mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		stats, err := store.GetIndexStats(ctx)
 		if err != nil {
