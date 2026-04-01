@@ -7,27 +7,13 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
-// DiffLogEntry represents a file-level change record.
-type DiffLogEntry struct {
-	ID           int64
-	FileID       int64
-	Timestamp    string
-	ChangeType   string // add | modify | delete | rename
-	LinesAdded   int
-	LinesRemoved int
-	HashBefore   string
-	HashAfter    string
-}
-
-// DiffSymbolEntry represents a symbol-level change within a diff.
-type DiffSymbolEntry struct {
-	SymbolName string
-	SymbolID   int64  // 0 if unknown
-	ChangeType string // added | modified | removed | signature_changed
-	ChunkID    int64  // 0 if unknown
-}
+// Type aliases for backward compatibility. Canonical definitions are in types/.
+type DiffLogEntry = types.DiffLogEntry
+type DiffSymbolEntry = types.DiffSymbolEntry
 
 // InsertDiffLog records a file-level change within a transaction.
 func (s *Store) InsertDiffLog(ctx context.Context, tx *sql.Tx, entry DiffLogEntry) (int64, error) {
@@ -66,12 +52,8 @@ func (s *Store) InsertDiffSymbols(ctx context.Context, tx *sql.Tx, diffID int64,
 	return nil
 }
 
-// RecentDiffsInput configures a recent diffs query.
-type RecentDiffsInput struct {
-	Since  time.Time
-	FileID int64 // 0 for all files
-	Limit  int   // 0 for no limit
-}
+// Type alias for backward compatibility.
+type RecentDiffsInput = types.RecentDiffsInput
 
 // GetRecentDiffs returns diffs within the given time window.
 func (s *Store) GetRecentDiffs(ctx context.Context, input RecentDiffsInput) ([]DiffLogEntry, error) {

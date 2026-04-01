@@ -243,12 +243,8 @@ func (s *Store) PendingEdgeCallers(ctx context.Context, dstName string) ([]int64
 	return ids, rows.Err()
 }
 
-// PendingEdgeCaller holds a source symbol ID and the edge kind from a pending edge.
-type PendingEdgeCaller struct {
-	SrcSymbolID      int64
-	Kind             string
-	DstQualifiedName string
-}
+// Type alias for backward compatibility.
+type PendingEdgeCaller = types.PendingEdgeCaller
 
 // PendingEdgeCallersWithKind returns src_symbol_id, kind, and dst_qualified_name
 // from pending_edges for a given unresolved destination name. Used by the symbols

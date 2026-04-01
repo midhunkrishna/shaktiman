@@ -184,6 +184,11 @@ func (s *HNSWStore) Close() error {
 	return nil
 }
 
+// Healthy always returns true for the in-process HNSW store.
+func (s *HNSWStore) Healthy(_ context.Context) bool {
+	return true
+}
+
 // Dim returns the vector dimensionality.
 func (s *HNSWStore) Dim() int {
 	return s.dim
