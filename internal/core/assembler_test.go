@@ -137,7 +137,7 @@ func TestAssemble_StructuralExpansion(t *testing.T) {
 			"Caller": symIDs[0],
 			"Helper": symIDs[1],
 		}
-		return store.InsertEdges(ctx, tx, fileID, []types.EdgeRecord{
+		return store.InsertEdges(ctx, storage.SqliteTxHandle{Tx: tx}, fileID, []types.EdgeRecord{
 			{SrcSymbolName: "Caller", DstSymbolName: "Helper", Kind: "calls"},
 		}, symMap, "")
 	})
@@ -256,7 +256,7 @@ func TestStructuralExpand_WithEdges(t *testing.T) {
 			"Main":  symIDs1[0],
 			"Serve": symIDs2[0],
 		}
-		return store.InsertEdges(ctx, tx, fileID1, []types.EdgeRecord{
+		return store.InsertEdges(ctx, storage.SqliteTxHandle{Tx: tx}, fileID1, []types.EdgeRecord{
 			{SrcSymbolName: "Main", DstSymbolName: "Serve", Kind: "calls"},
 		}, symMap, "")
 	})

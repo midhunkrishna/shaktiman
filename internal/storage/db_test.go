@@ -398,6 +398,208 @@ func TestGetFileIsTestByID(t *testing.T) {
 	}
 }
 
+func TestWithWriteTxCtx_CommitAndRollback(t *testing.T) {
+	t.Parallel()
+	db, err := Open(OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Successful transaction via TxHandle
+	err = db.WithWriteTxCtx(ctx, func(txh types.TxHandle) error {
+		tx := txh.(SqliteTxHandle).Tx
+		_, err := tx.ExecContext(ctx, `INSERT INTO files (path, content_hash, mtime, embedding_status, parse_quality)
+			VALUES ('txh_test.go', 'h1', 1.0, 'pending', 'full')`)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("WithWriteTxCtx commit: %v", err)
+	}
+
+	// Verify the row exists
+	var path string
+	err = db.QueryRowContext(ctx, "SELECT path FROM files WHERE path = 'txh_test.go'").Scan(&path)
+	if err != nil {
+		t.Fatalf("row not found after commit: %v", err)
+	}
+
+	// Rolled-back transaction via TxHandle
+	rollbackErr := errors.New("forced rollback")
+	err = db.WithWriteTxCtx(ctx, func(txh types.TxHandle) error {
+		tx := txh.(SqliteTxHandle).Tx
+		tx.ExecContext(ctx, `INSERT INTO files (path, content_hash, mtime, embedding_status, parse_quality)
+			VALUES ('should_not_exist.go', 'h2', 1.0, 'pending', 'full')`)
+		return rollbackErr
+	})
+	if !errors.Is(err, rollbackErr) {
+		t.Fatalf("expected rollback error, got %v", err)
+	}
+
+	// Verify the rolled-back row does not exist
+	var count int
+	db.QueryRowContext(ctx, "SELECT COUNT(*) FROM files WHERE path = 'should_not_exist.go'").Scan(&count)
+	if count != 0 {
+		t.Error("rolled-back row should not exist")
+	}
+}
+
+func TestSqliteTxHandle_SatisfiesTxHandle(t *testing.T) {
+	// Compile-time check is implicit, but verify the assertion works at runtime
+	var txh types.TxHandle = SqliteTxHandle{Tx: nil}
+	txh.IsTxHandle() // should not panic
+
+	// Verify type assertion round-trip
+	recovered := txh.(SqliteTxHandle)
+	if recovered.Tx != nil {
+		t.Error("expected nil Tx")
+	}
+}
+
+func TestStoreWithWriteTx(t *testing.T) {
+	t.Parallel()
+	db, err := Open(OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Use Store.WithWriteTx (the WriterStore interface method)
+	// Insert a diff log entry inside a TxHandle transaction
+	var fileID int64
+	fileID, _ = store.UpsertFile(ctx, &types.FileRecord{
+		Path: "writer_store.go", ContentHash: "h1", Mtime: 1.0,
+		Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+
+	var diffID int64
+	err = store.WithWriteTx(ctx, func(txh types.TxHandle) error {
+		var txErr error
+		diffID, txErr = store.InsertDiffLog(ctx, txh, types.DiffLogEntry{
+			FileID: fileID, ChangeType: "add", LinesAdded: 5, HashAfter: "h1",
+		})
+		return txErr
+	})
+	if err != nil {
+		t.Fatalf("Store.WithWriteTx: %v", err)
+	}
+	if diffID == 0 {
+		t.Fatal("expected non-zero diffID from Store.WithWriteTx")
+	}
+
+	// Verify the diff was persisted
+	diffs, err := store.GetRecentDiffs(ctx, types.RecentDiffsInput{FileID: fileID})
+	if err != nil {
+		t.Fatalf("GetRecentDiffs: %v", err)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("expected 1 diff, got %d", len(diffs))
+	}
+}
+
+func TestStoreWithWriteTx_DiffInTransaction(t *testing.T) {
+	t.Parallel()
+	db, err := Open(OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Insert a file
+	fileID, _ := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "test.go", ContentHash: "h1", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+
+	// Use WriterStore.WithWriteTx to insert diff via TxHandle
+	var diffID int64
+	err = store.WithWriteTx(ctx, func(txh types.TxHandle) error {
+		var txErr error
+		diffID, txErr = store.InsertDiffLog(ctx, txh, types.DiffLogEntry{
+			FileID:     fileID,
+			ChangeType: "add",
+			LinesAdded: 10,
+			HashAfter:  "h1",
+		})
+		if txErr != nil {
+			return txErr
+		}
+		return store.InsertDiffSymbols(ctx, txh, diffID, []types.DiffSymbolEntry{
+			{SymbolName: "main", ChangeType: "added"},
+		})
+	})
+	if err != nil {
+		t.Fatalf("WithWriteTx diff: %v", err)
+	}
+	if diffID == 0 {
+		t.Fatal("expected non-zero diffID")
+	}
+
+	// Verify diff was recorded
+	symbols, err := store.GetDiffSymbols(ctx, diffID)
+	if err != nil {
+		t.Fatalf("GetDiffSymbols: %v", err)
+	}
+	if len(symbols) != 1 || symbols[0].SymbolName != "main" {
+		t.Errorf("unexpected diff symbols: %+v", symbols)
+	}
+}
+
+func TestStoreWithWriteTx_Rollback(t *testing.T) {
+	t.Parallel()
+	db, err := Open(OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if err := Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	store := NewStore(db)
+	ctx := context.Background()
+
+	fileID, _ := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "test.go", ContentHash: "h1", Mtime: 1.0,
+		Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+
+	// A transaction that returns error should rollback
+	rollbackErr := errors.New("abort")
+	err = store.WithWriteTx(ctx, func(txh types.TxHandle) error {
+		_, _ = store.InsertDiffLog(ctx, txh, types.DiffLogEntry{
+			FileID: fileID, ChangeType: "add", LinesAdded: 1, HashAfter: "h1",
+		})
+		return rollbackErr
+	})
+	if !errors.Is(err, rollbackErr) {
+		t.Fatalf("expected rollback error, got %v", err)
+	}
+
+	// Diff should not exist after rollback
+	diffs, _ := store.GetRecentDiffs(ctx, types.RecentDiffsInput{FileID: fileID})
+	if len(diffs) != 0 {
+		t.Errorf("expected 0 diffs after rollback, got %d", len(diffs))
+	}
+}
+
 func TestOpen_InvalidPath(t *testing.T) {
 	t.Parallel()
 

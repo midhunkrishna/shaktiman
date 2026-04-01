@@ -433,7 +433,7 @@ func setupDependenciesHandler(t *testing.T) handlerFunc {
 
 	// Insert edge within a write transaction.
 	err = db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, srcFileID, []types.EdgeRecord{
+		return store.InsertEdges(ctx, storage.SqliteTxHandle{Tx: tx}, srcFileID, []types.EdgeRecord{
 			{SrcSymbolName: "NewServer", DstSymbolName: "handleRequest", Kind: "calls", FileID: srcFileID},
 		}, map[string]int64{
 			"NewServer":     srcID,
@@ -462,7 +462,7 @@ func setupDiffHandler(t *testing.T) handlerFunc {
 
 	// Insert a diff_log entry.
 	err = db.WithWriteTx(func(tx *sql.Tx) error {
-		diffID, err := store.InsertDiffLog(ctx, tx, storage.DiffLogEntry{
+		diffID, err := store.InsertDiffLog(ctx, storage.SqliteTxHandle{Tx: tx}, storage.DiffLogEntry{
 			FileID:       fileID,
 			ChangeType:   "modify",
 			LinesAdded:   10,
@@ -473,7 +473,7 @@ func setupDiffHandler(t *testing.T) handlerFunc {
 		if err != nil {
 			return err
 		}
-		return store.InsertDiffSymbols(ctx, tx, diffID, []storage.DiffSymbolEntry{
+		return store.InsertDiffSymbols(ctx, storage.SqliteTxHandle{Tx: tx}, diffID, []storage.DiffSymbolEntry{
 			{SymbolName: "NewServer", ChangeType: "modified"},
 		})
 	})
@@ -1225,7 +1225,7 @@ func setupHandlersWithPendingEdge(t *testing.T) (*storage.Store, handlerFunc, ha
 
 	// Insert edge where dst is unresolvable → goes to pending_edges.
 	err = db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, tx, srcFileID, []types.EdgeRecord{
+		return store.InsertEdges(ctx, storage.SqliteTxHandle{Tx: tx}, srcFileID, []types.EdgeRecord{
 			{SrcSymbolName: "NewServer", DstSymbolName: "ExternalLib", Kind: "imports"},
 		}, map[string]int64{
 			"NewServer": srcID,

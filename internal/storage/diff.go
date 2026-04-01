@@ -16,7 +16,8 @@ type DiffLogEntry = types.DiffLogEntry
 type DiffSymbolEntry = types.DiffSymbolEntry
 
 // InsertDiffLog records a file-level change within a transaction.
-func (s *Store) InsertDiffLog(ctx context.Context, tx *sql.Tx, entry DiffLogEntry) (int64, error) {
+func (s *Store) InsertDiffLog(ctx context.Context, txh types.TxHandle, entry DiffLogEntry) (int64, error) {
+	tx := txh.(SqliteTxHandle).Tx
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO diff_log (file_id, change_type, lines_added, lines_removed, hash_before, hash_after)
 		VALUES (?, ?, ?, ?, ?, ?)`,
@@ -29,10 +30,11 @@ func (s *Store) InsertDiffLog(ctx context.Context, tx *sql.Tx, entry DiffLogEntr
 }
 
 // InsertDiffSymbols records symbol-level changes for a diff.
-func (s *Store) InsertDiffSymbols(ctx context.Context, tx *sql.Tx, diffID int64, symbols []DiffSymbolEntry) error {
+func (s *Store) InsertDiffSymbols(ctx context.Context, txh types.TxHandle, diffID int64, symbols []DiffSymbolEntry) error {
 	if len(symbols) == 0 {
 		return nil
 	}
+	tx := txh.(SqliteTxHandle).Tx
 
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO diff_symbols (diff_id, symbol_id, symbol_name, change_type, chunk_id)

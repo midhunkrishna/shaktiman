@@ -393,15 +393,16 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store *storage.Store,
 	}
 
 	// Delete old edges for this file, then insert new edges (CA-1)
-	if err := store.DeleteEdgesByFile(ctx, tx, fileID); err != nil {
+	txh := storage.SqliteTxHandle{Tx: tx}
+	if err := store.DeleteEdgesByFile(ctx, txh, fileID); err != nil {
 		return nil, fmt.Errorf("delete old edges for %s: %w", job.FilePath, err)
 	}
-	if err := store.InsertEdges(ctx, tx, fileID, job.Edges, symbolIDs, job.File.Language); err != nil {
+	if err := store.InsertEdges(ctx, txh, fileID, job.Edges, symbolIDs, job.File.Language); err != nil {
 		return nil, fmt.Errorf("insert edges for %s: %w", job.FilePath, err)
 	}
 
 	// Attempt to resolve pending edges for newly inserted symbol names
-	if err := store.ResolvePendingEdges(ctx, tx, newSymbolNames); err != nil {
+	if err := store.ResolvePendingEdges(ctx, txh, newSymbolNames); err != nil {
 		return nil, fmt.Errorf("resolve pending edges for %s: %w", job.FilePath, err)
 	}
 
@@ -446,6 +447,7 @@ func fetchOldSymbols(ctx context.Context, tx *sql.Tx, fileID int64) map[string]o
 func computeAndRecordDiff(ctx context.Context, tx *sql.Tx, store *storage.Store,
 	fileID int64, oldHash string, job types.WriteJob,
 	oldSymbols map[string]oldSymbolInfo, newSymbolIDs map[string]int64) {
+	txh := storage.SqliteTxHandle{Tx: tx}
 
 	// Compute lines changed (approximate from chunk content)
 	var totalOldLines, totalNewLines int
@@ -463,7 +465,7 @@ func computeAndRecordDiff(ctx context.Context, tx *sql.Tx, store *storage.Store,
 		linesRemoved = totalOldLines - totalNewLines
 	}
 
-	diffID, err := store.InsertDiffLog(ctx, tx, storage.DiffLogEntry{
+	diffID, err := store.InsertDiffLog(ctx, txh, storage.DiffLogEntry{
 		FileID:       fileID,
 		ChangeType:   "modify",
 		LinesAdded:   linesAdded,
@@ -518,7 +520,7 @@ func computeAndRecordDiff(ctx context.Context, tx *sql.Tx, store *storage.Store,
 	}
 
 	if len(diffSymbols) > 0 {
-		_ = store.InsertDiffSymbols(ctx, tx, diffID, diffSymbols)
+		_ = store.InsertDiffSymbols(ctx, txh, diffID, diffSymbols)
 	}
 }
 
@@ -526,8 +528,9 @@ func computeAndRecordDiff(ctx context.Context, tx *sql.Tx, store *storage.Store,
 func recordAddDiff(ctx context.Context, tx *sql.Tx, store *storage.Store,
 	fileID int64, hash string, totalLines int,
 	symbols []types.SymbolRecord, symbolIDs map[string]int64) {
+	txh := storage.SqliteTxHandle{Tx: tx}
 
-	diffID, err := store.InsertDiffLog(ctx, tx, storage.DiffLogEntry{
+	diffID, err := store.InsertDiffLog(ctx, txh, storage.DiffLogEntry{
 		FileID:     fileID,
 		ChangeType: "add",
 		LinesAdded: totalLines,
@@ -546,7 +549,7 @@ func recordAddDiff(ctx context.Context, tx *sql.Tx, store *storage.Store,
 		})
 	}
 	if len(diffSymbols) > 0 {
-		_ = store.InsertDiffSymbols(ctx, tx, diffID, diffSymbols)
+		_ = store.InsertDiffSymbols(ctx, txh, diffID, diffSymbols)
 	}
 }
 

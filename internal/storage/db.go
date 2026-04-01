@@ -10,7 +10,15 @@ import (
 	"sync/atomic"
 
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
+
+	"github.com/shaktimanai/shaktiman/internal/types"
 )
+
+// SqliteTxHandle wraps *sql.Tx to satisfy types.TxHandle.
+type SqliteTxHandle struct{ Tx *sql.Tx }
+
+// IsTxHandle implements types.TxHandle.
+func (SqliteTxHandle) IsTxHandle() {}
 
 // inMemoryCounter generates unique names for in-memory databases to prevent
 // shared cache conflicts when tests run in parallel.
@@ -149,6 +157,14 @@ func (db *DB) WithWriteTx(fn func(tx *sql.Tx) error) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// WithWriteTxCtx executes fn within a write transaction using a types.TxHandle.
+// This is the backend-agnostic version used by the WriterStore interface.
+func (db *DB) WithWriteTxCtx(ctx context.Context, fn func(tx types.TxHandle) error) error {
+	return db.WithWriteTx(func(tx *sql.Tx) error {
+		return fn(SqliteTxHandle{Tx: tx})
+	})
 }
 
 // QueryContext executes a read query using the reader connection pool.
