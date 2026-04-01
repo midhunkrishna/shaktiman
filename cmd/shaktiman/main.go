@@ -79,8 +79,11 @@ func initCmd() *cobra.Command {
 
 func indexCmd() *cobra.Command {
 	var (
-		embed         bool
-		vectorBackend string
+		embed          bool
+		vectorBackend  string
+		dbBackend      string
+		postgresURL    string
+		qdrantURL      string
 	)
 	cmd := &cobra.Command{
 		Use:   "index <project-root>",
@@ -96,12 +99,30 @@ func indexCmd() *cobra.Command {
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			// CLI --vector flag overrides TOML and default
+			// CLI flags override TOML and default
 			if vectorBackend != "" {
-				if vectorBackend != "brute_force" && vectorBackend != "hnsw" {
-					return fmt.Errorf("--vector must be 'brute_force' or 'hnsw', got %q", vectorBackend)
+				switch vectorBackend {
+				case "brute_force", "hnsw", "qdrant", "pgvector":
+					cfg.VectorBackend = vectorBackend
+				default:
+					return fmt.Errorf("--vector must be 'brute_force', 'hnsw', 'qdrant', or 'pgvector', got %q", vectorBackend)
 				}
-				cfg.VectorBackend = vectorBackend
+			}
+			if dbBackend != "" {
+				if dbBackend != "sqlite" && dbBackend != "postgres" {
+					return fmt.Errorf("--db must be 'sqlite' or 'postgres', got %q", dbBackend)
+				}
+				cfg.DatabaseBackend = dbBackend
+			}
+			if postgresURL != "" {
+				cfg.PostgresConnString = postgresURL
+			}
+			if qdrantURL != "" {
+				cfg.QdrantURL = qdrantURL
+			}
+
+			if err := types.ValidateBackendConfig(cfg); err != nil {
+				return err
 			}
 
 			// Signal handling for graceful shutdown
@@ -199,7 +220,10 @@ func indexCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&embed, "embed", false, "Also generate embeddings (requires Ollama)")
-	cmd.Flags().StringVar(&vectorBackend, "vector", "", `Vector backend: "brute_force" or "hnsw"`)
+	cmd.Flags().StringVar(&vectorBackend, "vector", "", `Vector backend: "brute_force", "hnsw", "qdrant", or "pgvector"`)
+	cmd.Flags().StringVar(&dbBackend, "db", "", `Database backend: "sqlite" or "postgres"`)
+	cmd.Flags().StringVar(&postgresURL, "postgres-url", "", "PostgreSQL connection string (overrides TOML)")
+	cmd.Flags().StringVar(&qdrantURL, "qdrant-url", "", "Qdrant URL (overrides TOML)")
 	return cmd
 }
 
