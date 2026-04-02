@@ -19,6 +19,8 @@ type MetadataStoreConfig struct {
 	PostgresMaxOpen int
 	PostgresMaxIdle int
 	PostgresSchema  string
+
+	EmbeddingDims int // vector dimension for pgvector (e.g. 768)
 }
 
 // MetadataStoreFactory creates a WriterStore from config.
@@ -67,5 +69,6 @@ func MetadataStoreConfigFrom(cfg types.Config) MetadataStoreConfig {
 		PostgresMaxOpen: cfg.PostgresMaxOpen,
 		PostgresMaxIdle: cfg.PostgresMaxIdle,
 		PostgresSchema:  cfg.PostgresSchema,
+		EmbeddingDims:   cfg.EmbeddingDims,
 	}
 }

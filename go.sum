@@ -65,6 +65,10 @@ github.com/midhunkrishna/hnswgo v1.0.0 h1:NrrRv103NnoIYLCnhn7Xnx21NVNk4lUPbOy5NP
 github.com/midhunkrishna/hnswgo v1.0.0/go.mod h1:rtZo5u88731sU0GPylkJ9HuUgn1zjZlTjI2pqHMUpMM=
 github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
+github.com/peterldowns/pgtestdb v0.1.1 h1:+hBCD1DcbKeg5Sfg0G+5WNIy/Cm0ORgwMkF4ygihrmU=
+github.com/peterldowns/pgtestdb v0.1.1/go.mod h1:yVWInWV0dxvmLdL2ao3nXDzWZ9+G6EhJ4gRwvI1Ozeg=
+github.com/peterldowns/testy v0.0.1 h1:9a6LzvnKcL52Crzud1z7jbsAojTntCh89ho6mgsr4KU=
+github.com/peterldowns/testy v0.0.1/go.mod h1:J4sm75UEzbfBIcq0zbrshWWjsJQiJ5RrhTPYKVY2Ww8=
 github.com/pgvector/pgvector-go v0.3.0 h1:Ij+Yt78R//uYqs3Zk35evZFvr+G0blW0OUN+Q2D1RWc=
 github.com/pgvector/pgvector-go v0.3.0/go.mod h1:duFy+PXWfW7QQd5ibqutBO4GxLsUZ9RVXhFZGIBsWSA=
 github.com/pkoukk/tiktoken-go v0.1.8 h1:85ENo+3FpWgAACBaEUVp+lctuTcYUO7BtmfhlN/QTRo=

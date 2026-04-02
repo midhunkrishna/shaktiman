@@ -105,35 +105,8 @@ func TestCompileTimeCheck(t *testing.T) {
 	var _ types.VectorStore = (*PgVectorStore)(nil)
 }
 
-func TestMigrate_InvalidDims(t *testing.T) {
-	if err := Migrate(context.Background(), nil, 0); err == nil {
-		t.Fatal("expected error for dims=0")
-	}
-	if err := Migrate(context.Background(), nil, 5000); err == nil {
-		t.Fatal("expected error for dims=5000")
-	}
-	// Nil pool should fail before dim check
-	err := Migrate(context.Background(), nil, 768)
-	if err == nil {
-		t.Fatal("expected error for nil pool")
-	}
-	if err.Error() != "pgvector: pool is nil" {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestMigrate_ValidDimsBoundary(t *testing.T) {
-	// Dims at boundaries should pass dim validation (fail on nil pool)
-	for _, dims := range []int{1, 4096} {
-		err := Migrate(context.Background(), nil, dims)
-		if err == nil {
-			t.Fatalf("expected error for nil pool with dims=%d", dims)
-		}
-		if err.Error() != "pgvector: pool is nil" {
-			t.Errorf("dims=%d: expected nil pool error, got: %v", dims, err)
-		}
-	}
-}
+// Note: Migrate_InvalidDims and Migrate_ValidDimsBoundary tests removed —
+// pgvector migration is now handled by goose via postgres.RunMigrations.
 
 func TestUpsertBatch_EmptyBatch(t *testing.T) {
 	s := &PgVectorStore{dims: 4}

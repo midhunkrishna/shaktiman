@@ -784,49 +784,19 @@ func TestIntegration_CrossLanguageNoMisresolution(t *testing.T) {
 	}
 }
 
-func TestMigration_V2toV3(t *testing.T) {
+func TestPendingEdges_QualifiedNameAndLanguageColumns(t *testing.T) {
 	t.Parallel()
 
-	// Create a DB at v2 (before our migration)
 	db, err := Open(OpenInput{InMemory: true})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
 
-	// Apply base schema and v1→v2 migration manually
-	err = db.WithWriteTx(func(tx *sql.Tx) error {
-		for _, stmt := range schemaV1 {
-			if _, err := tx.Exec(stmt); err != nil {
-				return err
-			}
-		}
-		for _, stmt := range ftsTriggers {
-			if _, err := tx.Exec(stmt); err != nil {
-				return err
-			}
-		}
-		for _, stmt := range migrationsV1toV2 {
-			if _, execErr := tx.Exec(stmt); execErr != nil {
-				if isDuplicateColumnError(execErr) {
-					continue
-				}
-				return execErr
-			}
-		}
-		_, err := tx.Exec("INSERT INTO schema_version (version) VALUES (2)")
-		return err
-	})
-	if err != nil {
-		t.Fatalf("setup v2 schema: %v", err)
-	}
-
-	// Run full Migrate — should apply v2→v3
 	if err := Migrate(db); err != nil {
-		t.Fatalf("Migrate v2→v3: %v", err)
+		t.Fatalf("Migrate: %v", err)
 	}
 
-	// Create a file, chunk, and symbol so we have a valid src_symbol_id
 	ctx := context.Background()
 	err = db.WithWriteTx(func(tx *sql.Tx) error {
 		if _, execErr := tx.ExecContext(ctx,
@@ -847,36 +817,28 @@ func TestMigration_V2toV3(t *testing.T) {
 		t.Fatalf("setup test data: %v", err)
 	}
 
-	// Verify new columns exist by inserting a pending edge with them
+	// Verify dst_qualified_name and src_language columns exist
 	err = db.WithWriteTx(func(tx *sql.Tx) error {
 		_, execErr := tx.ExecContext(ctx,
 			"INSERT INTO pending_edges (src_symbol_id, dst_symbol_name, dst_qualified_name, kind, src_language) VALUES (1, 'Foo', 'com.example.Foo', 'imports', 'java')")
 		return execErr
 	})
 	if err != nil {
-		t.Fatalf("insert with new columns failed: %v", err)
+		t.Fatalf("insert with qualified columns failed: %v", err)
 	}
 
-	// Verify the values
 	var qualifiedName, srcLang string
 	err = db.QueryRowContext(ctx,
 		"SELECT dst_qualified_name, src_language FROM pending_edges WHERE dst_symbol_name = 'Foo'",
 	).Scan(&qualifiedName, &srcLang)
 	if err != nil {
-		t.Fatalf("query new columns: %v", err)
+		t.Fatalf("query columns: %v", err)
 	}
 	if qualifiedName != "com.example.Foo" {
 		t.Errorf("dst_qualified_name=%q, want %q", qualifiedName, "com.example.Foo")
 	}
 	if srcLang != "java" {
 		t.Errorf("src_language=%q, want %q", srcLang, "java")
-	}
-
-	// Verify schema version is 3
-	var version int
-	db.QueryRowContext(ctx, "SELECT MAX(version) FROM schema_version").Scan(&version)
-	if version != schemaVersion {
-		t.Errorf("schema version=%d, want %d", version, schemaVersion)
 	}
 }
 

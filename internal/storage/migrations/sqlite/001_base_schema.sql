@@ -112,23 +112,29 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
     content_rowid=id
 );
 
--- FTS triggers
+-- FTS triggers (StatementBegin/End needed because triggers contain semicolons)
+-- +goose StatementBegin
 CREATE TRIGGER IF NOT EXISTS chunks_fts_insert AFTER INSERT ON chunks BEGIN
     INSERT INTO chunks_fts(rowid, content, symbol_name)
     VALUES (new.id, new.content, new.symbol_name);
 END;
+-- +goose StatementEnd
 
+-- +goose StatementBegin
 CREATE TRIGGER IF NOT EXISTS chunks_fts_delete AFTER DELETE ON chunks BEGIN
     INSERT INTO chunks_fts(chunks_fts, rowid, content, symbol_name)
     VALUES ('delete', old.id, old.content, old.symbol_name);
 END;
+-- +goose StatementEnd
 
+-- +goose StatementBegin
 CREATE TRIGGER IF NOT EXISTS chunks_fts_update AFTER UPDATE ON chunks BEGIN
     INSERT INTO chunks_fts(chunks_fts, rowid, content, symbol_name)
     VALUES ('delete', old.id, old.content, old.symbol_name);
     INSERT INTO chunks_fts(rowid, content, symbol_name)
     VALUES (new.id, new.content, new.symbol_name);
 END;
+-- +goose StatementEnd
 
 -- Session tracking
 CREATE TABLE IF NOT EXISTS access_log (

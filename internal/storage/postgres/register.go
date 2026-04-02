@@ -17,7 +17,11 @@ func init() {
 			return nil, nil, nil, err
 		}
 
-		if err := Migrate(ctx, store.Pool()); err != nil {
+		dims := cfg.EmbeddingDims
+		if dims == 0 {
+			dims = 768 // default
+		}
+		if err := RunMigrations(ctx, store.Pool(), dims); err != nil {
 			store.Close()
 			return nil, nil, nil, err
 		}

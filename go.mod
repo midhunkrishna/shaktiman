@@ -9,6 +9,7 @@ require (
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/mattn/go-sqlite3 v1.14.37
 	github.com/midhunkrishna/hnswgo v1.0.0
+	github.com/peterldowns/pgtestdb v0.1.1
 	github.com/pgvector/pgvector-go v0.3.0
 	github.com/pkoukk/tiktoken-go v0.1.8
 	github.com/pressly/goose/v3 v3.27.0
