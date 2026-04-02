@@ -56,3 +56,16 @@ func HasMetadataStore(name string) bool {
 	_, ok := metadataStoreFactories[name]
 	return ok
 }
+
+// MetadataStoreConfigFrom extracts a MetadataStoreConfig from the application config.
+// This keeps backend-specific field mapping in the storage package, not the daemon.
+func MetadataStoreConfigFrom(cfg types.Config) MetadataStoreConfig {
+	return MetadataStoreConfig{
+		Backend:         cfg.DatabaseBackend,
+		SQLitePath:      cfg.DBPath,
+		PostgresConnStr: cfg.PostgresConnString,
+		PostgresMaxOpen: cfg.PostgresMaxOpen,
+		PostgresMaxIdle: cfg.PostgresMaxIdle,
+		PostgresSchema:  cfg.PostgresSchema,
+	}
+}

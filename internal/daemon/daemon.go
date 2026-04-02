@@ -43,10 +43,7 @@ type Daemon struct {
 
 // New creates a new Daemon, opening the database and running migrations.
 func New(cfg types.Config) (*Daemon, error) {
-	store, lifecycle, dbCloser, err := storage.NewMetadataStore(storage.MetadataStoreConfig{
-		Backend:    cfg.DatabaseBackend,
-		SQLitePath: cfg.DBPath,
-	})
+	store, lifecycle, dbCloser, err := storage.NewMetadataStore(storage.MetadataStoreConfigFrom(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("create metadata store: %w", err)
 	}
