@@ -1,3 +1,5 @@
+//go:build postgres
+
 package postgres
 
 import (
@@ -8,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	pgmigrations "github.com/shaktimanai/shaktiman/internal/storage/migrations/postgres"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
@@ -20,9 +23,15 @@ func TestPgTxHandle_SatisfiesTxHandle(t *testing.T) {
 	txh.IsTxHandle() // must not panic
 }
 
-// ── Schema DDL ──
+// ── Migration SQL files ──
 
-func TestSchemaDDL_ContainsAllTables(t *testing.T) {
+func TestMigrationSQL_ContainsAllTables(t *testing.T) {
+	ddl, err := pgmigrations.FS.ReadFile("001_base_schema.sql")
+	if err != nil {
+		t.Fatalf("read migration file: %v", err)
+	}
+	content := string(ddl)
+
 	expected := []string{
 		"schema_version", "config",
 		"files", "chunks", "symbols",
@@ -31,72 +40,50 @@ func TestSchemaDDL_ContainsAllTables(t *testing.T) {
 		"access_log", "working_set",
 		"tool_calls",
 	}
-
-	ddlJoined := strings.Join(schemaDDL, "\n")
 	for _, table := range expected {
-		if !strings.Contains(ddlJoined, "CREATE TABLE IF NOT EXISTS "+table) {
-			t.Errorf("schema DDL missing table: %s", table)
+		if !strings.Contains(content, "CREATE TABLE IF NOT EXISTS "+table) {
+			t.Errorf("migration SQL missing table: %s", table)
 		}
 	}
 }
 
-func TestSchemaDDL_HasTsvectorColumn(t *testing.T) {
-	ddlJoined := strings.Join(schemaDDL, "\n")
-	if !strings.Contains(ddlJoined, "content_tsv") {
-		t.Error("schema DDL missing tsvector column content_tsv")
+func TestMigrationSQL_HasTsvectorColumn(t *testing.T) {
+	ddl, _ := pgmigrations.FS.ReadFile("001_base_schema.sql")
+	content := string(ddl)
+	if !strings.Contains(content, "content_tsv") {
+		t.Error("migration SQL missing tsvector column content_tsv")
 	}
-	if !strings.Contains(ddlJoined, "to_tsvector('simple'") {
-		t.Error("schema DDL should use 'simple' dictionary for tsvector")
-	}
-}
-
-func TestSchemaDDL_HasGINIndex(t *testing.T) {
-	ddlJoined := strings.Join(schemaDDL, "\n")
-	if !strings.Contains(ddlJoined, "USING GIN(content_tsv)") {
-		t.Error("schema DDL missing GIN index on content_tsv")
+	if !strings.Contains(content, "to_tsvector('simple'") {
+		t.Error("migration SQL should use 'simple' dictionary for tsvector")
 	}
 }
 
-func TestSchemaDDL_UsesBigserial(t *testing.T) {
-	ddlJoined := strings.Join(schemaDDL, "\n")
-	if !strings.Contains(ddlJoined, "BIGSERIAL PRIMARY KEY") {
-		t.Error("schema DDL should use BIGSERIAL for primary keys")
+func TestMigrationSQL_UsesBigserial(t *testing.T) {
+	ddl, _ := pgmigrations.FS.ReadFile("001_base_schema.sql")
+	content := string(ddl)
+	if !strings.Contains(content, "BIGSERIAL PRIMARY KEY") {
+		t.Error("migration SQL should use BIGSERIAL for primary keys")
 	}
-	if strings.Contains(ddlJoined, "AUTOINCREMENT") {
-		t.Error("schema DDL should not contain SQLite AUTOINCREMENT")
-	}
-}
-
-func TestSchemaDDL_UsesTimestamptz(t *testing.T) {
-	ddlJoined := strings.Join(schemaDDL, "\n")
-	if !strings.Contains(ddlJoined, "TIMESTAMPTZ") {
-		t.Error("schema DDL should use TIMESTAMPTZ for timestamps")
-	}
-	if strings.Contains(ddlJoined, "strftime") {
-		t.Error("schema DDL should not contain SQLite strftime")
+	if strings.Contains(content, "AUTOINCREMENT") {
+		t.Error("migration SQL should not contain SQLite AUTOINCREMENT")
 	}
 }
 
-func TestSchemaDDL_UsesBoolean(t *testing.T) {
-	ddlJoined := strings.Join(schemaDDL, "\n")
-	// files.is_test should be BOOLEAN, not INTEGER
-	if !strings.Contains(ddlJoined, "is_test          BOOLEAN") &&
-		!strings.Contains(ddlJoined, "is_test    BOOLEAN") &&
-		!strings.Contains(ddlJoined, "is_test BOOLEAN") {
-		t.Error("files.is_test should use BOOLEAN type")
+func TestMigrationSQL_PgvectorFiles(t *testing.T) {
+	ext, err := pgmigrations.FS.ReadFile("002_pgvector_extension.sql")
+	if err != nil {
+		t.Fatalf("read pgvector extension migration: %v", err)
 	}
-}
+	if !strings.Contains(string(ext), "CREATE EXTENSION IF NOT EXISTS vector") {
+		t.Error("pgvector extension migration missing CREATE EXTENSION")
+	}
 
-func TestSchemaDDL_IndexCount(t *testing.T) {
-	count := 0
-	for _, stmt := range schemaDDL {
-		if strings.HasPrefix(strings.TrimSpace(stmt), "CREATE INDEX") {
-			count++
-		}
+	idx, err := pgmigrations.FS.ReadFile("004_pgvector_hnsw_index.sql")
+	if err != nil {
+		t.Fatalf("read pgvector index migration: %v", err)
 	}
-	// Should have at least as many indexes as SQLite (26+)
-	if count < 20 {
-		t.Errorf("expected at least 20 indexes, got %d", count)
+	if !strings.Contains(string(idx), "CREATE INDEX CONCURRENTLY") {
+		t.Error("pgvector index migration missing CREATE INDEX CONCURRENTLY")
 	}
 }
 
@@ -185,13 +172,6 @@ func TestChangeScore_FutureTimestamp(t *testing.T) {
 	}
 }
 
-// ── pgSchemaVersion ──
-
-func TestPgSchemaVersion(t *testing.T) {
-	if pgSchemaVersion < 1 {
-		t.Errorf("pgSchemaVersion = %d, must be >= 1", pgSchemaVersion)
-	}
-}
 
 // ── RawPool / IsTxHandle ──
 

@@ -34,22 +34,41 @@ type PgVectorStore struct {
 // Compile-time check.
 var _ types.VectorStore = (*PgVectorStore)(nil)
 
-// NewPgVectorStore creates a PgVectorStore, running schema migration and
-// validating dimensions against any existing embeddings table.
+// ValidateDimensions checks that the existing embeddings table (if any)
+// matches the expected vector dimension. Returns nil if the table doesn't
+// exist or dimensions match.
+func ValidateDimensions(ctx context.Context, pool *pgxpool.Pool, expected int) error {
+	var typmod int
+	err := pool.QueryRow(ctx, `
+		SELECT a.atttypmod
+		FROM pg_attribute a
+		JOIN pg_class c ON a.attrelid = c.oid
+		WHERE c.relname = 'embeddings'
+		  AND a.attname = 'embedding'
+		  AND a.atttypmod > 0
+	`).Scan(&typmod)
+
+	if err != nil {
+		// Table doesn't exist or column not found — fine, will be created.
+		return nil
+	}
+
+	if typmod != expected {
+		return fmt.Errorf("pgvector: embeddings table has vector(%d) but config specifies dims=%d — "+
+			"drop the embeddings table and re-embed, or revert the config change", typmod, expected)
+	}
+	return nil
+}
+
+// NewPgVectorStore creates a PgVectorStore. The embeddings table and pgvector
+// extension must already exist (created by goose migrations during MetadataStore
+// initialization). This constructor only validates dimensions.
 func NewPgVectorStore(pool *pgxpool.Pool, dims int) (*PgVectorStore, error) {
 	if pool == nil {
 		return nil, fmt.Errorf("pgvector: pool is nil (pgvector requires database.backend = postgres)")
 	}
 
-	ctx := context.Background()
-
-	// Validate dimensions against existing table before migration.
-	if err := ValidateDimensions(ctx, pool, dims); err != nil {
-		return nil, err
-	}
-
-	// Run migration (idempotent: CREATE IF NOT EXISTS).
-	if err := Migrate(ctx, pool, dims); err != nil {
+	if err := ValidateDimensions(context.Background(), pool, dims); err != nil {
 		return nil, err
 	}
 

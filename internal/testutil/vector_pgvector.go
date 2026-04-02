@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/shaktimanai/shaktiman/internal/storage/postgres"
 	"github.com/shaktimanai/shaktiman/internal/types"
 	"github.com/shaktimanai/shaktiman/internal/vector/pgvector"
 )
@@ -20,13 +21,11 @@ func init() {
 func newPgVectorTestStore(t *testing.T, dims int) types.VectorStore {
 	t.Helper()
 
-	// Prefer the per-test connection string from NewTestWriterStore (which
-	// has search_path set to the test's isolated schema).
+	// Prefer the per-test connection string from NewTestWriterStore.
 	var connStr string
 	if v, ok := testPgConnStrs.Load(t.Name()); ok {
 		connStr = v.(string)
 	} else {
-		// Fallback: use base connection string (public schema).
 		connStr = os.Getenv("SHAKTIMAN_TEST_POSTGRES_URL")
 		if connStr == "" {
 			t.Skip("SHAKTIMAN_TEST_POSTGRES_URL not set")
@@ -39,12 +38,10 @@ func newPgVectorTestStore(t *testing.T, dims int) types.VectorStore {
 		t.Fatalf("pgxpool.New: %v", err)
 	}
 
-	// Drop and recreate the embeddings table for test isolation.
-	pool.Exec(ctx, "DROP TABLE IF EXISTS embeddings")
-
-	if err := pgvector.Migrate(ctx, pool, dims); err != nil {
+	// Ensure schema + pgvector migrations are applied (idempotent via goose).
+	if err := postgres.RunMigrations(ctx, pool, dims); err != nil {
 		pool.Close()
-		t.Fatalf("pgvector.Migrate: %v", err)
+		t.Fatalf("RunMigrations: %v", err)
 	}
 
 	store, err := pgvector.NewPgVectorStore(pool, dims)
@@ -55,7 +52,6 @@ func newPgVectorTestStore(t *testing.T, dims int) types.VectorStore {
 
 	t.Cleanup(func() {
 		store.Close()
-		pool.Exec(context.Background(), "DROP TABLE IF EXISTS embeddings")
 		pool.Close()
 	})
 	return store

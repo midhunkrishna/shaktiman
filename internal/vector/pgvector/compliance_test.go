@@ -82,12 +82,12 @@ func TestMigrate_FullCycle(t *testing.T) {
 	setupSchema(t, pool)
 
 	// First migration creates table + index
-	if err := Migrate(ctx, pool, 4); err != nil {
+	if err := postgres.RunMigrations(ctx, pool, 4); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
 
 	// Second call is idempotent
-	if err := Migrate(ctx, pool, 4); err != nil {
+	if err := postgres.RunMigrations(ctx, pool, 4); err != nil {
 		t.Fatalf("Migrate idempotent: %v", err)
 	}
 
@@ -99,7 +99,7 @@ func TestValidateDimensions_Match(t *testing.T) {
 	ctx := context.Background()
 	setupSchema(t, pool)
 
-	if err := Migrate(ctx, pool, 8); err != nil {
+	if err := postgres.RunMigrations(ctx, pool, 8); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
 
@@ -116,7 +116,7 @@ func TestValidateDimensions_Mismatch(t *testing.T) {
 	ctx := context.Background()
 	setupSchema(t, pool)
 
-	if err := Migrate(ctx, pool, 8); err != nil {
+	if err := postgres.RunMigrations(ctx, pool, 8); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
 
