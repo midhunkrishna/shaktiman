@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/shaktimanai/shaktiman/internal/storage/postgres"
 	"github.com/shaktimanai/shaktiman/internal/types"
 	"github.com/shaktimanai/shaktiman/internal/vector/pgvector"
 )
@@ -21,7 +20,8 @@ func init() {
 func newPgVectorTestStore(t *testing.T, dims int) types.VectorStore {
 	t.Helper()
 
-	// Prefer the per-test connection string from NewTestWriterStore.
+	// Prefer the per-test connection URL from NewTestWriterStore (which
+	// points to a pgtestdb-managed database with migrations applied).
 	var connStr string
 	if v, ok := testPgConnStrs.Load(t.Name()); ok {
 		connStr = v.(string)
@@ -38,12 +38,8 @@ func newPgVectorTestStore(t *testing.T, dims int) types.VectorStore {
 		t.Fatalf("pgxpool.New: %v", err)
 	}
 
-	// Ensure schema + pgvector migrations are applied (idempotent via goose).
-	if err := postgres.RunMigrations(ctx, pool, dims); err != nil {
-		pool.Close()
-		t.Fatalf("RunMigrations: %v", err)
-	}
-
+	// The embeddings table already exists in the pgtestdb template database
+	// (created by goose migration 003). Just create the store.
 	store, err := pgvector.NewPgVectorStore(pool, dims)
 	if err != nil {
 		pool.Close()

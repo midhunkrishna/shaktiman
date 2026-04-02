@@ -4,28 +4,39 @@ package testutil
 
 import (
 	"context"
-	"fmt"
+	"net/url"
 	"os"
-	"strings"
 	"sync"
 	"testing"
-	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	_ "github.com/jackc/pgx/v5/stdlib" // register pgx driver for pgtestdb
+	"github.com/peterldowns/pgtestdb"
 
-	"github.com/shaktimanai/shaktiman/internal/storage"
+	"github.com/shaktimanai/shaktiman/internal/storage/postgres"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
-// testPgConnStrs stores the per-test Postgres connection string (with
-// search_path set to the test's isolated schema). The pgvector factory
-// reads this to create a pool in the same schema.
+// testPgConnStrs stores the per-test Postgres connection URL. The pgvector
+// factory reads this to create a pool pointing at the same test database.
 var testPgConnStrs sync.Map // t.Name() -> string
 
 func init() {
-	// Override the default postgres path: each test gets its own schema
-	// so parallel tests don't interfere with each other.
 	extraMetadataFactories["postgres"] = newPostgresTestStore
+}
+
+// parsePgTestDBConfig extracts pgtestdb.Config from a Postgres URL.
+func parsePgTestDBConfig(connStr string) pgtestdb.Config {
+	u, _ := url.Parse(connStr)
+	password, _ := u.User.Password()
+	return pgtestdb.Config{
+		DriverName: "pgx",
+		Host:       u.Hostname(),
+		Port:       u.Port(),
+		User:       u.User.Username(),
+		Password:   password,
+		Database:   u.Path[1:], // strip leading "/"
+		Options:    u.RawQuery,
+	}
 }
 
 func newPostgresTestStore(t *testing.T) types.WriterStore {
@@ -36,59 +47,28 @@ func newPostgresTestStore(t *testing.T) types.WriterStore {
 		t.Skip("SHAKTIMAN_TEST_POSTGRES_URL not set")
 	}
 
+	pgConf := parsePgTestDBConfig(connStr)
+	migrator := &GooseMigrator{Dims: 768}
+
+	// pgtestdb.Custom creates a fresh database cloned from a migrated
+	// template, then returns its connection details. Migrations run once
+	// into the template; each test gets a cheap filesystem-level copy.
+	dbConf := pgtestdb.Custom(t, pgConf, migrator)
+	testURL := dbConf.URL()
+
 	ctx := context.Background()
-
-	// Create a unique schema per test for full parallel isolation.
-	safe := strings.NewReplacer("/", "_", " ", "_", "-", "_").Replace(t.Name())
-	schema := fmt.Sprintf("t_%s_%d", safe, time.Now().UnixNano()%1e6)
-	// Postgres identifiers max 63 chars — truncate if needed.
-	if len(schema) > 63 {
-		schema = schema[:63]
-	}
-
-	// Admin pool to create the isolated schema.
-	adminPool, err := pgxpool.New(ctx, connStr)
-	if err != nil {
-		t.Fatalf("admin pool: %v", err)
-	}
-	if _, err := adminPool.Exec(ctx, fmt.Sprintf("CREATE SCHEMA %q", schema)); err != nil {
-		adminPool.Close()
-		t.Fatalf("CREATE SCHEMA: %v", err)
-	}
-	adminPool.Close()
-
-	// Build connection string that sets search_path to the test schema.
-	sep := "?"
-	if strings.Contains(connStr, "?") {
-		sep = "&"
-	}
-	testConnStr := fmt.Sprintf("%s%ssearch_path=%s", connStr, sep, schema)
-
-	cfg := storage.MetadataStoreConfig{
-		Backend:         "postgres",
-		PostgresConnStr: testConnStr,
-		PostgresMaxOpen: 5,
-		PostgresMaxIdle: 2,
-		PostgresSchema:  schema,
-	}
-
-	store, _, closer, err := storage.NewMetadataStore(cfg)
+	store, err := postgres.NewPgStore(ctx, testURL, 5, 2, "public")
 	if err != nil {
 		t.Fatalf("NewTestWriterStore(postgres): %v", err)
 	}
 
-	// Publish the conn string so the pgvector factory can reuse it.
-	testPgConnStrs.Store(t.Name(), testConnStr)
+	// Publish connection URL so the pgvector factory can reuse it.
+	testPgConnStrs.Store(t.Name(), testURL)
 
 	t.Cleanup(func() {
 		testPgConnStrs.Delete(t.Name())
-		closer()
-		// Drop the entire test schema.
-		cleanup, cerr := pgxpool.New(context.Background(), connStr)
-		if cerr == nil {
-			cleanup.Exec(context.Background(), fmt.Sprintf("DROP SCHEMA %q CASCADE", schema))
-			cleanup.Close()
-		}
+		store.Close()
+		// pgtestdb handles database cleanup automatically.
 	})
 
 	return store
