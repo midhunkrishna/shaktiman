@@ -48,6 +48,12 @@ func newPostgresTestStore(t *testing.T) types.WriterStore {
 	}
 
 	pgConf := parsePgTestDBConfig(connStr)
+	// The test role needs SUPERUSER to CREATE EXTENSION vector.
+	pgConf.TestRole = &pgtestdb.Role{
+		Username:     pgtestdb.DefaultRoleUsername,
+		Password:     pgtestdb.DefaultRolePassword,
+		Capabilities: "SUPERUSER",
+	}
 	migrator := &GooseMigrator{Dims: 768}
 
 	// pgtestdb.Custom creates a fresh database cloned from a migrated
