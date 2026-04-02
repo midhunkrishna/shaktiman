@@ -75,14 +75,12 @@ func TestMigrate(t *testing.T) {
 		t.Errorf("chunks_fts not found: %v", err)
 	}
 
-	// Verify schema version
-	row = db.QueryRowContext(ctx, "SELECT version FROM schema_version")
-	var version int
-	if err := row.Scan(&version); err != nil {
-		t.Fatalf("schema version: %v", err)
-	}
-	if version != schemaVersion {
-		t.Errorf("expected schema version %d, got %d", schemaVersion, version)
+	// Verify goose version table exists
+	var gooseCount int
+	err = db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='goose_db_version'").Scan(&gooseCount)
+	if err != nil || gooseCount == 0 {
+		t.Error("goose_db_version table not found")
 	}
 
 	// Verify idempotent
@@ -183,7 +181,7 @@ func TestWithWriteTx_Rollback(t *testing.T) {
 	}
 }
 
-func TestMigrate_DuplicateColumnRecovery(t *testing.T) {
+func TestMigrate_Idempotent(t *testing.T) {
 	t.Parallel()
 	db, err := Open(OpenInput{InMemory: true})
 	if err != nil {
@@ -191,35 +189,12 @@ func TestMigrate_DuplicateColumnRecovery(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	// Run migration once to set up all tables.
 	if err := Migrate(db); err != nil {
 		t.Fatalf("first Migrate: %v", err)
 	}
-
-	// Simulate a partial v1->v2 migration crash: reset the schema version to 1.
-	// On the next Migrate call, it will try to add the "embedded" column again,
-	// hitting isDuplicateColumnError, which should be tolerated.
-	err = db.WithWriteTx(func(tx *sql.Tx) error {
-		_, err := tx.Exec("UPDATE schema_version SET version = 1")
-		return err
-	})
-	if err != nil {
-		t.Fatalf("reset schema version: %v", err)
-	}
-
-	// This should succeed, exercising the isDuplicateColumnError path.
+	// Second call should be a no-op.
 	if err := Migrate(db); err != nil {
-		t.Fatalf("Migrate after version reset: %v", err)
-	}
-
-	// Verify version is back to current.
-	var version int
-	if err := db.QueryRowContext(context.Background(),
-		"SELECT MAX(version) FROM schema_version").Scan(&version); err != nil {
-		t.Fatalf("read version: %v", err)
-	}
-	if version != schemaVersion {
-		t.Errorf("version = %d, want %d", version, schemaVersion)
+		t.Fatalf("second Migrate: %v", err)
 	}
 }
 
