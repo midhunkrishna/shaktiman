@@ -8,18 +8,18 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
-// metadataCleanupFn performs backend-specific cleanup (e.g. DROP+re-migrate
-// for Postgres). Registered from build-tagged init() functions.
-type metadataCleanupFn func(t *testing.T, store types.WriterStore)
+// extraMetadataFactory creates a WriterStore with backend-specific setup
+// (e.g. per-test Postgres schema). Registered from build-tagged init().
+type extraMetadataFactory func(t *testing.T) types.WriterStore
 
-var metadataCleanupFns = map[string]metadataCleanupFn{}
+var extraMetadataFactories = map[string]extraMetadataFactory{}
 
 // NewTestWriterStore creates a WriterStore using the backend specified by
 // SHAKTIMAN_TEST_DB_BACKEND (default: "sqlite"). The store is closed
 // automatically via t.Cleanup.
 //
 // For sqlite, each call returns a fresh in-memory database.
-// For postgres, tables are dropped and re-migrated for test isolation.
+// For postgres, each call creates an isolated schema for parallel safety.
 func NewTestWriterStore(t *testing.T) types.WriterStore {
 	t.Helper()
 
@@ -28,35 +28,21 @@ func NewTestWriterStore(t *testing.T) types.WriterStore {
 		backend = "sqlite"
 	}
 
-	cfg := storage.MetadataStoreConfig{
-		Backend: backend,
+	// Backends that need special setup register their own factory.
+	if f, ok := extraMetadataFactories[backend]; ok {
+		return f(t)
 	}
 
-	switch backend {
-	case "sqlite":
-		cfg.SQLiteInMemory = true
-	case "postgres":
-		cfg.PostgresConnStr = os.Getenv("SHAKTIMAN_TEST_POSTGRES_URL")
-		if cfg.PostgresConnStr == "" {
-			t.Skip("SHAKTIMAN_TEST_POSTGRES_URL not set")
-		}
-		cfg.PostgresMaxOpen = 5
-		cfg.PostgresMaxIdle = 2
-		cfg.PostgresSchema = "public"
-	default:
-		t.Fatalf("unknown db backend: %s", backend)
+	// Default: use the production registry.
+	cfg := storage.MetadataStoreConfig{
+		Backend:        backend,
+		SQLiteInMemory: true,
 	}
 
 	store, _, closer, err := storage.NewMetadataStore(cfg)
 	if err != nil {
 		t.Fatalf("NewTestWriterStore(%s): %v", backend, err)
 	}
-
-	// Backend-specific cleanup (e.g. drop+re-migrate for Postgres).
-	if fn, ok := metadataCleanupFns[backend]; ok {
-		fn(t, store)
-	}
-
 	t.Cleanup(func() { closer() })
 	return store
 }
