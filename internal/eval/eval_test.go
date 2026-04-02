@@ -5,23 +5,13 @@ import (
 	"testing"
 
 	"github.com/shaktimanai/shaktiman/internal/core"
-	"github.com/shaktimanai/shaktiman/internal/storage"
+	"github.com/shaktimanai/shaktiman/internal/testutil"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
 func setupEvalEngine(t *testing.T) *core.QueryEngine {
 	t.Helper()
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 
 	// Seed test data
 	ctx := context.Background()

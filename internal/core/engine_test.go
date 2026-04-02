@@ -8,28 +8,18 @@ import (
 	"testing"
 
 	"github.com/shaktimanai/shaktiman/internal/storage"
+	"github.com/shaktimanai/shaktiman/internal/testutil"
 	"github.com/shaktimanai/shaktiman/internal/types"
-	"github.com/shaktimanai/shaktiman/internal/vector"
 )
 
-func setupTestEngine(t *testing.T) (*QueryEngine, *storage.Store) {
+func setupTestEngine(t *testing.T) (*QueryEngine, types.WriterStore) {
 	t.Helper()
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	engine := NewQueryEngine(store, t.TempDir())
 	return engine, store
 }
 
-func seedTestData(t *testing.T, store *storage.Store) {
+func seedTestData(t *testing.T, store types.WriterStore) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -114,17 +104,7 @@ func TestSearch_FilesystemFallback(t *testing.T) {
 	t.Parallel()
 
 	// Create engine with empty store — should use filesystem fallback
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	// Use testdata directory as project root for filesystem fallback
 	engine := NewQueryEngine(store, "../../testdata/typescript_project")
 
@@ -194,17 +174,7 @@ func TestContext_DefaultBudget(t *testing.T) {
 func TestDetermineLevel_EmptyIndex(t *testing.T) {
 	t.Parallel()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	level := DetermineLevel(context.Background(), store)
 	if level != LevelFilesystem {
 		t.Errorf("expected LevelFilesystem for empty index, got %d", level)
@@ -214,17 +184,7 @@ func TestDetermineLevel_EmptyIndex(t *testing.T) {
 func TestDetermineLevel_IndexedChunks(t *testing.T) {
 	t.Parallel()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	ctx := context.Background()
 
 	fileID, _ := store.UpsertFile(ctx, &types.FileRecord{
@@ -331,7 +291,7 @@ func TestSearch_SemanticLevel(t *testing.T) {
 
 	// Set up vector store with embeddings for the 4 seeded chunks
 	dim := 4
-	vs := vector.NewBruteForceStore(dim)
+	vs := testutil.NewTestVectorStore(t, dim)
 
 	// Seed vectors: make chunk 4 (comparePassword) very similar to our query
 	// and the rest dissimilar. This tests that semantic search surfaces
@@ -383,7 +343,7 @@ func TestSearch_FallbackToKeyword_OnEmbedError(t *testing.T) {
 	// that won't match anything special. The important thing is the search
 	// still succeeds via keyword fallback path.
 	dim := 4
-	vs := vector.NewBruteForceStore(dim)
+	vs := testutil.NewTestVectorStore(t, dim)
 	embedder := newMockEmbedder(dim)
 
 	engine.SetVectorStore(vs, embedder, func() bool { return true })
@@ -405,16 +365,7 @@ func TestSearch_FallbackToKeyword_OnEmbedError(t *testing.T) {
 func TestDetermineLevelFull_Hybrid(t *testing.T) {
 	t.Parallel()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	ctx := context.Background()
 
 	// Seed 10 chunks
@@ -459,16 +410,7 @@ func TestDetermineLevelFull_Hybrid(t *testing.T) {
 func TestDetermineLevelFull_EmbeddingNotReady(t *testing.T) {
 	t.Parallel()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	ctx := context.Background()
 
 	fileID, _ := store.UpsertFile(ctx, &types.FileRecord{
@@ -494,16 +436,7 @@ func TestDetermineLevelFull_EmbeddingNotReady(t *testing.T) {
 func TestMergeResults_Deduplication(t *testing.T) {
 	t.Parallel()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	ctx := context.Background()
 
 	fileID, _ := store.UpsertFile(ctx, &types.FileRecord{
@@ -552,7 +485,7 @@ func TestContext_SemanticStrategy(t *testing.T) {
 	seedTestData(t, store)
 
 	dim := 4
-	vs := vector.NewBruteForceStore(dim)
+	vs := testutil.NewTestVectorStore(t, dim)
 	// Seed vectors for all 4 chunks
 	vs.Upsert(ctx, 1, []float32{0.5, 0.5, 0.5, 0.5})
 	vs.Upsert(ctx, 2, []float32{0.3, 0.3, 0.3, 0.3})
@@ -844,7 +777,7 @@ func TestSearch_SemanticEmbedCacheHit(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	vs := vector.NewBruteForceStore(dim)
+	vs := testutil.NewTestVectorStore(t, dim)
 	// Seed vectors for the 4 seeded chunks so determineLevel picks hybrid/mixed.
 	vs.Upsert(ctx, 1, []float32{0.1, 0.2, 0.1, 0.1})
 	vs.Upsert(ctx, 2, []float32{0.1, 0.1, 0.2, 0.1})
@@ -969,15 +902,7 @@ func TestSearch_KeywordWithMinScore(t *testing.T) {
 func TestSearch_KeywordEmpty_FallsBackToFilesystem(t *testing.T) {
 	t.Parallel()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 
 	// Seed a file so DetermineLevel returns Keyword (not Filesystem).
 	ctx := context.Background()
@@ -1015,15 +940,7 @@ func TestSearch_KeywordEmpty_FallsBackToFilesystem(t *testing.T) {
 func TestContext_KeywordEmpty_FallsBackToFilesystem(t *testing.T) {
 	t.Parallel()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 
 	// Seed a file so DetermineLevel returns Keyword.
 	ctx := context.Background()
@@ -1058,15 +975,7 @@ func TestContext_KeywordEmpty_FallsBackToFilesystem(t *testing.T) {
 func TestContext_SemanticEmpty_FallsBackToFilesystem(t *testing.T) {
 	t.Parallel()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 
 	ctx := context.Background()
 	fileID, _ := store.UpsertFile(ctx, &types.FileRecord{
@@ -1085,7 +994,7 @@ func TestContext_SemanticEmpty_FallsBackToFilesystem(t *testing.T) {
 	// Set up vector store so DetermineLevel picks hybrid/mixed,
 	// but use a query that returns no keyword or semantic results.
 	dim := 4
-	vs := vector.NewBruteForceStore(dim)
+	vs := testutil.NewTestVectorStore(t, dim)
 	vs.Upsert(ctx, 1, []float32{0.1, 0.1, 0.1, 0.1})
 
 	embedder := newMockEmbedder(dim)

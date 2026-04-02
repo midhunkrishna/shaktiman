@@ -17,6 +17,7 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/core"
 	"github.com/shaktimanai/shaktiman/internal/parser"
 	"github.com/shaktimanai/shaktiman/internal/storage"
+	"github.com/shaktimanai/shaktiman/internal/testutil"
 	"github.com/shaktimanai/shaktiman/internal/types"
 	"github.com/shaktimanai/shaktiman/internal/vector"
 )
@@ -316,17 +317,7 @@ func TestScanRepo_SymlinkOutsideRoot(t *testing.T) {
 func TestWriterManager_ProcessJob(t *testing.T) {
 	t.Parallel()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	wm := NewWriterManager(store, 10, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2295,16 +2286,7 @@ func TestScanRepo_ContextCancellation(t *testing.T) {
 func TestSubmit_AfterClose(t *testing.T) {
 	t.Parallel()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	defer db.Close()
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	wm := NewWriterManager(store, 10, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2315,7 +2297,7 @@ func TestSubmit_AfterClose(t *testing.T) {
 	<-wm.Done()
 
 	// Submit after close should return ErrWriterClosed
-	err = wm.Submit(types.WriteJob{
+	err := wm.Submit(types.WriteJob{
 		Type:     types.WriteJobEnrichment,
 		FilePath: "test.go",
 		File: &types.FileRecord{
@@ -2335,17 +2317,7 @@ func TestSubmit_AfterClose(t *testing.T) {
 func TestWriterManager_ReindexWithChangedSymbols(t *testing.T) {
 	t.Parallel()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	wm := NewWriterManager(store, 100, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2443,7 +2415,7 @@ func TestWriterManager_ReindexWithChangedSymbols(t *testing.T) {
 	}
 
 	// Verify: diff records exist
-	diffs, err := store.GetRecentDiffs(context.Background(), storage.RecentDiffsInput{
+	diffs, err := store.GetRecentDiffs(context.Background(), types.RecentDiffsInput{
 		Since: time.Now().Add(-1 * time.Hour),
 	})
 	if err != nil {
@@ -2469,17 +2441,7 @@ func TestIndexAll_WithProgress(t *testing.T) {
 		}
 	}
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
@@ -2567,17 +2529,7 @@ func TestScanRepo_ShaktimanIgnore(t *testing.T) {
 func TestWriterManager_DeleteJob(t *testing.T) {
 	t.Parallel()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	wm := NewWriterManager(store, 10, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2649,17 +2601,7 @@ func TestIndexAll_AllUpToDate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
@@ -2696,17 +2638,7 @@ func TestIndexAll_AllUpToDate(t *testing.T) {
 func TestIndexAll_EnrichError(t *testing.T) {
 	t.Parallel()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)

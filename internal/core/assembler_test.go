@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shaktimanai/shaktiman/internal/storage"
+	"github.com/shaktimanai/shaktiman/internal/testutil"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
@@ -92,15 +92,7 @@ func TestAssemble_StructuralExpansion(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 
 	// Create file with 3 functions: Caller, Helper, Unrelated
 	fileID, err := store.UpsertFile(ctx, &types.FileRecord{
@@ -196,15 +188,7 @@ func TestStructuralExpand_WithEdges(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 
 	// Two files, each with a function connected by an edge.
 	fileID1, err := store.UpsertFile(ctx, &types.FileRecord{

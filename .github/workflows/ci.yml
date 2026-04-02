@@ -9,6 +9,16 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - vector_backend: brute_force
+            name_suffix: bruteforce
+          - vector_backend: hnsw
+            name_suffix: hnsw
+    name: test-sqlite-${{ matrix.name_suffix }}
+    env:
+      SHAKTIMAN_TEST_VECTOR_BACKEND: ${{ matrix.vector_backend }}
     steps:
       - uses: actions/checkout@v4
 
@@ -27,52 +37,20 @@ jobs:
       - uses: codecov/codecov-action@v5
         with:
           files: coverage.out
-          flags: sqlite
-          token: ${{ secrets.CODECOV_TOKEN }}
-
-  test-postgres:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: pgvector/pgvector:pg17
-        env:
-          POSTGRES_USER: shaktiman
-          POSTGRES_PASSWORD: shaktiman
-          POSTGRES_DB: shaktiman_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U shaktiman"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      SHAKTIMAN_TEST_POSTGRES_URL: postgres://shaktiman:shaktiman@localhost:5432/shaktiman_test?sslmode=disable
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - run: go test -race -tags "sqlite_fts5 postgres pgvector" -coverprofile=coverage-pg.out ./...
-
-      - run: go tool cover -func=coverage-pg.out
-
-      - uses: codecov/codecov-action@v5
-        with:
-          files: coverage-pg.out
-          flags: postgres
+          flags: sqlite-${{ matrix.name_suffix }}
           token: ${{ secrets.CODECOV_TOKEN }}
 
   test-qdrant:
     runs-on: ubuntu-latest
+    name: test-sqlite-qdrant
     services:
       qdrant:
         image: qdrant/qdrant:v1.13.2
         ports:
           - 6333:6333
     env:
+      SHAKTIMAN_TEST_DB_BACKEND: sqlite
+      SHAKTIMAN_TEST_VECTOR_BACKEND: qdrant
       SHAKTIMAN_TEST_QDRANT_URL: http://localhost:6333
     steps:
       - uses: actions/checkout@v4
@@ -89,12 +67,50 @@ jobs:
           done
           echo "Qdrant failed to start" && exit 1
 
-      - run: go test -race -tags "sqlite_fts5 qdrant" -coverprofile=coverage-qdrant.out ./...
+      - run: go test -race -tags "sqlite_fts5 qdrant" -coverprofile=coverage.out ./...
 
-      - run: go tool cover -func=coverage-qdrant.out
+      - run: go tool cover -func=coverage.out
 
       - uses: codecov/codecov-action@v5
         with:
-          files: coverage-qdrant.out
+          files: coverage.out
           flags: qdrant
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  test-postgres:
+    runs-on: ubuntu-latest
+    name: test-postgres-pgvector
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: shaktiman
+          POSTGRES_PASSWORD: shaktiman
+          POSTGRES_DB: shaktiman_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shaktiman"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      SHAKTIMAN_TEST_DB_BACKEND: postgres
+      SHAKTIMAN_TEST_VECTOR_BACKEND: pgvector
+      SHAKTIMAN_TEST_POSTGRES_URL: postgres://shaktiman:shaktiman@localhost:5432/shaktiman_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - run: go test -race -tags "sqlite_fts5 postgres pgvector" -coverprofile=coverage.out ./...
+
+      - run: go tool cover -func=coverage.out
+
+      - uses: codecov/codecov-action@v5
+        with:
+          files: coverage.out
+          flags: postgres
           token: ${{ secrets.CODECOV_TOKEN }}
