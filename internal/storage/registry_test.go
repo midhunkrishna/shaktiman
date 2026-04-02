@@ -130,3 +130,63 @@ func TestNewMetadataStore_CloserWorks(t *testing.T) {
 		t.Fatalf("closer: %v", err)
 	}
 }
+
+func TestMetadataStoreConfigFrom(t *testing.T) {
+	t.Parallel()
+	cfg := types.Config{
+		DatabaseBackend:    "postgres",
+		DBPath:             "/tmp/test.db",
+		PostgresConnString: "postgres://localhost/test",
+		PostgresMaxOpen:    25,
+		PostgresMaxIdle:    10,
+		PostgresSchema:     "myschema",
+	}
+	msc := MetadataStoreConfigFrom(cfg)
+	if msc.Backend != "postgres" {
+		t.Errorf("Backend = %q, want postgres", msc.Backend)
+	}
+	if msc.SQLitePath != "/tmp/test.db" {
+		t.Errorf("SQLitePath = %q", msc.SQLitePath)
+	}
+	if msc.PostgresConnStr != "postgres://localhost/test" {
+		t.Errorf("PostgresConnStr = %q", msc.PostgresConnStr)
+	}
+	if msc.PostgresMaxOpen != 25 {
+		t.Errorf("PostgresMaxOpen = %d, want 25", msc.PostgresMaxOpen)
+	}
+	if msc.PostgresMaxIdle != 10 {
+		t.Errorf("PostgresMaxIdle = %d, want 10", msc.PostgresMaxIdle)
+	}
+	if msc.PostgresSchema != "myschema" {
+		t.Errorf("PostgresSchema = %q, want myschema", msc.PostgresSchema)
+	}
+}
+
+func TestMetadataStoreConfigFrom_Defaults(t *testing.T) {
+	t.Parallel()
+	// Empty config should produce empty MetadataStoreConfig fields
+	cfg := types.Config{}
+	msc := MetadataStoreConfigFrom(cfg)
+	if msc.Backend != "" {
+		t.Errorf("Backend = %q, want empty", msc.Backend)
+	}
+	if msc.PostgresConnStr != "" {
+		t.Errorf("PostgresConnStr should be empty, got %q", msc.PostgresConnStr)
+	}
+}
+
+func TestNewMetadataStore_DefaultBackend(t *testing.T) {
+	t.Parallel()
+	// Empty backend should default to sqlite
+	store, _, closer, err := NewMetadataStore(MetadataStoreConfig{
+		Backend:        "",
+		SQLiteInMemory: true,
+	})
+	if err != nil {
+		t.Fatalf("NewMetadataStore: %v", err)
+	}
+	defer closer()
+	if store == nil {
+		t.Fatal("expected non-nil store for default backend")
+	}
+}

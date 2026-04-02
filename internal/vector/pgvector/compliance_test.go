@@ -14,59 +14,263 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/vector/vectortest"
 )
 
-func TestPgVectorCompliance(t *testing.T) {
+// testPool creates a pgxpool connected to the test Postgres or skips.
+func testPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
 	connStr := os.Getenv("SHAKTIMAN_TEST_POSTGRES_URL")
 	if connStr == "" {
-		t.Skip("set SHAKTIMAN_TEST_POSTGRES_URL to run pgvector compliance tests")
+		t.Skip("set SHAKTIMAN_TEST_POSTGRES_URL to run pgvector tests")
 	}
-
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, connStr)
+	pool, err := pgxpool.New(context.Background(), connStr)
 	if err != nil {
-		t.Fatalf("connect to postgres: %v", err)
+		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(func() { pool.Close() })
+	return pool
+}
 
-	// Ensure pgvector extension is available.
+// setupSchema creates base tables + seeds chunk rows for FK compliance.
+func setupSchema(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	pool.Exec(ctx, "DROP TABLE IF EXISTS embeddings")
+	for _, table := range []string{"diff_symbols", "diff_log", "edges", "pending_edges",
+		"symbols", "chunks", "files", "access_log", "working_set",
+		"tool_calls", "schema_version", "config"} {
+		pool.Exec(ctx, "DROP TABLE IF EXISTS "+table+" CASCADE")
+	}
+	if err := postgres.Migrate(ctx, pool); err != nil {
+		t.Fatalf("Migrate base schema: %v", err)
+	}
+	pool.Exec(ctx, `INSERT INTO files (id, path, content_hash, mtime, language, indexed_at)
+		VALUES (1, 'test.go', 'abc', 0, 'go', NOW()) ON CONFLICT DO NOTHING`)
+	for _, id := range []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 42, 999} {
+		pool.Exec(ctx, `INSERT INTO chunks (id, file_id, chunk_index, kind, start_line, end_line, content, token_count)
+			VALUES ($1, 1, 0, 'function', 1, 10, 'test', 10) ON CONFLICT DO NOTHING`, id)
+	}
+}
+
+func TestPgVectorCompliance(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
 	if _, err := pool.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS vector"); err != nil {
 		t.Fatalf("enable pgvector extension (is it installed?): %v", err)
 	}
 
 	vectortest.RunVectorStoreTests(t, func(t *testing.T, dims int) types.VectorStore {
 		t.Helper()
-
-		// Clean slate: drop embeddings first (FK depends on chunks), then base tables.
-		pool.Exec(ctx, "DROP TABLE IF EXISTS embeddings")
-		for _, table := range []string{"diff_symbols", "diff_log", "edges", "pending_edges",
-			"symbols", "chunks", "files", "access_log", "working_set",
-			"tool_calls", "schema_version", "config"} {
-			pool.Exec(ctx, "DROP TABLE IF EXISTS "+table+" CASCADE")
-		}
-
-		// Create base Postgres schema (embeddings REFERENCES chunks).
-		if err := postgres.Migrate(ctx, pool); err != nil {
-			t.Fatalf("Migrate base schema: %v", err)
-		}
-
-		// Seed dummy file + chunks to satisfy FK constraint.
-		// The compliance suite uses chunk IDs 1-10 and 42.
-		pool.Exec(ctx, `INSERT INTO files (id, path, content_hash, mtime, language, indexed_at)
-			VALUES (1, 'test.go', 'abc', 0, 'go', NOW()) ON CONFLICT DO NOTHING`)
-		for _, id := range []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 42, 999} {
-			pool.Exec(ctx, `INSERT INTO chunks (id, file_id, chunk_index, kind, start_line, end_line, content, token_count)
-				VALUES ($1, 1, 0, 'function', 1, 10, 'test', 10) ON CONFLICT DO NOTHING`, id)
-		}
+		setupSchema(t, pool)
 
 		store, err := NewPgVectorStore(pool, dims)
 		if err != nil {
 			t.Fatalf("NewPgVectorStore: %v", err)
 		}
-
 		t.Cleanup(func() {
 			store.Close()
 			pool.Exec(ctx, "DROP TABLE IF EXISTS embeddings")
 		})
-
 		return store
 	})
+}
+
+// ── Edge case tests requiring real Postgres ──
+
+func TestMigrate_FullCycle(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	setupSchema(t, pool)
+
+	// First migration creates table + index
+	if err := Migrate(ctx, pool, 4); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	// Second call is idempotent
+	if err := Migrate(ctx, pool, 4); err != nil {
+		t.Fatalf("Migrate idempotent: %v", err)
+	}
+
+	t.Cleanup(func() { pool.Exec(ctx, "DROP TABLE IF EXISTS embeddings") })
+}
+
+func TestValidateDimensions_Match(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	setupSchema(t, pool)
+
+	if err := Migrate(ctx, pool, 8); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	// Should pass — dims match
+	if err := ValidateDimensions(ctx, pool, 8); err != nil {
+		t.Fatalf("ValidateDimensions: %v", err)
+	}
+
+	t.Cleanup(func() { pool.Exec(ctx, "DROP TABLE IF EXISTS embeddings") })
+}
+
+func TestValidateDimensions_Mismatch(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	setupSchema(t, pool)
+
+	if err := Migrate(ctx, pool, 8); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	// Should fail — dims don't match
+	err := ValidateDimensions(ctx, pool, 16)
+	if err == nil {
+		t.Fatal("expected error for dimension mismatch")
+	}
+
+	t.Cleanup(func() { pool.Exec(ctx, "DROP TABLE IF EXISTS embeddings") })
+}
+
+func TestValidateDimensions_NoTable(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	pool.Exec(ctx, "DROP TABLE IF EXISTS embeddings")
+
+	// No embeddings table — should return nil (table will be created later)
+	if err := ValidateDimensions(ctx, pool, 768); err != nil {
+		t.Fatalf("ValidateDimensions no table: %v", err)
+	}
+}
+
+func TestNewPgVectorStore_DimsMismatch(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	setupSchema(t, pool)
+
+	// Create with dims=4
+	store, err := NewPgVectorStore(pool, 4)
+	if err != nil {
+		t.Fatalf("NewPgVectorStore: %v", err)
+	}
+	store.Close()
+
+	// Try to open with dims=8 — should fail
+	_, err = NewPgVectorStore(pool, 8)
+	if err == nil {
+		t.Fatal("expected error for dims mismatch")
+	}
+
+	t.Cleanup(func() { pool.Exec(ctx, "DROP TABLE IF EXISTS embeddings") })
+}
+
+func TestUpsertBatch_WithZeroVectorsSkipped(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	setupSchema(t, pool)
+
+	store, err := NewPgVectorStore(pool, 4)
+	if err != nil {
+		t.Fatalf("NewPgVectorStore: %v", err)
+	}
+	defer store.Close()
+
+	// Mix of zero and non-zero vectors — zeros should be skipped
+	err = store.UpsertBatch(ctx,
+		[]int64{1, 2, 3},
+		[][]float32{
+			{0.1, 0.2, 0.3, 0.4}, // valid
+			{0, 0, 0, 0},         // zero — skipped
+			{0.5, 0.6, 0.7, 0.8}, // valid
+		})
+	if err != nil {
+		t.Fatalf("UpsertBatch: %v", err)
+	}
+
+	count, _ := store.Count(ctx)
+	if count != 2 {
+		t.Errorf("Count = %d, want 2 (zero vector skipped)", count)
+	}
+
+	t.Cleanup(func() { pool.Exec(ctx, "DROP TABLE IF EXISTS embeddings") })
+}
+
+func TestSearch_WithTimeout(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	setupSchema(t, pool)
+
+	store, err := NewPgVectorStore(pool, 4)
+	if err != nil {
+		t.Fatalf("NewPgVectorStore: %v", err)
+	}
+	defer store.Close()
+
+	store.Upsert(ctx, 1, []float32{1, 0, 0, 0})
+	store.Upsert(ctx, 2, []float32{0, 1, 0, 0})
+
+	// Normal search should complete within timeout
+	results, err := store.Search(ctx, []float32{1, 0, 0, 0}, 2)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("expected 2 results, got %d", len(results))
+	}
+
+	t.Cleanup(func() { pool.Exec(ctx, "DROP TABLE IF EXISTS embeddings") })
+}
+
+func TestDelete_Chunking(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	setupSchema(t, pool)
+
+	store, err := NewPgVectorStore(pool, 2)
+	if err != nil {
+		t.Fatalf("NewPgVectorStore: %v", err)
+	}
+	defer store.Close()
+
+	// Seed more chunk rows
+	for i := int64(1); i <= 150; i++ {
+		pool.Exec(ctx, `INSERT INTO chunks (id, file_id, chunk_index, kind, start_line, end_line, content, token_count)
+			VALUES ($1, 1, 0, 'function', 1, 10, 'test', 10) ON CONFLICT DO NOTHING`, i)
+	}
+
+	// Insert more than maxBatchSize vectors
+	ids := make([]int64, 110)
+	vecs := make([][]float32, 110)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+		vecs[i] = []float32{float32(i) * 0.01, 0.5}
+	}
+	if err := store.UpsertBatch(ctx, ids, vecs); err != nil {
+		t.Fatalf("UpsertBatch: %v", err)
+	}
+
+	// Delete all — should chunk into batches
+	if err := store.Delete(ctx, ids); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	count, _ := store.Count(ctx)
+	if count != 0 {
+		t.Errorf("Count after delete = %d, want 0", count)
+	}
+
+	t.Cleanup(func() { pool.Exec(ctx, "DROP TABLE IF EXISTS embeddings") })
+}
+
+func TestHealthy_WithPool(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	setupSchema(t, pool)
+
+	store, err := NewPgVectorStore(pool, 4)
+	if err != nil {
+		t.Fatalf("NewPgVectorStore: %v", err)
+	}
+	defer store.Close()
+
+	if !store.Healthy(ctx) {
+		t.Error("expected Healthy = true")
+	}
 }

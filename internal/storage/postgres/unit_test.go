@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
@@ -189,4 +191,32 @@ func TestPgSchemaVersion(t *testing.T) {
 	if pgSchemaVersion < 1 {
 		t.Errorf("pgSchemaVersion = %d, must be >= 1", pgSchemaVersion)
 	}
+}
+
+// ── RawPool / IsTxHandle ──
+
+func TestPgTxHandle_IsTxHandle(t *testing.T) {
+	// Marker method should not panic with nil Tx.
+	h := PgTxHandle{Tx: nil}
+	h.IsTxHandle()
+}
+
+func TestPgStore_RawPool_ReturnsPool(t *testing.T) {
+	// RawPool should return the same object as Pool, typed as any.
+	s := &PgStore{pool: nil, schema: "public"}
+	raw := s.RawPool()
+	// A nil *pgxpool.Pool wrapped in an interface is NOT nil (typed nil).
+	// Verify it's a *pgxpool.Pool.
+	if _, ok := raw.(*pgxpool.Pool); !ok {
+		t.Errorf("RawPool should return *pgxpool.Pool, got %T", raw)
+	}
+}
+
+func TestPgStore_RawPool_TypeMatches(t *testing.T) {
+	// When pool is set, RawPool() should return the same pointer.
+	// We can't easily create a real pool here without Postgres, so just
+	// verify the method exists and the interface assertion works.
+	s := &PgStore{schema: "public"}
+	type rawPooler interface{ RawPool() any }
+	var _ rawPooler = s // compile-time check
 }

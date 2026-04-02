@@ -16,6 +16,9 @@ import (
 //   - The database role must have CREATE privilege to enable the extension,
 //     or the extension must already be enabled by a superuser/admin.
 func Migrate(ctx context.Context, pool *pgxpool.Pool, dims int) error {
+	if pool == nil {
+		return fmt.Errorf("pgvector: pool is nil")
+	}
 	if dims <= 0 || dims > 4096 {
 		return fmt.Errorf("pgvector: invalid dimensions %d (must be 1-4096)", dims)
 	}

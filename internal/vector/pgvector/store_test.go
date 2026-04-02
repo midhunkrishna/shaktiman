@@ -112,4 +112,70 @@ func TestMigrate_InvalidDims(t *testing.T) {
 	if err := Migrate(context.Background(), nil, 5000); err == nil {
 		t.Fatal("expected error for dims=5000")
 	}
+	// Nil pool should fail before dim check
+	err := Migrate(context.Background(), nil, 768)
+	if err == nil {
+		t.Fatal("expected error for nil pool")
+	}
+	if err.Error() != "pgvector: pool is nil" {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestMigrate_ValidDimsBoundary(t *testing.T) {
+	// Dims at boundaries should pass dim validation (fail on nil pool)
+	for _, dims := range []int{1, 4096} {
+		err := Migrate(context.Background(), nil, dims)
+		if err == nil {
+			t.Fatalf("expected error for nil pool with dims=%d", dims)
+		}
+		if err.Error() != "pgvector: pool is nil" {
+			t.Errorf("dims=%d: expected nil pool error, got: %v", dims, err)
+		}
+	}
+}
+
+func TestUpsertBatch_EmptyBatch(t *testing.T) {
+	s := &PgVectorStore{dims: 4}
+	// Empty batch should be a no-op (no pool call)
+	err := s.UpsertBatch(context.Background(), []int64{}, [][]float32{})
+	if err != nil {
+		t.Fatalf("UpsertBatch empty: %v", err)
+	}
+}
+
+func TestUpsertBatch_AllZeroVectorsSkipped(t *testing.T) {
+	// With no pool, this would panic on a real upsert. But if all vectors are
+	// zero, the batch should skip them all and never touch the pool.
+	s := &PgVectorStore{dims: 2}
+	err := s.UpsertBatch(context.Background(),
+		[]int64{1, 2},
+		[][]float32{{0, 0}, {0, 0}})
+	// No error because zero vectors are skipped and batch is empty
+	if err != nil {
+		t.Fatalf("UpsertBatch all-zero: %v", err)
+	}
+}
+
+func TestSearch_NegativeTopK(t *testing.T) {
+	s := &PgVectorStore{dims: 4}
+	results, err := s.Search(context.Background(), []float32{1, 0, 0, 0}, -1)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if results != nil {
+		t.Errorf("expected nil for negative topK")
+	}
+}
+
+func TestValidateDimensions_NilPool(t *testing.T) {
+	// ValidateDimensions with nil pool panics (pgxpool.QueryRow dereferences).
+	// This is expected — callers must ensure pool is non-nil.
+	// Verify panic is caught gracefully.
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil pool")
+		}
+	}()
+	_ = ValidateDimensions(context.Background(), nil, 768)
 }
