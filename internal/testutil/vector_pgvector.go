@@ -4,6 +4,7 @@ package testutil
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 
@@ -38,8 +39,16 @@ func newPgVectorTestStore(t *testing.T, dims int) types.VectorStore {
 		t.Fatalf("pgxpool.New: %v", err)
 	}
 
-	// The embeddings table already exists in the pgtestdb template database
-	// (created by goose migration 003). Just create the store.
+	// The template DB has embeddings with vector(768). If the test needs
+	// different dims, drop and recreate the table in this throwaway clone.
+	if dims != 768 {
+		pool.Exec(ctx, "DROP TABLE IF EXISTS embeddings")
+		pool.Exec(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS embeddings (
+			chunk_id BIGINT PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
+			embedding vector(%d) NOT NULL
+		)`, dims))
+	}
+
 	store, err := pgvector.NewPgVectorStore(pool, dims)
 	if err != nil {
 		pool.Close()
