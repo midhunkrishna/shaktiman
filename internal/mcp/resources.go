@@ -7,7 +7,7 @@ import (
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/shaktimanai/shaktiman/internal/storage"
+	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
 // workspaceSummaryDef defines the workspace summary MCP resource.
@@ -21,7 +21,7 @@ func workspaceSummaryDef() mcpsdk.Resource {
 }
 
 // workspaceSummaryHandler returns a resource handler for the workspace summary.
-func workspaceSummaryHandler(store *storage.Store) server.ResourceHandlerFunc {
+func workspaceSummaryHandler(store types.WriterStore) server.ResourceHandlerFunc {
 	return func(ctx context.Context, request mcpsdk.ReadResourceRequest) ([]mcpsdk.ResourceContents, error) {
 		stats, err := store.GetIndexStats(ctx)
 		if err != nil {

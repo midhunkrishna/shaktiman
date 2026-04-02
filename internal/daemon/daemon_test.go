@@ -2484,7 +2484,7 @@ func TestIndexAll_WithProgress(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
 
-	pipeline := NewEnrichmentPipeline(store, wm, 2)
+	pipeline := NewEnrichmentPipeline(store, wm, 2, nil)
 
 	// Scan files
 	scanResult, err := ScanRepo(context.Background(), ScanInput{ProjectRoot: dir})
@@ -2664,7 +2664,7 @@ func TestIndexAll_AllUpToDate(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
 
-	pipeline := NewEnrichmentPipeline(store, wm, 1)
+	pipeline := NewEnrichmentPipeline(store, wm, 1, nil)
 
 	scanResult, err := ScanRepo(context.Background(), ScanInput{ProjectRoot: dir})
 	if err != nil {
@@ -2711,7 +2711,7 @@ func TestIndexAll_EnrichError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go wm.Run(ctx)
 
-	pipeline := NewEnrichmentPipeline(store, wm, 1)
+	pipeline := NewEnrichmentPipeline(store, wm, 1, nil)
 
 	// Pass a file with non-existent AbsPath — enrichFile will fail on readFileContent
 	badFiles := []ScannedFile{{

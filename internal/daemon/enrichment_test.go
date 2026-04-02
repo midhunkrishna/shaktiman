@@ -167,7 +167,7 @@ func TestEnrichFile_Modify(t *testing.T) {
 	go wm.Run(ctx)
 	_ = wm.AddProducer()
 
-	pipeline := NewEnrichmentPipeline(store, wm, 1)
+	pipeline := NewEnrichmentPipeline(store, wm, 1, nil)
 
 	dir := t.TempDir()
 	goFile := filepath.Join(dir, "main.go")
@@ -218,7 +218,7 @@ func TestEnrichFile_Delete(t *testing.T) {
 	go wm.Run(ctx)
 	_ = wm.AddProducer()
 
-	pipeline := NewEnrichmentPipeline(store, wm, 1)
+	pipeline := NewEnrichmentPipeline(store, wm, 1, nil)
 
 	dir := t.TempDir()
 	goFile := filepath.Join(dir, "del.go")
@@ -280,7 +280,7 @@ func TestEnrichFile_SkipUnchanged(t *testing.T) {
 	go wm1.Run(ctx1)
 	_ = wm1.AddProducer()
 
-	pipeline := NewEnrichmentPipeline(store, wm1, 1)
+	pipeline := NewEnrichmentPipeline(store, wm1, 1, nil)
 
 	dir := t.TempDir()
 	goFile := filepath.Join(dir, "same.go")
@@ -334,7 +334,7 @@ func TestEnrichFile_UnsupportedLanguage(t *testing.T) {
 	go wm.Run(ctx)
 	_ = wm.AddProducer()
 
-	pipeline := NewEnrichmentPipeline(store, wm, 1)
+	pipeline := NewEnrichmentPipeline(store, wm, 1, nil)
 
 	dir := t.TempDir()
 	txtFile := filepath.Join(dir, "readme.txt")
@@ -365,7 +365,7 @@ func TestEnrichFile_LargeFile(t *testing.T) {
 	go wm.Run(ctx)
 	_ = wm.AddProducer()
 
-	pipeline := NewEnrichmentPipeline(store, wm, 1)
+	pipeline := NewEnrichmentPipeline(store, wm, 1, nil)
 
 	dir := t.TempDir()
 	largeFile := filepath.Join(dir, "huge.go")
@@ -401,7 +401,7 @@ func TestEnrichFile_UnreadableFile(t *testing.T) {
 	go wm.Run(ctx)
 	_ = wm.AddProducer()
 
-	pipeline := NewEnrichmentPipeline(store, wm, 1)
+	pipeline := NewEnrichmentPipeline(store, wm, 1, nil)
 
 	// Use a non-existent file path
 	err := pipeline.EnrichFile(context.Background(), FileChangeEvent{
@@ -439,3 +439,112 @@ func waitForWriter(t *testing.T, wm *WriterManager) {
 
 // Suppress unused import
 var _ = types.Config{}
+
+func TestIndexAll_WithLifecycleHooks(t *testing.T) {
+	t.Parallel()
+
+	store, db := newEnrichTestStore(t)
+	defer db.Close()
+
+	wm := NewWriterManager(store, 100, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	go wm.Run(ctx)
+	defer func() {
+		cancel()
+		<-wm.Done()
+	}()
+
+	// Use a real SQLiteLifecycle instead of nil — this exercises the
+	// OnBulkWriteBegin/OnBulkWriteEnd code paths in IndexAll.
+	lifecycle := storage.NewSQLiteLifecycle(store)
+	pipeline := NewEnrichmentPipeline(store, wm, 1, lifecycle)
+
+	dir := t.TempDir()
+	goFile := filepath.Join(dir, "hello.go")
+	content := []byte("package main\n\nfunc Hello() string {\n\treturn \"hello\"\n}\n")
+	os.WriteFile(goFile, content, 0o644)
+
+	// Use ScanRepo to produce properly-formed ScannedFile entries
+	scanResult, err := ScanRepo(context.Background(), ScanInput{ProjectRoot: dir})
+	if err != nil {
+		t.Fatalf("ScanRepo: %v", err)
+	}
+
+	err = pipeline.IndexAll(context.Background(), IndexAllInput{
+		ProjectRoot: dir,
+		Files:       scanResult.Files,
+	})
+	if err != nil {
+		t.Fatalf("IndexAll: %v", err)
+	}
+
+	// After IndexAll with lifecycle, FTS should be consistent and searchable.
+	// The lifecycle hooks run OnBulkWriteBegin (disable triggers) and
+	// OnBulkWriteEnd (rebuild FTS + re-enable triggers).
+	results, err := store.KeywordSearch(context.Background(), "Hello", 10)
+	if err != nil {
+		t.Fatalf("KeywordSearch: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected FTS results after IndexAll with lifecycle hooks")
+	}
+}
+
+// nonBatchStore wraps a WriterStore but hides the BatchMetadataStore interface.
+// This forces filterChanged to use the per-file fallback path.
+type nonBatchStore struct {
+	types.WriterStore
+}
+
+func TestFilterChanged_NonBatchFallback(t *testing.T) {
+	t.Parallel()
+
+	concreteStore, db := newEnrichTestStore(t)
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Seed two files
+	concreteStore.UpsertFile(ctx, &types.FileRecord{
+		Path: "a.go", ContentHash: "hash_a", Mtime: 1.0,
+		Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	concreteStore.UpsertFile(ctx, &types.FileRecord{
+		Path: "b.go", ContentHash: "hash_b", Mtime: 1.0,
+		Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+
+	// Wrap in nonBatchStore to hide BatchMetadataStore
+	wrapped := &nonBatchStore{WriterStore: concreteStore}
+
+	wm := NewWriterManager(concreteStore, 100, nil)
+	pipeline := NewEnrichmentPipeline(wrapped, wm, 1, nil)
+
+	// filterChanged should use per-file fallback and correctly skip unchanged files
+	changed, err := pipeline.filterChanged(ctx, []ScannedFile{
+		{Path: "a.go", ContentHash: "hash_a"},      // unchanged
+		{Path: "b.go", ContentHash: "new_hash_b"},   // changed
+		{Path: "c.go", ContentHash: "hash_c"},        // new file
+	})
+	if err != nil {
+		t.Fatalf("filterChanged: %v", err)
+	}
+
+	// Should return b.go (changed hash) and c.go (not in DB)
+	if len(changed) != 2 {
+		t.Fatalf("expected 2 changed files, got %d: %v", len(changed), changed)
+	}
+	paths := map[string]bool{}
+	for _, f := range changed {
+		paths[f.Path] = true
+	}
+	if !paths["b.go"] {
+		t.Error("expected b.go (changed hash) in changed set")
+	}
+	if !paths["c.go"] {
+		t.Error("expected c.go (new file) in changed set")
+	}
+	if paths["a.go"] {
+		t.Error("a.go should NOT be in changed set (hash unchanged)")
+	}
+}

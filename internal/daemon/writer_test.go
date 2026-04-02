@@ -271,3 +271,63 @@ func TestWriterChannelFull_LogsAtDebug(t *testing.T) {
 		t.Error("expected 'channel full' to log at DEBUG level, but found WARN")
 	}
 }
+
+func TestWriterManager_ProcessJobViaWriterStore(t *testing.T) {
+	// Verifies that processJob correctly unwraps TxHandle via store.WithWriteTx
+	// and successfully writes through the WriterStore interface.
+	t.Parallel()
+
+	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	var store types.WriterStore = storage.NewStore(db)
+	wm := NewWriterManager(store, 10, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go wm.Run(ctx)
+	wm.AddProducer()
+
+	// Submit a job via the WriterStore-typed writer
+	done := make(chan error, 1)
+	err = wm.Submit(types.WriteJob{
+		Type: types.WriteJobEnrichment,
+		File: &types.FileRecord{
+			Path:            "via_interface.go",
+			ContentHash:     "ifhash",
+			Mtime:           1.0,
+			Language:        "go",
+			EmbeddingStatus: "pending",
+			ParseQuality:    "full",
+		},
+		FilePath:    "via_interface.go",
+		ContentHash: "ifhash",
+		Timestamp:   time.Now(),
+		Done:        done,
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	<-done
+
+	wm.RemoveProducer()
+	cancel()
+	<-wm.Done()
+
+	// Verify the file was written via the WithWriteTx → TxHandle path
+	f, err := store.GetFileByPath(context.Background(), "via_interface.go")
+	if err != nil {
+		t.Fatalf("GetFileByPath: %v", err)
+	}
+	if f == nil {
+		t.Fatal("expected file to exist after WriterStore-based processJob")
+	}
+	if f.ContentHash != "ifhash" {
+		t.Errorf("ContentHash = %q, want 'ifhash'", f.ContentHash)
+	}
+}

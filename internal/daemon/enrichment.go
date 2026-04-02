@@ -12,14 +12,14 @@ import (
 	"time"
 
 	"github.com/shaktimanai/shaktiman/internal/parser"
-	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
 // EnrichmentPipeline orchestrates parsing and indexing of source files
 // using a pool of worker goroutines, each with its own parser (IP-2).
 type EnrichmentPipeline struct {
-	store          *storage.Store
+	store          types.WriterStore
+	lifecycle      types.StoreLifecycle // nil if backend needs no lifecycle hooks
 	writer         *WriterManager
 	workers        int
 	logger         *slog.Logger
@@ -29,12 +29,13 @@ type EnrichmentPipeline struct {
 }
 
 // NewEnrichmentPipeline creates a pipeline with the given worker count.
-func NewEnrichmentPipeline(store *storage.Store, writer *WriterManager, workers int) *EnrichmentPipeline {
+func NewEnrichmentPipeline(store types.WriterStore, writer *WriterManager, workers int, lifecycle types.StoreLifecycle) *EnrichmentPipeline {
 	return &EnrichmentPipeline{
-		store:   store,
-		writer:  writer,
-		workers: workers,
-		logger:  slog.Default().With("component", "enrichment"),
+		store:     store,
+		lifecycle: lifecycle,
+		writer:    writer,
+		workers:   workers,
+		logger:    slog.Default().With("component", "enrichment"),
 	}
 }
 
@@ -71,19 +72,17 @@ func (ep *EnrichmentPipeline) IndexAll(ctx context.Context, input IndexAllInput)
 		"total_files", len(input.Files),
 		"needs_index", len(needsIndex))
 
-	// Disable FTS triggers for bulk insert performance (A11)
-	if err := ep.store.DisableFTSTriggers(ctx); err != nil {
-		ep.logger.Warn("failed to disable FTS triggers", "err", err)
+	// Run backend-specific bulk write optimization (e.g., disable FTS triggers for SQLite)
+	if ep.lifecycle != nil {
+		if err := ep.lifecycle.OnBulkWriteBegin(ctx); err != nil {
+			ep.logger.Warn("lifecycle OnBulkWriteBegin failed", "err", err)
+		}
+		defer func() {
+			if err := ep.lifecycle.OnBulkWriteEnd(ctx); err != nil {
+				ep.logger.Warn("lifecycle OnBulkWriteEnd failed", "err", err)
+			}
+		}()
 	}
-	// Ensure FTS is rebuilt and triggers re-enabled on all exit paths
-	defer func() {
-		if err := ep.store.RebuildFTS(ctx); err != nil {
-			ep.logger.Warn("failed to rebuild FTS", "err", err)
-		}
-		if err := ep.store.EnableFTSTriggers(ctx); err != nil {
-			ep.logger.Warn("failed to enable FTS triggers", "err", err)
-		}
-	}()
 
 	// Distribute work to workers
 	jobCh := make(chan ScannedFile, len(needsIndex))
@@ -243,9 +242,22 @@ func (ep *EnrichmentPipeline) filterChanged(ctx context.Context, files []Scanned
 		paths[i] = f.Path
 	}
 
-	existing, err := ep.store.BatchGetFileHashes(ctx, paths)
-	if err != nil {
-		return nil, fmt.Errorf("batch get file hashes: %w", err)
+	// Use batch path if available (BatchMetadataStore), fallback to per-file
+	var existing map[string]string
+	if bs, ok := ep.store.(types.BatchMetadataStore); ok {
+		var err2 error
+		existing, err2 = bs.BatchGetFileHashes(ctx, paths)
+		if err2 != nil {
+			return nil, fmt.Errorf("batch get file hashes: %w", err2)
+		}
+	} else {
+		existing = make(map[string]string, len(paths))
+		for _, p := range paths {
+			f, err2 := ep.store.GetFileByPath(ctx, p)
+			if err2 == nil && f != nil {
+				existing[p] = f.ContentHash
+			}
+		}
 	}
 
 	var changed []ScannedFile
