@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/shaktimanai/shaktiman/internal/types"
@@ -20,8 +21,10 @@ func TestQdrantCompliance(t *testing.T) {
 		t.Helper()
 		client := NewClient(url, os.Getenv("SHAKTIMAN_TEST_QDRANT_API_KEY"))
 
-		// Use a unique collection per test to avoid interference
-		collection := fmt.Sprintf("shaktiman_test_%s", t.Name())
+		// Use a unique collection per test to avoid interference.
+		// Sanitize t.Name() — it contains "/" which breaks URL paths.
+		safe := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
+		collection := fmt.Sprintf("shaktiman_test_%s", safe)
 
 		store, err := NewQdrantStore(client, collection, dims)
 		if err != nil {
