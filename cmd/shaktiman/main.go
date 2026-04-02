@@ -15,7 +15,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/shaktimanai/shaktiman/internal/daemon"
-	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
@@ -245,13 +244,11 @@ func statusCmd() *cobra.Command {
 			projectRoot := args[0]
 			cfg := types.DefaultConfig(projectRoot)
 
-			db, err := storage.Open(storage.OpenInput{Path: cfg.DBPath})
+			store, closer, err := openStore(cfg)
 			if err != nil {
-				return fmt.Errorf("open db: %w", err)
+				return fmt.Errorf("open store: %w", err)
 			}
-			defer db.Close()
-
-			store := storage.NewStore(db)
+			defer closer()
 			ctx := context.Background()
 
 			stats, err := store.GetIndexStats(ctx)

@@ -22,7 +22,7 @@ import (
 // Daemon manages the lifecycle of the Shaktiman indexing system.
 type Daemon struct {
 	cfg              types.Config
-	db               *storage.DB              // retained for Close() and metrics; not exposed
+	dbCloser         func() error             // closes the underlying database
 	store            types.WriterStore
 	lifecycle        types.StoreLifecycle     // nil if backend needs no lifecycle hooks
 	writer           *WriterManager
@@ -43,20 +43,15 @@ type Daemon struct {
 
 // New creates a new Daemon, opening the database and running migrations.
 func New(cfg types.Config) (*Daemon, error) {
-	db, err := storage.Open(storage.OpenInput{Path: cfg.DBPath})
+	store, lifecycle, dbCloser, err := storage.NewMetadataStore(storage.MetadataStoreConfig{
+		Backend:    cfg.DatabaseBackend,
+		SQLitePath: cfg.DBPath,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("open database: %w", err)
+		return nil, fmt.Errorf("create metadata store: %w", err)
 	}
 
-	if err := storage.Migrate(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("run migrations: %w", err)
-	}
-
-	concreteStore := storage.NewStore(db)
-	var store types.WriterStore = concreteStore
-	lifecycle := storage.NewSQLiteLifecycle(concreteStore)
-	engine := core.NewQueryEngine(concreteStore, cfg.ProjectRoot)
+	engine := core.NewQueryEngine(store, cfg.ProjectRoot)
 	writer := NewWriterManager(store, cfg.WriterChannelSize, cfg.TestPatterns)
 
 	// Session-aware ranking
@@ -65,7 +60,7 @@ func New(cfg types.Config) (*Daemon, error) {
 
 	d := &Daemon{
 		cfg:       cfg,
-		db:        db,
+		dbCloser:  dbCloser,
 		store:     store,
 		lifecycle: lifecycle,
 		writer:    writer,
@@ -184,15 +179,22 @@ func (d *Daemon) Start(ctx context.Context) error {
 		}
 	}()
 
-	// Start metrics recorder
-	recorder := mcp.NewMetricsRecorder(mcp.MetricsRecorderInput{
-		DB:        d.db.Writer(),
-		SessionID: d.sessionID,
-		Logger:    d.logger.With("component", "metrics"),
-	})
-	metricsCtx, metricsCancel := context.WithCancel(ctx)
-	defer metricsCancel()
-	go recorder.Run(metricsCtx)
+	// Start metrics recorder.
+	// MetricsRecorder needs raw *sql.DB — access via concrete Store.DB().Writer().
+	// This will be replaced with a MetricsWriter interface in a future PR.
+	var recorder *mcp.MetricsRecorder
+	if sqliteStore, ok := d.store.(*storage.Store); ok {
+		recorder = mcp.NewMetricsRecorder(mcp.MetricsRecorderInput{
+			DB:        sqliteStore.DB().Writer(),
+			SessionID: d.sessionID,
+			Logger:    d.logger.With("component", "metrics"),
+		})
+	}
+	if recorder != nil {
+		metricsCtx, metricsCancel := context.WithCancel(ctx)
+		defer metricsCancel()
+		go recorder.Run(metricsCtx)
+	}
 
 	// Start MCP server (blocks on stdio)
 	s := mcp.NewServer(mcp.NewServerInput{
@@ -426,8 +428,10 @@ func (d *Daemon) Stop() error {
 	}
 
 	// Close database
-	if err := d.db.Close(); err != nil {
-		return fmt.Errorf("close database: %w", err)
+	if d.dbCloser != nil {
+		if err := d.dbCloser(); err != nil {
+			return fmt.Errorf("close database: %w", err)
+		}
 	}
 
 	d.logger.Info("shutdown complete", "duration_ms", time.Since(start).Milliseconds())

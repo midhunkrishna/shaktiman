@@ -15,6 +15,19 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
+// openStore creates a WriterStore using the registry for the given config.
+// The returned closer must be deferred by the caller.
+func openStore(cfg types.Config) (types.WriterStore, func() error, error) {
+	store, _, closer, err := storage.NewMetadataStore(storage.MetadataStoreConfig{
+		Backend:    cfg.DatabaseBackend,
+		SQLitePath: cfg.DBPath,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return store, closer, nil
+}
+
 func searchCmd() *cobra.Command {
 	var (
 		root       string
@@ -35,13 +48,11 @@ func searchCmd() *cobra.Command {
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			db, err := storage.Open(storage.OpenInput{Path: cfg.DBPath})
+			store, closer, err := openStore(cfg)
 			if err != nil {
-				return fmt.Errorf("open db: %w", err)
+				return fmt.Errorf("open store: %w", err)
 			}
-			defer db.Close()
-
-			store := storage.NewStore(db)
+			defer closer()
 			engine := core.NewQueryEngine(store, root)
 
 			if maxResults == 0 {
@@ -129,13 +140,11 @@ func contextCmd() *cobra.Command {
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			db, err := storage.Open(storage.OpenInput{Path: cfg.DBPath})
+			store, closer, err := openStore(cfg)
 			if err != nil {
-				return fmt.Errorf("open db: %w", err)
+				return fmt.Errorf("open store: %w", err)
 			}
-			defer db.Close()
-
-			store := storage.NewStore(db)
+			defer closer()
 			engine := core.NewQueryEngine(store, root)
 
 			if budget == 0 {
@@ -184,13 +193,11 @@ func symbolsCmd() *cobra.Command {
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			db, err := storage.Open(storage.OpenInput{Path: cfg.DBPath})
+			store, closer, err := openStore(cfg)
 			if err != nil {
-				return fmt.Errorf("open db: %w", err)
+				return fmt.Errorf("open store: %w", err)
 			}
-			defer db.Close()
-
-			store := storage.NewStore(db)
+			defer closer()
 			ctx := context.Background()
 
 			syms, err := store.GetSymbolByName(ctx, args[0])
@@ -249,13 +256,11 @@ func depsCmd() *cobra.Command {
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			db, err := storage.Open(storage.OpenInput{Path: cfg.DBPath})
+			store, closer, err := openStore(cfg)
 			if err != nil {
-				return fmt.Errorf("open db: %w", err)
+				return fmt.Errorf("open store: %w", err)
 			}
-			defer db.Close()
-
-			store := storage.NewStore(db)
+			defer closer()
 			ctx := context.Background()
 
 			dir := direction
@@ -335,13 +340,11 @@ func diffCmd() *cobra.Command {
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			db, err := storage.Open(storage.OpenInput{Path: cfg.DBPath})
+			store, closer, err := openStore(cfg)
 			if err != nil {
-				return fmt.Errorf("open db: %w", err)
+				return fmt.Errorf("open store: %w", err)
 			}
-			defer db.Close()
-
-			store := storage.NewStore(db)
+			defer closer()
 			ctx := context.Background()
 
 			duration, err := time.ParseDuration(since)
@@ -353,7 +356,7 @@ func diffCmd() *cobra.Command {
 			}
 
 			sinceTime := time.Now().Add(-duration)
-			diffs, err := store.GetRecentDiffs(ctx, storage.RecentDiffsInput{
+			diffs, err := store.GetRecentDiffs(ctx, types.RecentDiffsInput{
 				Since: sinceTime,
 				Limit: limit,
 			})
@@ -410,13 +413,11 @@ func enrichmentStatusCmd() *cobra.Command {
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			db, err := storage.Open(storage.OpenInput{Path: cfg.DBPath})
+			store, closer, err := openStore(cfg)
 			if err != nil {
-				return fmt.Errorf("open db: %w", err)
+				return fmt.Errorf("open store: %w", err)
 			}
-			defer db.Close()
-
-			store := storage.NewStore(db)
+			defer closer()
 			stats, err := store.GetIndexStats(context.Background())
 			if err != nil {
 				return fmt.Errorf("stats: %w", err)
