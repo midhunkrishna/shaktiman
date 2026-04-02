@@ -19,6 +19,34 @@ type VectorStoreConfig struct {
 
 	// pgvector-specific (pool shared with MetadataStore)
 	PgPool interface{} // *pgxpool.Pool, set by daemon when pgvector shares pool
+
+	// Store is the MetadataStore, passed so backends like pgvector can
+	// extract a shared resource (e.g. connection pool) via type assertion.
+	// The daemon passes this; backends that don't need it ignore it.
+	Store interface{}
+}
+
+// VectorStoreConfigFrom extracts a VectorStoreConfig from the application config
+// and the active MetadataStore. This keeps backend-specific wiring out of the daemon.
+func VectorStoreConfigFrom(cfg types.Config, store interface{}) VectorStoreConfig {
+	vsc := VectorStoreConfig{
+		Backend:          cfg.VectorBackend,
+		Dims:             cfg.EmbeddingDims,
+		QdrantURL:        cfg.QdrantURL,
+		QdrantCollection: cfg.QdrantCollection,
+		QdrantAPIKey:     cfg.QdrantAPIKey,
+		Store:            store,
+	}
+
+	// pgvector extracts the pool from the store — let it self-serve.
+	if cfg.VectorBackend == "pgvector" {
+		type rawPooler interface{ RawPool() any }
+		if p, ok := store.(rawPooler); ok {
+			vsc.PgPool = p.RawPool()
+		}
+	}
+
+	return vsc
 }
 
 // VectorStoreFactory creates a VectorStore from config.
