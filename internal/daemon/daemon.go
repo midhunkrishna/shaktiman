@@ -456,14 +456,10 @@ func (d *Daemon) loadVectors(path string) error {
 
 // newVectorStore creates a vector store based on the configured backend.
 func (d *Daemon) newVectorStore() (types.VectorStore, error) {
-	switch d.cfg.VectorBackend {
-	case "hnsw":
-		return vector.NewHNSWStore(vector.HNSWStoreInput{
-			Dim: d.cfg.EmbeddingDims,
-		})
-	default:
-		return vector.NewBruteForceStore(d.cfg.EmbeddingDims), nil
-	}
+	return vector.NewVectorStore(vector.VectorStoreConfig{
+		Backend: d.cfg.VectorBackend,
+		Dims:    d.cfg.EmbeddingDims,
+	})
 }
 
 // embeddingsPath returns the persistence file path for the active vector backend.
