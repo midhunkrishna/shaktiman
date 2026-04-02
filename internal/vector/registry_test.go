@@ -3,6 +3,8 @@ package vector
 import (
 	"context"
 	"testing"
+
+	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
 func TestNewVectorStore_BruteForce(t *testing.T) {
@@ -93,5 +95,93 @@ func TestHasVectorStore(t *testing.T) {
 	}
 	if HasVectorStore("qdrant") {
 		t.Error("expected qdrant to NOT be registered yet")
+	}
+}
+
+func TestVectorStoreConfigFrom_BasicFields(t *testing.T) {
+	t.Parallel()
+	cfg := types.Config{
+		VectorBackend:    "brute_force",
+		EmbeddingDims:    768,
+		QdrantURL:        "http://localhost:6333",
+		QdrantCollection: "my_col",
+		QdrantAPIKey:     "secret",
+	}
+	vsc := VectorStoreConfigFrom(cfg, nil)
+	if vsc.Backend != "brute_force" {
+		t.Errorf("Backend = %q, want brute_force", vsc.Backend)
+	}
+	if vsc.Dims != 768 {
+		t.Errorf("Dims = %d, want 768", vsc.Dims)
+	}
+	if vsc.QdrantURL != "http://localhost:6333" {
+		t.Errorf("QdrantURL = %q", vsc.QdrantURL)
+	}
+	if vsc.QdrantCollection != "my_col" {
+		t.Errorf("QdrantCollection = %q", vsc.QdrantCollection)
+	}
+	if vsc.QdrantAPIKey != "secret" {
+		t.Errorf("QdrantAPIKey = %q", vsc.QdrantAPIKey)
+	}
+	if vsc.PgPool != nil {
+		t.Error("PgPool should be nil for non-pgvector backend")
+	}
+}
+
+// fakePoolStore simulates a MetadataStore that has a RawPool() method.
+type fakePoolStore struct{ pool any }
+
+func (f *fakePoolStore) RawPool() any { return f.pool }
+
+func TestVectorStoreConfigFrom_PgVector_ExtractsPool(t *testing.T) {
+	t.Parallel()
+	sentinel := "fake-pool"
+	cfg := types.Config{
+		VectorBackend: "pgvector",
+		EmbeddingDims: 384,
+	}
+	vsc := VectorStoreConfigFrom(cfg, &fakePoolStore{pool: sentinel})
+	if vsc.PgPool != sentinel {
+		t.Errorf("PgPool = %v, want %q", vsc.PgPool, sentinel)
+	}
+	if vsc.Store == nil {
+		t.Error("Store should be set")
+	}
+}
+
+func TestVectorStoreConfigFrom_PgVector_NilStore(t *testing.T) {
+	t.Parallel()
+	cfg := types.Config{
+		VectorBackend: "pgvector",
+		EmbeddingDims: 768,
+	}
+	vsc := VectorStoreConfigFrom(cfg, nil)
+	if vsc.PgPool != nil {
+		t.Error("PgPool should be nil when store is nil")
+	}
+}
+
+func TestVectorStoreConfigFrom_PgVector_StoreWithoutPool(t *testing.T) {
+	t.Parallel()
+	// Store that doesn't implement RawPool()
+	cfg := types.Config{
+		VectorBackend: "pgvector",
+		EmbeddingDims: 768,
+	}
+	vsc := VectorStoreConfigFrom(cfg, "not-a-pooler")
+	if vsc.PgPool != nil {
+		t.Error("PgPool should be nil when store lacks RawPool()")
+	}
+}
+
+func TestVectorStoreConfigFrom_NonPgVector_IgnoresPool(t *testing.T) {
+	t.Parallel()
+	cfg := types.Config{
+		VectorBackend: "qdrant",
+		EmbeddingDims: 768,
+	}
+	vsc := VectorStoreConfigFrom(cfg, &fakePoolStore{pool: "should-be-ignored"})
+	if vsc.PgPool != nil {
+		t.Error("PgPool should be nil for non-pgvector backend")
 	}
 }

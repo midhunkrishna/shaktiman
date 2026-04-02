@@ -43,10 +43,7 @@ type Daemon struct {
 
 // New creates a new Daemon, opening the database and running migrations.
 func New(cfg types.Config) (*Daemon, error) {
-	store, lifecycle, dbCloser, err := storage.NewMetadataStore(storage.MetadataStoreConfig{
-		Backend:    cfg.DatabaseBackend,
-		SQLitePath: cfg.DBPath,
-	})
+	store, lifecycle, dbCloser, err := storage.NewMetadataStore(storage.MetadataStoreConfigFrom(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("create metadata store: %w", err)
 	}
@@ -415,7 +412,8 @@ func (d *Daemon) Stop() error {
 		}
 	}
 
-	// Persist embeddings
+	// Persist embeddings and close vector store BEFORE closing the database.
+	// pgvector borrows the Postgres pool — closing the pool first would cause errors.
 	if d.vectorStore != nil {
 		count, _ := d.vectorStore.Count(context.Background())
 		if count > 0 {
@@ -425,9 +423,12 @@ func (d *Daemon) Stop() error {
 				d.logger.Info("saved embeddings to disk", "count", count)
 			}
 		}
+		if err := d.vectorStore.Close(); err != nil {
+			d.logger.Error("close vector store failed", "err", err)
+		}
 	}
 
-	// Close database
+	// Close database (pool) after vector store is done.
 	if d.dbCloser != nil {
 		if err := d.dbCloser(); err != nil {
 			return fmt.Errorf("close database: %w", err)
@@ -456,10 +457,7 @@ func (d *Daemon) loadVectors(path string) error {
 
 // newVectorStore creates a vector store based on the configured backend.
 func (d *Daemon) newVectorStore() (types.VectorStore, error) {
-	return vector.NewVectorStore(vector.VectorStoreConfig{
-		Backend: d.cfg.VectorBackend,
-		Dims:    d.cfg.EmbeddingDims,
-	})
+	return vector.NewVectorStore(vector.VectorStoreConfigFrom(d.cfg, d.store))
 }
 
 // embeddingsPath returns the persistence file path for the active vector backend.

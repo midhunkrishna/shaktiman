@@ -53,6 +53,12 @@ func (s *PgStore) Pool() *pgxpool.Pool {
 	return s.pool
 }
 
+// RawPool returns the connection pool as an untyped value. Used by the daemon
+// to pass the pool to pgvector without importing the pgxpool package.
+func (s *PgStore) RawPool() any {
+	return s.pool
+}
+
 // Close closes the connection pool.
 func (s *PgStore) Close() error {
 	s.pool.Close()
