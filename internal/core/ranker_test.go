@@ -8,21 +8,13 @@ import (
 	"math"
 	"testing"
 
-	"github.com/shaktimanai/shaktiman/internal/storage"
+	"github.com/shaktimanai/shaktiman/internal/testutil"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
-func setupTestStore(t *testing.T) *storage.Store {
+func setupTestStore(t *testing.T) types.WriterStore {
 	t.Helper()
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	return storage.NewStore(db)
+	return testutil.NewTestWriterStore(t)
 }
 
 func TestHybridRank_EmptyCandidates(t *testing.T) {

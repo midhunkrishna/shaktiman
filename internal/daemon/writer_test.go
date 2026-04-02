@@ -7,23 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shaktimanai/shaktiman/internal/storage"
+	"github.com/shaktimanai/shaktiman/internal/testutil"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
 func TestWriterManager_Started_FalseBeforeRun(t *testing.T) {
 	t.Parallel()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	defer db.Close()
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	wm := NewWriterManager(store, 10, nil)
 
 	if wm.Started() {
@@ -34,16 +25,7 @@ func TestWriterManager_Started_FalseBeforeRun(t *testing.T) {
 func TestWriterManager_Started_TrueAfterRun(t *testing.T) {
 	t.Parallel()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	defer db.Close()
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	wm := NewWriterManager(store, 10, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -101,16 +83,7 @@ func TestStop_WriterNeverStarted_NoTimeout(t *testing.T) {
 func TestSubmit_BlockedDuringShutdown(t *testing.T) {
 	t.Parallel()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	defer db.Close()
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	// Channel size 1 — fills quickly
 	wm := NewWriterManager(store, 1, nil)
 
@@ -182,18 +155,7 @@ func TestSubmit_BlockedDuringShutdown(t *testing.T) {
 func TestWriterChannelFull_LogsAtDebug(t *testing.T) {
 	t.Parallel()
 
-	// Open a real DB so NewWriterManager works (writer needs a store).
-	tmpDir := t.TempDir()
-	db, err := storage.Open(storage.OpenInput{Path: tmpDir + "/test.db"})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	defer db.Close()
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 
 	// Channel size 1 — will fill after one unprocessed job.
 	wm := NewWriterManager(store, 1, nil)
@@ -277,16 +239,7 @@ func TestWriterManager_ProcessJobViaWriterStore(t *testing.T) {
 	// and successfully writes through the WriterStore interface.
 	t.Parallel()
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer db.Close()
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	var store types.WriterStore = storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	wm := NewWriterManager(store, 10, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -295,7 +248,7 @@ func TestWriterManager_ProcessJobViaWriterStore(t *testing.T) {
 
 	// Submit a job via the WriterStore-typed writer
 	done := make(chan error, 1)
-	err = wm.Submit(types.WriteJob{
+	err := wm.Submit(types.WriteJob{
 		Type: types.WriteJobEnrichment,
 		File: &types.FileRecord{
 			Path:            "via_interface.go",

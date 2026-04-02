@@ -15,25 +15,15 @@ import (
 
 	"github.com/shaktimanai/shaktiman/internal/core"
 	"github.com/shaktimanai/shaktiman/internal/storage"
+	"github.com/shaktimanai/shaktiman/internal/testutil"
 	"github.com/shaktimanai/shaktiman/internal/types"
-	"github.com/shaktimanai/shaktiman/internal/vector"
 )
 
 // setupSearchHandler creates a searchHandler backed by an in-memory store with
 // seeded test data across multiple directories.
 func setupSearchHandler(t *testing.T) handlerFunc {
 	t.Helper()
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	ctx := context.Background()
 
 	// Seed files in different directories for path filter testing.
@@ -331,17 +321,9 @@ func makeToolRequest(args map[string]any) mcpsdk.CallToolRequest {
 }
 
 // setupStore creates a minimal in-memory store with no test data.
-func setupStore(t *testing.T) *storage.Store {
+func setupStore(t *testing.T) types.WriterStore {
 	t.Helper()
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	return storage.NewStore(db)
+	return testutil.NewTestWriterStore(t)
 }
 
 // setupStoreWithData creates a store and seeds files, chunks, symbols, and returns both.
@@ -1035,7 +1017,7 @@ func TestEnrichmentStatusHandler_WithVectorStore(t *testing.T) {
 		t.Fatalf("InsertChunks: %v", err)
 	}
 
-	vs := vector.NewBruteForceStore(4)
+	vs := testutil.NewTestVectorStore(t, 4)
 	handler := enrichmentStatusHandler(store, vs, nil)
 	result, err := handler(ctx, makeToolRequest(nil))
 	if err != nil {
@@ -1088,7 +1070,7 @@ func TestSummaryHandler_WithVectorStore(t *testing.T) {
 		t.Fatalf("InsertChunks: %v", err)
 	}
 
-	vs := vector.NewBruteForceStore(4)
+	vs := testutil.NewTestVectorStore(t, 4)
 	handler := summaryHandler(store, vs)
 	result, err := handler(ctx, makeToolRequest(nil))
 	if err != nil {
@@ -1360,18 +1342,9 @@ func TestDependenciesHandler_FoundSymbolWithPendingEdges(t *testing.T) {
 
 // setupStoreWithTestFiles creates a store with both test and impl files,
 // including symbols and edges, for testing scope filtering.
-func setupStoreWithTestFiles(t *testing.T) *storage.Store {
+func setupStoreWithTestFiles(t *testing.T) types.WriterStore {
 	t.Helper()
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	ctx := context.Background()
 
 	// Impl file

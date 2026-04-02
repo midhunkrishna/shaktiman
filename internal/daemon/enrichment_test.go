@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/shaktimanai/shaktiman/internal/storage"
+	"github.com/shaktimanai/shaktiman/internal/testutil"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
@@ -144,23 +145,15 @@ func TestContentHash(t *testing.T) {
 	}
 }
 
-func newEnrichTestStore(t *testing.T) (*storage.Store, *storage.DB) {
+func newEnrichTestStore(t *testing.T) types.WriterStore {
 	t.Helper()
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	return storage.NewStore(db), db
+	return testutil.NewTestWriterStore(t)
 }
 
 func TestEnrichFile_Modify(t *testing.T) {
 	t.Parallel()
 
-	store, db := newEnrichTestStore(t)
-	defer db.Close()
+	store := newEnrichTestStore(t)
 
 	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -210,8 +203,7 @@ func TestEnrichFile_Modify(t *testing.T) {
 func TestEnrichFile_Delete(t *testing.T) {
 	t.Parallel()
 
-	store, db := newEnrichTestStore(t)
-	defer db.Close()
+	store := newEnrichTestStore(t)
 
 	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -271,8 +263,7 @@ func TestEnrichFile_Delete(t *testing.T) {
 func TestEnrichFile_SkipUnchanged(t *testing.T) {
 	t.Parallel()
 
-	store, db := newEnrichTestStore(t)
-	defer db.Close()
+	store := newEnrichTestStore(t)
 
 	// Phase 1: index the file
 	wm1 := NewWriterManager(store, 100, nil)
@@ -325,8 +316,7 @@ func TestEnrichFile_SkipUnchanged(t *testing.T) {
 func TestEnrichFile_UnsupportedLanguage(t *testing.T) {
 	t.Parallel()
 
-	store, db := newEnrichTestStore(t)
-	defer db.Close()
+	store := newEnrichTestStore(t)
 
 	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -356,8 +346,7 @@ func TestEnrichFile_UnsupportedLanguage(t *testing.T) {
 func TestEnrichFile_LargeFile(t *testing.T) {
 	t.Parallel()
 
-	store, db := newEnrichTestStore(t)
-	defer db.Close()
+	store := newEnrichTestStore(t)
 
 	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -392,8 +381,7 @@ func TestEnrichFile_LargeFile(t *testing.T) {
 func TestEnrichFile_UnreadableFile(t *testing.T) {
 	t.Parallel()
 
-	store, db := newEnrichTestStore(t)
-	defer db.Close()
+	store := newEnrichTestStore(t)
 
 	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -443,8 +431,15 @@ var _ = types.Config{}
 func TestIndexAll_WithLifecycleHooks(t *testing.T) {
 	t.Parallel()
 
-	store, db := newEnrichTestStore(t)
-	defer db.Close()
+	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	store := storage.NewStore(db)
 
 	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -499,8 +494,7 @@ type nonBatchStore struct {
 func TestFilterChanged_NonBatchFallback(t *testing.T) {
 	t.Parallel()
 
-	concreteStore, db := newEnrichTestStore(t)
-	defer db.Close()
+	concreteStore := newEnrichTestStore(t)
 
 	ctx := context.Background()
 
