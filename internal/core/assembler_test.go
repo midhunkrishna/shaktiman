@@ -4,7 +4,6 @@ package core
 
 import (
 	"context"
-	"database/sql"
 	"strings"
 	"testing"
 
@@ -132,12 +131,12 @@ func TestAssemble_StructuralExpansion(t *testing.T) {
 	}
 
 	// Create edge: Caller -> Helper (no connection to Unrelated)
-	err = store.DB().WithWriteTx(func(tx *sql.Tx) error {
+	err = store.WithWriteTx(ctx, func(txh types.TxHandle) error {
 		symMap := map[string]int64{
 			"Caller": symIDs[0],
 			"Helper": symIDs[1],
 		}
-		return store.InsertEdges(ctx, storage.SqliteTxHandle{Tx: tx}, fileID, []types.EdgeRecord{
+		return store.InsertEdges(ctx, txh, fileID, []types.EdgeRecord{
 			{SrcSymbolName: "Caller", DstSymbolName: "Helper", Kind: "calls"},
 		}, symMap, "")
 	})
@@ -251,12 +250,12 @@ func TestStructuralExpand_WithEdges(t *testing.T) {
 	}
 
 	// Edge: Main -> Serve
-	err = store.DB().WithWriteTx(func(tx *sql.Tx) error {
+	err = store.WithWriteTx(ctx, func(txh types.TxHandle) error {
 		symMap := map[string]int64{
 			"Main":  symIDs1[0],
 			"Serve": symIDs2[0],
 		}
-		return store.InsertEdges(ctx, storage.SqliteTxHandle{Tx: tx}, fileID1, []types.EdgeRecord{
+		return store.InsertEdges(ctx, txh, fileID1, []types.EdgeRecord{
 			{SrcSymbolName: "Main", DstSymbolName: "Serve", Kind: "calls"},
 		}, symMap, "")
 	})

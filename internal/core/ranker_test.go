@@ -4,7 +4,6 @@ package core
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"math"
 	"testing"
@@ -374,12 +373,12 @@ func TestComputeStructuralScores_WithGraphEdges(t *testing.T) {
 	}
 
 	// Insert a direct edge: FuncA -> FuncB
-	err = store.DB().WithWriteTx(func(tx *sql.Tx) error {
+	err = store.WithWriteTx(ctx, func(txh types.TxHandle) error {
 		symMap := map[string]int64{
 			"FuncA": symIDs1[0],
 			"FuncB": symIDs2[0],
 		}
-		return store.InsertEdges(ctx, storage.SqliteTxHandle{Tx: tx}, fileID1, []types.EdgeRecord{
+		return store.InsertEdges(ctx, txh, fileID1, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
 		}, symMap, "")
 	})
