@@ -1427,7 +1427,8 @@ func setupStoreWithTestFiles(t *testing.T) *storage.Store {
 	if err != nil || len(testSyms) == 0 {
 		t.Fatalf("GetSymbolByName TestNewServer: err=%v, len=%d", err, len(testSyms))
 	}
-	if err := store.DB().WithWriteTx(func(tx *sql.Tx) error {
+	if err := store.WithWriteTx(ctx, func(txh types.TxHandle) error {
+		tx := txh.(storage.SqliteTxHandle).Tx
 		_, err := tx.ExecContext(ctx,
 			"INSERT INTO edges (src_symbol_id, dst_symbol_id, kind, file_id) VALUES (?, ?, 'calls', ?)",
 			testSyms[0].ID, implSyms[0].ID, testID)
