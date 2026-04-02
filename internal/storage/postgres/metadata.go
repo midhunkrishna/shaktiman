@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -306,25 +307,10 @@ func (s *PgStore) KeywordSearch(ctx context.Context, query string, limit int) ([
 		return nil, nil
 	}
 
-	// Build tsquery: split on whitespace, wrap each term, join with |
-	words := strings.Fields(query)
-	var terms []string
-	for _, w := range words {
-		clean := strings.Map(func(r rune) rune {
-			if r == '\'' || r == '&' || r == '|' || r == '!' || r == ':' || r == '*' {
-				return -1
-			}
-			return r
-		}, w)
-		clean = strings.TrimSpace(clean)
-		if clean != "" {
-			terms = append(terms, "'"+clean+"'")
-		}
-	}
-	if len(terms) == 0 {
+	tsQuery := buildTSQuery(query)
+	if tsQuery == "" {
 		return nil, nil
 	}
-	tsQuery := strings.Join(terms, " | ")
 
 	rows, err := s.query(ctx, `
 		SELECT id, ts_rank(content_tsv, to_tsquery('simple', $1)) AS rank
@@ -608,6 +594,40 @@ func (s *PgStore) BatchGetFileHashes(ctx context.Context, paths []string) (map[s
 		result[path] = hash
 	}
 	return result, rows.Err()
+}
+
+// ── Query helpers ──
+
+// buildTSQuery converts a user query string into a Postgres tsquery expression.
+// Splits on whitespace, removes tsquery special characters, wraps terms in quotes,
+// joins with OR. Returns empty string if no valid terms remain.
+func buildTSQuery(query string) string {
+	words := strings.Fields(query)
+	var terms []string
+	for _, w := range words {
+		clean := strings.Map(func(r rune) rune {
+			if r == '\'' || r == '&' || r == '|' || r == '!' || r == ':' || r == '*' {
+				return -1
+			}
+			return r
+		}, w)
+		clean = strings.TrimSpace(clean)
+		if clean != "" {
+			terms = append(terms, "'"+clean+"'")
+		}
+	}
+	if len(terms) == 0 {
+		return ""
+	}
+	return strings.Join(terms, " | ")
+}
+
+// changeScore computes the recency*magnitude score for a diff entry.
+// Score = exp(-0.05 * hours_since_change) * min(magnitude / 50.0, 1.0)
+func changeScore(now, ts time.Time, linesAdded, linesRemoved int) float64 {
+	hours := now.Sub(ts).Hours()
+	magnitude := float64(linesAdded + linesRemoved)
+	return math.Exp(-0.05*hours) * math.Min(magnitude/50.0, 1.0)
 }
 
 // ── Scan helpers ──

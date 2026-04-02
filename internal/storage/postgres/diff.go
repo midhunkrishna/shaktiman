@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/shaktimanai/shaktiman/internal/types"
@@ -126,12 +125,6 @@ func computeChangeScoresPg(ctx context.Context, s *PgStore, chunkIDs []int64) (m
 
 	now := time.Now().UTC()
 
-	scoreRow := func(ts time.Time, linesAdded, linesRemoved int) float64 {
-		hours := now.Sub(ts).Hours()
-		magnitude := float64(linesAdded + linesRemoved)
-		return math.Exp(-0.05*hours) * math.Min(magnitude/50.0, 1.0)
-	}
-
 	// Query 1: Symbol-level diffs
 	rows, err := s.query(ctx, `
 		SELECT ds.chunk_id, dl.timestamp, dl.lines_added, dl.lines_removed
@@ -154,7 +147,7 @@ func computeChangeScoresPg(ctx context.Context, s *PgStore, chunkIDs []int64) (m
 		if _, exists := scores[chunkID]; exists {
 			continue
 		}
-		if s := scoreRow(ts, linesAdded, linesRemoved); s > 0 {
+		if s := changeScore(now, ts, linesAdded, linesRemoved); s > 0 {
 			scores[chunkID] = s
 		}
 	}
@@ -189,7 +182,7 @@ func computeChangeScoresPg(ctx context.Context, s *PgStore, chunkIDs []int64) (m
 			if _, exists := scores[chunkID]; exists {
 				continue
 			}
-			if s := scoreRow(ts, linesAdded, linesRemoved); s > 0 {
+			if s := changeScore(now, ts, linesAdded, linesRemoved); s > 0 {
 				scores[chunkID] = s
 			}
 		}
