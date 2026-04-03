@@ -33,10 +33,9 @@ func testPool(t *testing.T) *pgxpool.Pool {
 func setupSchema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	pool.Exec(ctx, "DROP TABLE IF EXISTS embeddings")
-	for _, table := range []string{"diff_symbols", "diff_log", "edges", "pending_edges",
+	for _, table := range []string{"embeddings", "diff_symbols", "diff_log", "edges", "pending_edges",
 		"symbols", "chunks", "files", "access_log", "working_set",
-		"tool_calls", "schema_version", "config"} {
+		"tool_calls", "schema_version", "config", "goose_db_version"} {
 		pool.Exec(ctx, "DROP TABLE IF EXISTS "+table+" CASCADE")
 	}
 	if err := postgres.Migrate(ctx, pool); err != nil {

@@ -4,7 +4,6 @@ package mcp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -396,7 +395,7 @@ func setupSymbolsHandler(t *testing.T) handlerFunc {
 // with two symbols and an edge from NewServer -> handleRequest.
 func setupDependenciesHandler(t *testing.T) handlerFunc {
 	t.Helper()
-	store, db := setupStoreWithData(t)
+	store, _ := setupStoreWithData(t)
 	ctx := context.Background()
 
 	// Get symbol IDs so we can create edges.
@@ -414,8 +413,8 @@ func setupDependenciesHandler(t *testing.T) handlerFunc {
 	dstID := syms2[0].ID
 
 	// Insert edge within a write transaction.
-	err = db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, storage.SqliteTxHandle{Tx: tx}, srcFileID, []types.EdgeRecord{
+	err = store.WithWriteTx(ctx, func(txh types.TxHandle) error {
+		return store.InsertEdges(ctx, txh, srcFileID, []types.EdgeRecord{
 			{SrcSymbolName: "NewServer", DstSymbolName: "handleRequest", Kind: "calls", FileID: srcFileID},
 		}, map[string]int64{
 			"NewServer":     srcID,
@@ -432,7 +431,7 @@ func setupDependenciesHandler(t *testing.T) handlerFunc {
 // setupDiffHandler creates a diffHandler backed by a store with seeded diff_log data.
 func setupDiffHandler(t *testing.T) handlerFunc {
 	t.Helper()
-	store, db := setupStoreWithData(t)
+	store, _ := setupStoreWithData(t)
 	ctx := context.Background()
 
 	// Get a valid file ID.
@@ -443,8 +442,8 @@ func setupDiffHandler(t *testing.T) handlerFunc {
 	fileID := syms[0].FileID
 
 	// Insert a diff_log entry.
-	err = db.WithWriteTx(func(tx *sql.Tx) error {
-		diffID, err := store.InsertDiffLog(ctx, storage.SqliteTxHandle{Tx: tx}, storage.DiffLogEntry{
+	err = store.WithWriteTx(ctx, func(txh types.TxHandle) error {
+		diffID, err := store.InsertDiffLog(ctx, txh, types.DiffLogEntry{
 			FileID:       fileID,
 			ChangeType:   "modify",
 			LinesAdded:   10,
@@ -455,7 +454,7 @@ func setupDiffHandler(t *testing.T) handlerFunc {
 		if err != nil {
 			return err
 		}
-		return store.InsertDiffSymbols(ctx, storage.SqliteTxHandle{Tx: tx}, diffID, []storage.DiffSymbolEntry{
+		return store.InsertDiffSymbols(ctx, txh, diffID, []types.DiffSymbolEntry{
 			{SymbolName: "NewServer", ChangeType: "modified"},
 		})
 	})
@@ -1195,7 +1194,7 @@ func TestDiffHandler_LargeLimitClamped(t *testing.T) {
 // NewServer --imports--> "ExternalLib" (unresolved, lives in pending_edges).
 func setupHandlersWithPendingEdge(t *testing.T) (*storage.Store, handlerFunc, handlerFunc) {
 	t.Helper()
-	store, db := setupStoreWithData(t)
+	store, _ := setupStoreWithData(t)
 	ctx := context.Background()
 
 	syms, err := store.GetSymbolByName(ctx, "NewServer")
@@ -1206,8 +1205,8 @@ func setupHandlersWithPendingEdge(t *testing.T) (*storage.Store, handlerFunc, ha
 	srcFileID := syms[0].FileID
 
 	// Insert edge where dst is unresolvable → goes to pending_edges.
-	err = db.WithWriteTx(func(tx *sql.Tx) error {
-		return store.InsertEdges(ctx, storage.SqliteTxHandle{Tx: tx}, srcFileID, []types.EdgeRecord{
+	err = store.WithWriteTx(ctx, func(txh types.TxHandle) error {
+		return store.InsertEdges(ctx, txh, srcFileID, []types.EdgeRecord{
 			{SrcSymbolName: "NewServer", DstSymbolName: "ExternalLib", Kind: "imports"},
 		}, map[string]int64{
 			"NewServer": srcID,
@@ -1290,7 +1289,7 @@ func TestDependenciesHandler_PendingEdgeCalleesReturnsEmpty(t *testing.T) {
 func TestDependenciesHandler_FoundSymbolWithPendingEdges(t *testing.T) {
 	t.Parallel()
 
-	store, db := setupStoreWithData(t)
+	store, _ := setupStoreWithData(t)
 	ctx := context.Background()
 
 	// NewServer exists in the symbols table (from setupStoreWithData).
@@ -1306,13 +1305,15 @@ func TestDependenciesHandler_FoundSymbolWithPendingEdges(t *testing.T) {
 	}
 	handleID := syms[0].ID
 
-	// handleRequest --imports--> NewServer (pending, because we insert with
-	// "NewServer" as dst_symbol_name but don't resolve it to an edge).
-	err = db.WithWriteTx(func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx,
-			"INSERT INTO pending_edges (src_symbol_id, dst_symbol_name, kind) VALUES (?, ?, ?)",
-			handleID, "NewServer", "imports")
-		return err
+	// handleRequest --imports--> NewServer (pending edge: InsertEdges creates
+	// a pending_edge when dst symbol is not in the symbolIDs map).
+	err = store.WithWriteTx(ctx, func(txh types.TxHandle) error {
+		return store.InsertEdges(ctx, txh, syms[0].FileID, []types.EdgeRecord{
+			{SrcSymbolName: "handleRequest", DstSymbolName: "NewServer", Kind: "imports"},
+		}, map[string]int64{
+			"handleRequest": handleID,
+			// "NewServer" intentionally absent → goes to pending_edges
+		}, "")
 	})
 	if err != nil {
 		t.Fatalf("insert pending edge: %v", err)
@@ -1401,11 +1402,12 @@ func setupStoreWithTestFiles(t *testing.T) types.WriterStore {
 		t.Fatalf("GetSymbolByName TestNewServer: err=%v, len=%d", err, len(testSyms))
 	}
 	if err := store.WithWriteTx(ctx, func(txh types.TxHandle) error {
-		tx := txh.(storage.SqliteTxHandle).Tx
-		_, err := tx.ExecContext(ctx,
-			"INSERT INTO edges (src_symbol_id, dst_symbol_id, kind, file_id) VALUES (?, ?, 'calls', ?)",
-			testSyms[0].ID, implSyms[0].ID, testID)
-		return err
+		return store.InsertEdges(ctx, txh, testID, []types.EdgeRecord{
+			{SrcSymbolName: "TestNewServer", DstSymbolName: "NewServer", Kind: "calls", FileID: testID},
+		}, map[string]int64{
+			"TestNewServer": testSyms[0].ID,
+			"NewServer":     implSyms[0].ID,
+		}, "")
 	}); err != nil {
 		t.Fatalf("insert edge: %v", err)
 	}
