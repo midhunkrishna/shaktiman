@@ -30,16 +30,15 @@ func testPool(t *testing.T) *pgxpool.Pool {
 }
 
 // setupSchema creates base tables + seeds chunk rows for FK compliance.
-func setupSchema(t *testing.T, pool *pgxpool.Pool) {
+func setupSchema(t *testing.T, pool *pgxpool.Pool, dims int) {
 	t.Helper()
 	ctx := context.Background()
-	pool.Exec(ctx, "DROP TABLE IF EXISTS embeddings")
-	for _, table := range []string{"diff_symbols", "diff_log", "edges", "pending_edges",
+	for _, table := range []string{"embeddings", "diff_symbols", "diff_log", "edges", "pending_edges",
 		"symbols", "chunks", "files", "access_log", "working_set",
-		"tool_calls", "schema_version", "config"} {
+		"tool_calls", "schema_version", "config", "goose_db_version"} {
 		pool.Exec(ctx, "DROP TABLE IF EXISTS "+table+" CASCADE")
 	}
-	if err := postgres.Migrate(ctx, pool); err != nil {
+	if err := postgres.RunMigrations(ctx, pool, dims); err != nil {
 		t.Fatalf("Migrate base schema: %v", err)
 	}
 	pool.Exec(ctx, `INSERT INTO files (id, path, content_hash, mtime, language, indexed_at)
@@ -60,7 +59,7 @@ func TestPgVectorCompliance(t *testing.T) {
 
 	vectortest.RunVectorStoreTests(t, func(t *testing.T, dims int) types.VectorStore {
 		t.Helper()
-		setupSchema(t, pool)
+		setupSchema(t, pool, dims)
 
 		store, err := NewPgVectorStore(pool, dims)
 		if err != nil {
@@ -79,14 +78,9 @@ func TestPgVectorCompliance(t *testing.T) {
 func TestMigrate_FullCycle(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
-	setupSchema(t, pool)
+	setupSchema(t, pool, 4)
 
-	// First migration creates table + index
-	if err := postgres.RunMigrations(ctx, pool, 4); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	// Second call is idempotent
+	// Second call is idempotent (goose already applied)
 	if err := postgres.RunMigrations(ctx, pool, 4); err != nil {
 		t.Fatalf("Migrate idempotent: %v", err)
 	}
@@ -97,11 +91,7 @@ func TestMigrate_FullCycle(t *testing.T) {
 func TestValidateDimensions_Match(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
-	setupSchema(t, pool)
-
-	if err := postgres.RunMigrations(ctx, pool, 8); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
+	setupSchema(t, pool, 8)
 
 	// Should pass — dims match
 	if err := ValidateDimensions(ctx, pool, 8); err != nil {
@@ -114,11 +104,7 @@ func TestValidateDimensions_Match(t *testing.T) {
 func TestValidateDimensions_Mismatch(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
-	setupSchema(t, pool)
-
-	if err := postgres.RunMigrations(ctx, pool, 8); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
+	setupSchema(t, pool, 8)
 
 	// Should fail — dims don't match
 	err := ValidateDimensions(ctx, pool, 16)
@@ -143,9 +129,9 @@ func TestValidateDimensions_NoTable(t *testing.T) {
 func TestNewPgVectorStore_DimsMismatch(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
-	setupSchema(t, pool)
+	setupSchema(t, pool, 4)
 
-	// Create with dims=4
+	// Table was created with dims=4 by setupSchema
 	store, err := NewPgVectorStore(pool, 4)
 	if err != nil {
 		t.Fatalf("NewPgVectorStore: %v", err)
@@ -164,7 +150,7 @@ func TestNewPgVectorStore_DimsMismatch(t *testing.T) {
 func TestUpsertBatch_WithZeroVectorsSkipped(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
-	setupSchema(t, pool)
+	setupSchema(t, pool, 4)
 
 	store, err := NewPgVectorStore(pool, 4)
 	if err != nil {
@@ -195,7 +181,7 @@ func TestUpsertBatch_WithZeroVectorsSkipped(t *testing.T) {
 func TestSearch_WithTimeout(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
-	setupSchema(t, pool)
+	setupSchema(t, pool, 4)
 
 	store, err := NewPgVectorStore(pool, 4)
 	if err != nil {
@@ -221,7 +207,7 @@ func TestSearch_WithTimeout(t *testing.T) {
 func TestDelete_Chunking(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
-	setupSchema(t, pool)
+	setupSchema(t, pool, 2)
 
 	store, err := NewPgVectorStore(pool, 2)
 	if err != nil {
@@ -262,7 +248,7 @@ func TestDelete_Chunking(t *testing.T) {
 func TestHealthy_WithPool(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
-	setupSchema(t, pool)
+	setupSchema(t, pool, 4)
 
 	store, err := NewPgVectorStore(pool, 4)
 	if err != nil {

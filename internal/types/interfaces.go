@@ -1,6 +1,9 @@
 package types
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // FTSResult holds a single full-text search match.
 type FTSResult struct {
@@ -52,6 +55,14 @@ type MetadataStore interface {
 	ComputeChangeScores(ctx context.Context, chunkIDs []int64) (map[int64]float64, error)
 	// Neighbors performs BFS graph traversal from a symbol.
 	Neighbors(ctx context.Context, symbolID int64, maxDepth int, direction string) ([]int64, error)
+
+	// DeleteFileByPath removes a file by path and cascades to chunks/symbols.
+	// Returns the file ID that was deleted, or 0 if not found.
+	DeleteFileByPath(ctx context.Context, path string) (int64, error)
+	// GetEmbeddedChunkIDsByFile returns IDs of chunks with embedded=1 for a file.
+	GetEmbeddedChunkIDsByFile(ctx context.Context, fileID int64) ([]int64, error)
+	// UpdateChunkParents sets parent_chunk_id for the given chunk→parent mappings.
+	UpdateChunkParents(ctx context.Context, updates map[int64]int64) error
 }
 
 // BatchMetadataStore extends MetadataStore with batch query methods.
@@ -205,7 +216,9 @@ type MetricsWriter interface {
 // ToolCallRecord holds a single MCP tool invocation metric.
 type ToolCallRecord struct {
 	SessionID         string
+	Timestamp         time.Time
 	ToolName          string
+	ArgsJSON          string
 	ArgsBytes         int
 	ResponseBytes     int
 	ResponseTokensEst int
@@ -224,5 +237,6 @@ type WriterStore interface {
 	GraphMutator
 	EmbeddingReconciler
 	EmbedSource
+	MetricsWriter
 	WithWriteTx(ctx context.Context, fn func(tx TxHandle) error) error
 }

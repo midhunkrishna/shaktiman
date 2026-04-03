@@ -103,6 +103,45 @@ func (s *PgStore) DeleteFile(ctx context.Context, fileID int64) error {
 	})
 }
 
+func (s *PgStore) DeleteFileByPath(ctx context.Context, path string) (int64, error) {
+	var fileID int64
+	err := s.pool.QueryRow(ctx, "SELECT id FROM files WHERE path = $1", path).Scan(&fileID)
+	if err != nil {
+		return 0, nil // not found → no-op
+	}
+	_, err = s.pool.Exec(ctx, "DELETE FROM files WHERE id = $1", fileID)
+	return fileID, err
+}
+
+func (s *PgStore) GetEmbeddedChunkIDsByFile(ctx context.Context, fileID int64) ([]int64, error) {
+	rows, err := s.query(ctx, "SELECT id FROM chunks WHERE file_id = $1 AND embedded = 1", fileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (s *PgStore) UpdateChunkParents(ctx context.Context, updates map[int64]int64) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	for chunkID, parentID := range updates {
+		if _, err := s.pool.Exec(ctx, "UPDATE chunks SET parent_chunk_id = $1 WHERE id = $2", parentID, chunkID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ── Chunk operations ──
 
 func (s *PgStore) InsertChunks(ctx context.Context, fileID int64, chunks []types.ChunkRecord) ([]int64, error) {
@@ -658,4 +697,31 @@ func scanSymbols(rows pgx.Rows) ([]types.SymbolRecord, error) {
 		symbols = append(symbols, sym)
 	}
 	return symbols, rows.Err()
+}
+
+// ── Metrics ──
+
+// RecordToolCalls batch-inserts MCP tool call metrics.
+func (s *PgStore) RecordToolCalls(ctx context.Context, records []types.ToolCallRecord) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	for _, rec := range records {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO tool_calls (session_id, timestamp, tool_name, args_json,
+				args_bytes, response_bytes, response_tokens_est, result_count,
+				duration_ms, is_error)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			rec.SessionID, rec.Timestamp.UTC(), rec.ToolName, rec.ArgsJSON,
+			rec.ArgsBytes, rec.ResponseBytes, rec.ResponseTokensEst,
+			rec.ResultCount, rec.DurationMs, rec.IsError,
+		); err != nil {
+			return fmt.Errorf("insert tool call %s: %w", rec.ToolName, err)
+		}
+	}
+
+	return tx.Commit(ctx)
 }

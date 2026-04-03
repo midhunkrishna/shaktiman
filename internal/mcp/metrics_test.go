@@ -10,7 +10,39 @@ import (
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 	_ "github.com/mattn/go-sqlite3"
+
+	"github.com/shaktimanai/shaktiman/internal/types"
 )
+
+// testMetricsWriter wraps a raw *sql.DB to satisfy types.MetricsWriter for tests.
+type testMetricsWriter struct{ db *sql.DB }
+
+func (w *testMetricsWriter) RecordToolCalls(_ context.Context, records []types.ToolCallRecord) error {
+	tx, err := w.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`INSERT INTO tool_calls (session_id, timestamp, tool_name, args_json,
+		args_bytes, response_bytes, response_tokens_est, result_count, duration_ms, is_error)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, r := range records {
+		isErr := 0
+		if r.IsError {
+			isErr = 1
+		}
+		if _, err := stmt.Exec(r.SessionID, r.Timestamp.UTC().Format(time.RFC3339Nano),
+			r.ToolName, r.ArgsJSON, r.ArgsBytes, r.ResponseBytes,
+			r.ResponseTokensEst, r.ResultCount, r.DurationMs, isErr); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
 
 // testDB creates an in-memory SQLite database with the tool_calls schema.
 func testDB(t *testing.T) *sql.DB {
@@ -43,7 +75,7 @@ func testDB(t *testing.T) *sql.DB {
 func testRecorder(t *testing.T, db *sql.DB, sessionID string) *MetricsRecorder {
 	t.Helper()
 	return NewMetricsRecorder(MetricsRecorderInput{
-		DB:        db,
+		Writer:    &testMetricsWriter{db: db},
 		SessionID: sessionID,
 		Logger:    slog.Default(),
 	})
@@ -72,7 +104,7 @@ func TestMetricsRecorder_DropOnFull(t *testing.T) {
 	t.Parallel()
 	db := testDB(t)
 	r := NewMetricsRecorder(MetricsRecorderInput{
-		DB:        db,
+		Writer:    &testMetricsWriter{db: db},
 		SessionID: "full-test",
 		Logger:    slog.Default(),
 	})
@@ -350,7 +382,7 @@ func TestMetricsAcrossSessions(t *testing.T) {
 	// Insert records for two different sessions
 	for _, sid := range []string{"session-1", "session-2"} {
 		for i := 0; i < 3; i++ {
-			err := InsertToolCall(db, ToolCallRecord{
+			err := InsertToolCall(&testMetricsWriter{db: db}, ToolCallRecord{
 				SessionID:     sid,
 				Timestamp:     time.Now(),
 				ToolName:      "search",
@@ -493,7 +525,7 @@ func TestInsertToolCall_Success(t *testing.T) {
 		DurationMs: 100,
 		ResultCount: 5,
 	}
-	if err := InsertToolCall(db, rec); err != nil {
+	if err := InsertToolCall(&testMetricsWriter{db: db}, rec); err != nil {
 		t.Fatalf("InsertToolCall: %v", err)
 	}
 	var count int
@@ -558,7 +590,7 @@ func TestInsertToolCall_Error(t *testing.T) {
 	db := testDB(t)
 	db.Close() // close DB to force error
 
-	err := InsertToolCall(db, ToolCallRecord{
+	err := InsertToolCall(&testMetricsWriter{db: db}, ToolCallRecord{
 		SessionID: "err-test",
 		Timestamp: time.Now(),
 		ToolName:  "search",
@@ -572,7 +604,7 @@ func TestInsertToolCall_IsErrorFlag(t *testing.T) {
 	t.Parallel()
 	db := testDB(t)
 
-	err := InsertToolCall(db, ToolCallRecord{
+	err := InsertToolCall(&testMetricsWriter{db: db}, ToolCallRecord{
 		SessionID: "flag-test",
 		Timestamp: time.Now(),
 		ToolName:  "search",

@@ -62,17 +62,15 @@ func (s *Store) UpsertFile(ctx context.Context, file *types.FileRecord) (int64, 
 		if err != nil {
 			return fmt.Errorf("upsert file %s: %w", file.Path, err)
 		}
+		_ = res // LastInsertId is unreliable for ON CONFLICT DO UPDATE in SQLite
 
-		id, err = res.LastInsertId()
+		// Always SELECT the file ID after upsert. sqlite3_last_insert_rowid()
+		// is connection-scoped and returns stale values when the ON CONFLICT
+		// DO UPDATE path is taken (it keeps the rowid from a previous INSERT,
+		// possibly into a different table).
+		err = tx.QueryRowContext(ctx, "SELECT id FROM files WHERE path = ?", file.Path).Scan(&id)
 		if err != nil {
-			return fmt.Errorf("last insert id: %w", err)
-		}
-		// ON CONFLICT UPDATE doesn't set LastInsertId — query it
-		if id == 0 {
-			err = tx.QueryRowContext(ctx, "SELECT id FROM files WHERE path = ?", file.Path).Scan(&id)
-			if err != nil {
-				return fmt.Errorf("get file id for %s: %w", file.Path, err)
-			}
+			return fmt.Errorf("get file id for %s: %w", file.Path, err)
 		}
 		return nil
 	})
@@ -137,6 +135,60 @@ func (s *Store) DeleteFile(ctx context.Context, fileID int64) error {
 		_, err := tx.ExecContext(ctx, "DELETE FROM files WHERE id = ?", fileID)
 		if err != nil {
 			return fmt.Errorf("delete file %d: %w", fileID, err)
+		}
+		return nil
+	})
+}
+
+// DeleteFileByPath removes a file by path and cascades to chunks/symbols.
+// Returns the file ID that was deleted, or 0 if not found.
+func (s *Store) DeleteFileByPath(ctx context.Context, path string) (int64, error) {
+	var fileID int64
+	err := s.db.WithWriteTx(func(tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, "SELECT id FROM files WHERE path = ?", path).Scan(&fileID)
+		if err != nil {
+			return nil // not found → no-op
+		}
+		_, err = tx.ExecContext(ctx, "DELETE FROM files WHERE id = ?", fileID)
+		return err
+	})
+	return fileID, err
+}
+
+// GetEmbeddedChunkIDsByFile returns IDs of chunks with embedded=1 for a file.
+func (s *Store) GetEmbeddedChunkIDsByFile(ctx context.Context, fileID int64) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT id FROM chunks WHERE file_id = ? AND embedded = 1", fileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// UpdateChunkParents sets parent_chunk_id for the given chunk→parent mappings.
+func (s *Store) UpdateChunkParents(ctx context.Context, updates map[int64]int64) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	return s.db.WithWriteTx(func(tx *sql.Tx) error {
+		stmt, err := tx.PrepareContext(ctx, "UPDATE chunks SET parent_chunk_id = ? WHERE id = ?")
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for chunkID, parentID := range updates {
+			if _, err := stmt.ExecContext(ctx, parentID, chunkID); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -924,4 +976,37 @@ func (s *Store) BatchGetFileHashes(ctx context.Context, paths []string) (map[str
 		}
 	}
 	return result, nil
+}
+
+// ── Metrics ──
+
+// RecordToolCalls batch-inserts MCP tool call metrics.
+func (s *Store) RecordToolCalls(ctx context.Context, records []types.ToolCallRecord) error {
+	return s.db.WithWriteTx(func(tx *sql.Tx) error {
+		stmt, err := tx.PrepareContext(ctx, `
+			INSERT INTO tool_calls (session_id, timestamp, tool_name, args_json,
+				args_bytes, response_bytes, response_tokens_est, result_count,
+				duration_ms, is_error)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			return fmt.Errorf("prepare tool_calls insert: %w", err)
+		}
+		defer stmt.Close()
+
+		for _, rec := range records {
+			isErr := 0
+			if rec.IsError {
+				isErr = 1
+			}
+			ts := rec.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z")
+			if _, err := stmt.ExecContext(ctx,
+				rec.SessionID, ts, rec.ToolName, rec.ArgsJSON,
+				rec.ArgsBytes, rec.ResponseBytes, rec.ResponseTokensEst,
+				rec.ResultCount, rec.DurationMs, isErr,
+			); err != nil {
+				return fmt.Errorf("insert tool call %s: %w", rec.ToolName, err)
+			}
+		}
+		return nil
+	})
 }

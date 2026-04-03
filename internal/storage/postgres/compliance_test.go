@@ -28,9 +28,9 @@ func newTestStore(t *testing.T) *PgStore {
 
 	// Clean all tables before each test
 	pool := store.Pool()
-	tables := []string{"diff_symbols", "diff_log", "edges", "pending_edges",
+	tables := []string{"embeddings", "diff_symbols", "diff_log", "edges", "pending_edges",
 		"symbols", "chunks", "files", "access_log", "working_set",
-		"tool_calls", "schema_version", "config"}
+		"tool_calls", "schema_version", "config", "goose_db_version"}
 	for _, table := range tables {
 		pool.Exec(ctx, "DROP TABLE IF EXISTS "+table+" CASCADE")
 	}
@@ -877,9 +877,9 @@ func TestPostgres_RegistrationFactory(t *testing.T) {
 	// Clean DB
 	ctx := context.Background()
 	tempStore, _ := NewPgStore(ctx, connStr, 2, 1, "public")
-	tables := []string{"diff_symbols", "diff_log", "edges", "pending_edges",
+	tables := []string{"embeddings", "diff_symbols", "diff_log", "edges", "pending_edges",
 		"symbols", "chunks", "files", "access_log", "working_set",
-		"tool_calls", "schema_version", "config"}
+		"tool_calls", "schema_version", "config", "goose_db_version"}
 	for _, table := range tables {
 		tempStore.Pool().Exec(ctx, "DROP TABLE IF EXISTS "+table+" CASCADE")
 	}
