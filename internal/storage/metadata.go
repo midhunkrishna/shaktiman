@@ -142,6 +142,60 @@ func (s *Store) DeleteFile(ctx context.Context, fileID int64) error {
 	})
 }
 
+// DeleteFileByPath removes a file by path and cascades to chunks/symbols.
+// Returns the file ID that was deleted, or 0 if not found.
+func (s *Store) DeleteFileByPath(ctx context.Context, path string) (int64, error) {
+	var fileID int64
+	err := s.db.WithWriteTx(func(tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, "SELECT id FROM files WHERE path = ?", path).Scan(&fileID)
+		if err != nil {
+			return nil // not found → no-op
+		}
+		_, err = tx.ExecContext(ctx, "DELETE FROM files WHERE id = ?", fileID)
+		return err
+	})
+	return fileID, err
+}
+
+// GetEmbeddedChunkIDsByFile returns IDs of chunks with embedded=1 for a file.
+func (s *Store) GetEmbeddedChunkIDsByFile(ctx context.Context, fileID int64) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT id FROM chunks WHERE file_id = ? AND embedded = 1", fileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// UpdateChunkParents sets parent_chunk_id for the given chunk→parent mappings.
+func (s *Store) UpdateChunkParents(ctx context.Context, updates map[int64]int64) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	return s.db.WithWriteTx(func(tx *sql.Tx) error {
+		stmt, err := tx.PrepareContext(ctx, "UPDATE chunks SET parent_chunk_id = ? WHERE id = ?")
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for chunkID, parentID := range updates {
+			if _, err := stmt.ExecContext(ctx, parentID, chunkID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // ── Chunk operations ──
 
 // InsertChunks bulk-inserts chunks for a file within a transaction.
