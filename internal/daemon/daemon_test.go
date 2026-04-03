@@ -725,16 +725,6 @@ func TestIntegration_LanguageCompatibility(t *testing.T) {
 			expectSymbol:  "UserService",
 		},
 		{
-			name:          "Groovy",
-			project:       "groovy_project",
-			language:      "groovy",
-			expectFiles:   2,
-			expectChunks:  2,
-			expectSymbols: 2,
-			searchQuery:   "addUser removeUser",
-			expectSymbol:  "addUser",
-		},
-		{
 			name:          "Bash",
 			project:       "bash_project",
 			language:      "bash",
@@ -936,17 +926,6 @@ public class Handler {
     }
 }
 `,
-		"config.groovy": `def loadConfig(String path) {
-    def config = new ConfigSlurper().parse(new File(path).toURL())
-    return config
-}
-
-def mergeConfigs(Map base, Map overrides) {
-    def merged = new HashMap(base)
-    merged.putAll(overrides)
-    return merged
-}
-`,
 		"deploy.sh": `#!/bin/bash
 
 build_project() {
@@ -1024,7 +1003,7 @@ export function createClient(url) {
 		langCounts[f.Language]++
 	}
 
-	expectedLangs := []string{"go", "typescript", "python", "java", "groovy", "bash", "javascript"}
+	expectedLangs := []string{"go", "typescript", "python", "java", "bash", "javascript"}
 	for _, lang := range expectedLangs {
 		if langCounts[lang] == 0 {
 			t.Errorf("expected at least one %s file detected, got 0 (detected: %v)", lang, langCounts)
@@ -1059,7 +1038,6 @@ export function createClient(url) {
 		"Application",    // TypeScript
 		"PaymentService", // Python
 		"registerRoute",  // Java
-		"loadConfig",     // Groovy
 		"build",          // Bash
 		"ApiClient",      // JavaScript
 	}

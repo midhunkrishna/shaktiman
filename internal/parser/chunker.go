@@ -35,7 +35,7 @@ func (p *Parser) chunkFile(root *sitter.Node, source []byte, cfg *LanguageConfig
 		}
 
 		// Package declarations go to header (Go, Java, Groovy)
-		if nodeType == "package_clause" || nodeType == "package_declaration" || nodeType == "groovy_package" {
+		if nodeType == "package_clause" || nodeType == "package_declaration" {
 			headerParts = append(headerParts, headerFragment{
 				content:   child.Content(source),
 				startLine: int(child.StartPoint().Row) + 1,

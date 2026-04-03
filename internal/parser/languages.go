@@ -6,7 +6,6 @@ import (
 	sitter "github.com/smacker/go-tree-sitter"
 	"github.com/smacker/go-tree-sitter/bash"
 	"github.com/smacker/go-tree-sitter/golang"
-	"github.com/smacker/go-tree-sitter/groovy"
 	"github.com/smacker/go-tree-sitter/java"
 	"github.com/smacker/go-tree-sitter/javascript"
 	"github.com/smacker/go-tree-sitter/python"
@@ -40,8 +39,6 @@ func GetLanguageConfig(lang string) (*LanguageConfig, error) {
 		return rustConfig(), nil
 	case "java":
 		return javaConfig(), nil
-	case "groovy":
-		return groovyConfig(), nil
 	case "bash":
 		return bashConfig(), nil
 	case "javascript":
@@ -54,7 +51,7 @@ func GetLanguageConfig(lang string) (*LanguageConfig, error) {
 // SupportedLanguage returns true if the language is supported.
 func SupportedLanguage(lang string) bool {
 	switch lang {
-	case "typescript", "python", "go", "rust", "java", "groovy", "bash", "javascript":
+	case "typescript", "python", "go", "rust", "java", "bash", "javascript":
 		return true
 	default:
 		return false
@@ -246,37 +243,7 @@ func javaConfig() *LanguageConfig {
 	}
 }
 
-func groovyConfig() *LanguageConfig {
-	return &LanguageConfig{
-		Name:    "groovy",
-		Grammar: groovy.GetLanguage(),
-		ChunkableTypes: map[string]string{
-			"function_definition":  "function",
-			"function_declaration": "function",
-			"class_definition":     "class",
-			"groovy_import":        "",
-			"groovy_package":       "",
-			"declaration":          "block",
-		},
-		SymbolKindMap: map[string]string{
-			"function_definition":  "function",
-			"function_declaration": "function",
-			"class_definition":     "class",
-		},
-		ClassBodyTypes: map[string]bool{
-			"function_definition":  true,
-			"function_declaration": true,
-		},
-		ImportTypes: map[string]bool{
-			"groovy_import": true,
-		},
-		ExportType:    "",
-		ClassBodyType: "closure",
-		ClassTypes: map[string]bool{
-			"class_definition": true,
-		},
-	}
-}
+// TODO: groovy support dropped pending official tree-sitter-groovy Go bindings.
 
 func bashConfig() *LanguageConfig {
 	return &LanguageConfig{

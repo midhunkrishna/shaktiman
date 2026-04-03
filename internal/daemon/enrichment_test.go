@@ -28,7 +28,6 @@ func TestLanguageForExt(t *testing.T) {
 		{".tsx", "typescript", true},
 		{".rs", "rust", true},
 		{".java", "java", true},
-		{".groovy", "groovy", true},
 		{".sh", "bash", true},
 		{".js", "javascript", true},
 		{".jsx", "javascript", true},
@@ -58,8 +57,7 @@ func TestIsTestFile(t *testing.T) {
 	tsPatterns := []string{"*.test.ts", "*.spec.ts", "*.test.tsx", "*.spec.tsx", "__tests__/"}
 	jsPatterns := []string{"*.test.js", "*.spec.js", "__tests__/"}
 	javaPatterns := []string{"*Test.java", "*Tests.java", "src/test/"}
-	groovyPatterns := []string{"*Test.groovy", "*Spec.groovy"}
-	bashPatterns := []string{"test_*.sh", "*_test.sh"}
+bashPatterns := []string{"test_*.sh", "*_test.sh"}
 
 	tests := []struct {
 		name     string
@@ -99,11 +97,6 @@ func TestIsTestFile(t *testing.T) {
 		{"java tests class", "src/AuthTests.java", javaPatterns, true},
 		{"java src/test dir", "src/test/java/Auth.java", javaPatterns, true},
 		{"java impl", "src/main/java/Auth.java", javaPatterns, false},
-
-		// Groovy
-		{"groovy test", "AuthTest.groovy", groovyPatterns, true},
-		{"groovy spec", "AuthSpec.groovy", groovyPatterns, true},
-		{"groovy impl", "Auth.groovy", groovyPatterns, false},
 
 		// Bash
 		{"bash test_ prefix", "test_deploy.sh", bashPatterns, true},

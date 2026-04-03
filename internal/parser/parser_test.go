@@ -909,7 +909,7 @@ func TestSupportedLanguage(t *testing.T) {
 		{"typescript", true},
 		{"rust", true},
 		{"java", true},
-		{"groovy", true},
+		{"groovy", false}, // TODO: dropped pending official tree-sitter-groovy Go bindings
 		{"bash", true},
 		{"javascript", true},
 		{"ruby", false},
@@ -1014,6 +1014,7 @@ public class UserService {
 // ── Groovy tests ──
 
 func TestParse_GroovyFunction(t *testing.T) {
+	t.Skip("TODO: groovy support dropped pending official tree-sitter-groovy Go bindings")
 	t.Parallel()
 
 	p, err := NewParser()

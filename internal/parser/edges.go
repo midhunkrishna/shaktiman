@@ -132,21 +132,11 @@ func (p *Parser) walkForEdges(node *sitter.Node, owner string, ctx *edgeContext)
 		return
 	}
 
-	// Python/Groovy class bases
-	if nodeType == "class_definition" {
-		if ctx.cfg.Name == "python" {
-			superclasses := node.ChildByFieldName("superclasses")
-			if superclasses != nil {
-				p.extractPythonBases(superclasses, newOwner, ctx)
-			}
-		} else if ctx.cfg.Name == "groovy" {
-			superclass := node.ChildByFieldName("superclass")
-			if superclass != nil {
-				name := extractName(superclass, ctx.source)
-				if name != "" {
-					ctx.addEdge(newOwner, name, "inherits")
-				}
-			}
+	// Python class bases
+	if nodeType == "class_definition" && ctx.cfg.Name == "python" {
+		superclasses := node.ChildByFieldName("superclasses")
+		if superclasses != nil {
+			p.extractPythonBases(superclasses, newOwner, ctx)
 		}
 	}
 
@@ -175,8 +165,6 @@ func (p *Parser) extractImportEdgesFrom(node *sitter.Node, owner string, ctx *ed
 		p.goImportEdges(node, owner, ctx)
 	case "java":
 		p.javaImportEdges(node, owner, ctx)
-	case "groovy":
-		p.groovyImportEdges(node, owner, ctx)
 	case "rust":
 		p.rustImportEdges(node, owner, ctx)
 	// bash has no imports
@@ -314,34 +302,7 @@ func (p *Parser) javaImportEdges(node *sitter.Node, owner string, ctx *edgeConte
 	walk(node)
 }
 
-func (p *Parser) groovyImportEdges(node *sitter.Node, owner string, ctx *edgeContext) {
-	// Groovy: import foo.bar.Baz → extract last dot-separated component with full qualified path
-	// Extract the full import text from the node to use as qualified name
-	fullImportText := node.Content(ctx.source)
-	// Strip "import " prefix and any trailing whitespace/semicolons
-	fullImportText = strings.TrimPrefix(fullImportText, "import ")
-	fullImportText = strings.TrimRight(fullImportText, " \t\n\r;")
-
-	var walk func(n *sitter.Node)
-	walk = func(n *sitter.Node) {
-		if n.Type() == "dotted_identifier" || n.Type() == "identifier" {
-			content := n.Content(ctx.source)
-			parts := strings.Split(content, ".")
-			shortName := parts[len(parts)-1]
-			// Use fullImportText as qualified name if it contains dots (the full path)
-			qualified := content
-			if strings.Contains(fullImportText, ".") {
-				qualified = fullImportText
-			}
-			ctx.addEdgeQualified(owner, shortName, qualified, "imports")
-			return
-		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
-			walk(n.NamedChild(i))
-		}
-	}
-	walk(node)
-}
+// TODO: groovyImportEdges removed — groovy support dropped pending official Go bindings.
 
 func (p *Parser) rustImportEdges(node *sitter.Node, owner string, ctx *edgeContext) {
 	// Rust: use std::collections::HashMap; → extract "HashMap" with qualified "std::collections::HashMap"

@@ -376,8 +376,7 @@ var langTestPatterns = map[string][]string{
 	"typescript": {"*.test.ts", "*.spec.ts", "*.test.tsx", "*.spec.tsx", "__tests__/"},
 	"javascript": {"*.test.js", "*.spec.js", "*.test.jsx", "*.spec.jsx", "*.test.mjs", "*.spec.mjs", "__tests__/"},
 	"java":       {"*Test.java", "*Tests.java", "src/test/"},
-	"groovy":     {"*Test.groovy", "*Spec.groovy"},
-	"rust":       {"tests/"},
+"rust":       {"tests/"},
 	"bash":       {"test_*.sh", "*_test.sh"},
 }
 
