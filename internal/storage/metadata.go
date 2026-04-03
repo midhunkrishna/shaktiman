@@ -62,17 +62,15 @@ func (s *Store) UpsertFile(ctx context.Context, file *types.FileRecord) (int64, 
 		if err != nil {
 			return fmt.Errorf("upsert file %s: %w", file.Path, err)
 		}
+		_ = res // LastInsertId is unreliable for ON CONFLICT DO UPDATE in SQLite
 
-		id, err = res.LastInsertId()
+		// Always SELECT the file ID after upsert. sqlite3_last_insert_rowid()
+		// is connection-scoped and returns stale values when the ON CONFLICT
+		// DO UPDATE path is taken (it keeps the rowid from a previous INSERT,
+		// possibly into a different table).
+		err = tx.QueryRowContext(ctx, "SELECT id FROM files WHERE path = ?", file.Path).Scan(&id)
 		if err != nil {
-			return fmt.Errorf("last insert id: %w", err)
-		}
-		// ON CONFLICT UPDATE doesn't set LastInsertId — query it
-		if id == 0 {
-			err = tx.QueryRowContext(ctx, "SELECT id FROM files WHERE path = ?", file.Path).Scan(&id)
-			if err != nil {
-				return fmt.Errorf("get file id for %s: %w", file.Path, err)
-			}
+			return fmt.Errorf("get file id for %s: %w", file.Path, err)
 		}
 		return nil
 	})

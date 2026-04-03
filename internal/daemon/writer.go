@@ -3,7 +3,6 @@ package daemon
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
@@ -155,13 +153,7 @@ func (wm *WriterManager) Started() bool { return wm.started.Load() }
 
 func (wm *WriterManager) processJob(ctx context.Context, job types.WriteJob) {
 	start := time.Now()
-	var staleChunkIDs []int64
-	err := wm.store.WithWriteTx(ctx, func(txh types.TxHandle) error {
-		tx := txh.(storage.SqliteTxHandle).Tx
-		var txErr error
-		staleChunkIDs, txErr = processWriteJob(ctx, tx, wm.store, wm.logger, job, wm.testPatterns)
-		return txErr
-	})
+	staleChunkIDs, err := processWriteJob(ctx, wm.store, wm.logger, job, wm.testPatterns)
 	if err != nil {
 		wm.logger.Error("write job failed",
 			"type", job.Type,
@@ -187,65 +179,52 @@ func (wm *WriterManager) processJob(ctx context.Context, job types.WriteJob) {
 	}
 }
 
-// processWriteJob executes a single write job within a transaction.
+// processWriteJob executes a single write job via the WriterStore interface.
 // Returns IDs of chunks that were deleted (for vector store cleanup).
-func processWriteJob(ctx context.Context, tx *sql.Tx, store types.WriterStore, logger *slog.Logger, job types.WriteJob, testPatterns []string) ([]int64, error) {
+func processWriteJob(ctx context.Context, store types.WriterStore, logger *slog.Logger, job types.WriteJob, testPatterns []string) ([]int64, error) {
 	switch job.Type {
 	case types.WriteJobEnrichment:
-		return processEnrichmentJob(ctx, tx, store, logger, job, testPatterns)
+		return processEnrichmentJob(ctx, store, logger, job, testPatterns)
 	case types.WriteJobFileDelete:
-		stale := collectChunkIDsByPath(ctx, tx, job.FilePath)
-		_, err := tx.ExecContext(ctx, "DELETE FROM files WHERE path = ?", job.FilePath)
+		var staleChunkIDs []int64
+		file, err := store.GetFileByPath(ctx, job.FilePath)
 		if err != nil {
+			return nil, fmt.Errorf("lookup file for delete %s: %w", job.FilePath, err)
+		}
+		if file != nil {
+			staleChunkIDs, _ = store.GetEmbeddedChunkIDsByFile(ctx, file.ID)
+		}
+		if _, err := store.DeleteFileByPath(ctx, job.FilePath); err != nil {
 			return nil, fmt.Errorf("delete file %s: %w", job.FilePath, err)
 		}
-		return stale, nil
+		return staleChunkIDs, nil
 	default:
 		return nil, fmt.Errorf("unknown write job type: %d", job.Type)
 	}
 }
 
-// collectChunkIDsByPath returns all chunk IDs for a file path (before deletion).
-func collectChunkIDsByPath(ctx context.Context, tx *sql.Tx, path string) []int64 {
-	rows, err := tx.QueryContext(ctx,
-		"SELECT c.id FROM chunks c JOIN files f ON c.file_id = f.id WHERE f.path = ? AND c.embedded = 1", path)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if rows.Scan(&id) == nil {
-			ids = append(ids, id)
-		}
-	}
-	return ids
-}
-
 // processEnrichmentJob handles an enrichment write: upsert file, replace chunks + symbols.
 // Returns IDs of old chunks that were replaced (for vector store cleanup).
-func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store types.WriterStore, logger *slog.Logger, job types.WriteJob, testPatterns []string) ([]int64, error) {
+func processEnrichmentJob(ctx context.Context, store types.WriterStore, logger *slog.Logger, job types.WriteJob, testPatterns []string) ([]int64, error) {
 	if job.File == nil {
 		return nil, fmt.Errorf("enrichment job for %s has nil file", job.FilePath)
 	}
 
 	// Content hash guard (CA-3): skip if already indexed with same hash
 	if job.ContentHash != "" {
-		var currentHash string
-		var indexedAt sql.NullString
-		err := tx.QueryRowContext(ctx, "SELECT content_hash, indexed_at FROM files WHERE path = ?",
-			job.FilePath).Scan(&currentHash, &indexedAt)
-		if err == nil && currentHash == job.ContentHash {
-			logger.Debug("skip same hash", "file", job.FilePath)
-			return nil, nil
-		}
-		// Stale check: if DB was updated after job was created
-		if err == nil && indexedAt.Valid {
-			dbTime, tErr := time.Parse(time.RFC3339Nano, indexedAt.String)
-			if tErr == nil && dbTime.After(job.Timestamp) {
-				logger.Debug("skip stale job", "file", job.FilePath)
+		file, err := store.GetFileByPath(ctx, job.FilePath)
+		if err == nil && file != nil {
+			if file.ContentHash == job.ContentHash {
+				logger.Debug("skip same hash", "file", job.FilePath)
 				return nil, nil
+			}
+			// Stale check: if DB was updated after job was created
+			if file.IndexedAt != "" {
+				dbTime, tErr := time.Parse(time.RFC3339Nano, file.IndexedAt)
+				if tErr == nil && dbTime.After(job.Timestamp) {
+					logger.Debug("skip stale job", "file", job.FilePath)
+					return nil, nil
+				}
 			}
 		}
 	}
@@ -254,157 +233,131 @@ func processEnrichmentJob(ctx context.Context, tx *sql.Tx, store types.WriterSto
 	var oldHash string
 	var oldFileID int64
 	var oldSymbols map[string]oldSymbolInfo
-	_ = tx.QueryRowContext(ctx, "SELECT id, content_hash FROM files WHERE path = ?",
-		job.FilePath).Scan(&oldFileID, &oldHash)
-	if oldFileID != 0 {
-		oldSymbols = fetchOldSymbols(ctx, tx, oldFileID)
+	oldFile, _ := store.GetFileByPath(ctx, job.FilePath)
+	if oldFile != nil {
+		oldFileID = oldFile.ID
+		oldHash = oldFile.ContentHash
+		oldSymbols = buildOldSymbols(ctx, store, oldFileID)
 	}
 
 	// Upsert file — reset embedding_status to 'pending' since chunks are changing
 	isTest := IsTestFile(job.File.Path, testPatterns)
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO files (path, content_hash, mtime, size, language, indexed_at, embedding_status, parse_quality, is_test)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(path) DO UPDATE SET
-			content_hash = excluded.content_hash,
-			mtime = excluded.mtime,
-			size = excluded.size,
-			language = excluded.language,
-			indexed_at = excluded.indexed_at,
-			embedding_status = 'pending',
-			parse_quality = excluded.parse_quality,
-			is_test = excluded.is_test`,
-		job.File.Path, job.File.ContentHash, job.File.Mtime, job.File.Size,
-		job.File.Language, time.Now().UTC().Format(time.RFC3339Nano),
-		job.File.EmbeddingStatus, job.File.ParseQuality, boolToInt(isTest)); err != nil {
+	fileRecord := &types.FileRecord{
+		Path:            job.File.Path,
+		ContentHash:     job.File.ContentHash,
+		Mtime:           job.File.Mtime,
+		Size:            job.File.Size,
+		Language:        job.File.Language,
+		IndexedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+		EmbeddingStatus: "pending",
+		ParseQuality:    job.File.ParseQuality,
+		IsTest:          isTest,
+	}
+	fileID, err := store.UpsertFile(ctx, fileRecord)
+	if err != nil {
 		return nil, fmt.Errorf("upsert file %s: %w", job.FilePath, err)
 	}
 
-	// Always SELECT the file ID after upsert. LastInsertId() is unreliable
-	// here because sqlite3_last_insert_rowid() is connection-scoped: when the
-	// ON CONFLICT DO UPDATE path is taken, it returns a stale ID from a
-	// previous transaction's INSERT (possibly into a different table).
-	var fileID int64
-	if err := tx.QueryRowContext(ctx, "SELECT id FROM files WHERE path = ?", job.FilePath).Scan(&fileID); err != nil {
-		return nil, fmt.Errorf("lookup file id %s: %w", job.FilePath, err)
-	}
-
 	// Collect old chunk IDs for vector store cleanup before deleting
-	var staleChunkIDs []int64
-	{
-		rows, qerr := tx.QueryContext(ctx, "SELECT id FROM chunks WHERE file_id = ? AND embedded = 1", fileID)
-		if qerr == nil {
-			for rows.Next() {
-				var cid int64
-				if rows.Scan(&cid) == nil {
-					staleChunkIDs = append(staleChunkIDs, cid)
-				}
-			}
-			rows.Close()
-		}
-	}
+	staleChunkIDs, _ := store.GetEmbeddedChunkIDsByFile(ctx, fileID)
 
 	// Delete old chunks and symbols (cascade handles symbols via FK)
-	if _, err := tx.ExecContext(ctx, "DELETE FROM chunks WHERE file_id = ?", fileID); err != nil {
+	if err := store.DeleteChunksByFile(ctx, fileID); err != nil {
 		return nil, fmt.Errorf("delete old chunks for %s: %w", job.FilePath, err)
 	}
 
-	// Insert new chunks (prepared statement avoids re-compiling SQL per row)
-	chunkStmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO chunks (file_id, chunk_index, symbol_name, kind,
-		                    start_line, end_line, content, token_count, signature, parse_quality)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return nil, fmt.Errorf("prepare chunk insert for %s: %w", job.FilePath, err)
-	}
-	defer chunkStmt.Close()
-
-	chunkIDs := make([]int64, len(job.Chunks))
+	// Insert new chunks
+	chunks := make([]types.ChunkRecord, len(job.Chunks))
 	for i, c := range job.Chunks {
-		res, err := chunkStmt.ExecContext(ctx,
-			fileID, c.ChunkIndex, c.SymbolName, c.Kind,
-			c.StartLine, c.EndLine, c.Content, c.TokenCount, c.Signature,
-			coalesce(c.ParseQuality, "full"))
-		if err != nil {
-			return nil, fmt.Errorf("insert chunk %d for %s: %w", i, job.FilePath, err)
+		chunks[i] = types.ChunkRecord{
+			ChunkIndex:   c.ChunkIndex,
+			SymbolName:   c.SymbolName,
+			Kind:         c.Kind,
+			StartLine:    c.StartLine,
+			EndLine:      c.EndLine,
+			Content:      c.Content,
+			TokenCount:   c.TokenCount,
+			Signature:    c.Signature,
+			ParseQuality: coalesce(c.ParseQuality, "full"),
 		}
-		chunkIDs[i], _ = res.LastInsertId()
+	}
+	chunkIDs, err := store.InsertChunks(ctx, fileID, chunks)
+	if err != nil {
+		return nil, fmt.Errorf("insert chunks for %s: %w", job.FilePath, err)
 	}
 
 	// Resolve parent chunk IDs (CA-10)
+	parents := make(map[int64]int64)
 	for i, c := range job.Chunks {
 		if c.ParentIndex != nil && *c.ParentIndex < len(chunkIDs) {
-			parentID := chunkIDs[*c.ParentIndex]
-			if _, err := tx.ExecContext(ctx, "UPDATE chunks SET parent_chunk_id = ? WHERE id = ?",
-				parentID, chunkIDs[i]); err != nil {
-				return nil, fmt.Errorf("set parent for chunk %d: %w", i, err)
-			}
+			parents[chunkIDs[i]] = chunkIDs[*c.ParentIndex]
+		}
+	}
+	if len(parents) > 0 {
+		if err := store.UpdateChunkParents(ctx, parents); err != nil {
+			return nil, fmt.Errorf("set parent chunks for %s: %w", job.FilePath, err)
 		}
 	}
 
-	// Insert symbols with resolved chunk IDs, track name→ID mapping for edges
-	symStmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO symbols (chunk_id, file_id, name, qualified_name, kind,
-		                     line, signature, visibility, is_exported)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return nil, fmt.Errorf("prepare symbol insert for %s: %w", job.FilePath, err)
-	}
-	defer symStmt.Close()
-
-	symbolIDs := make(map[string]int64, len(job.Symbols))
-	var newSymbolNames []string
-	for _, sym := range job.Symbols {
+	// Insert symbols with resolved chunk IDs, track name->ID mapping for edges
+	symRecords := make([]types.SymbolRecord, len(job.Symbols))
+	for i, sym := range job.Symbols {
 		chunkID := int64(0)
-		// sym.ChunkID is the chunk index (temporary), resolve to actual ID
 		if int(sym.ChunkID) < len(chunkIDs) {
 			chunkID = chunkIDs[sym.ChunkID]
 		}
+		symRecords[i] = types.SymbolRecord{
+			ChunkID:       chunkID,
+			Name:          sym.Name,
+			QualifiedName: sym.QualifiedName,
+			Kind:          sym.Kind,
+			Line:          sym.Line,
+			Signature:     sym.Signature,
+			Visibility:    sym.Visibility,
+			IsExported:    sym.IsExported,
+		}
+	}
+	symIDs, err := store.InsertSymbols(ctx, fileID, symRecords)
+	if err != nil {
+		return nil, fmt.Errorf("insert symbols for %s: %w", job.FilePath, err)
+	}
 
-		exported := 0
-		if sym.IsExported {
-			exported = 1
-		}
-		res, err := symStmt.ExecContext(ctx,
-			chunkID, fileID, sym.Name, sym.QualifiedName, sym.Kind,
-			sym.Line, sym.Signature, sym.Visibility, exported)
-		if err != nil {
-			return nil, fmt.Errorf("insert symbol %s: %w", sym.Name, err)
-		}
-		symID, _ := res.LastInsertId()
+	symbolIDs := make(map[string]int64, len(job.Symbols))
+	var newSymbolNames []string
+	for i, sym := range job.Symbols {
 		// Keep the first symbol ID for each name. Duplicates (e.g. Java
 		// method overloads) would overwrite, potentially pointing edges
 		// at the wrong overload.
 		if _, exists := symbolIDs[sym.Name]; !exists {
-			symbolIDs[sym.Name] = symID
+			symbolIDs[sym.Name] = symIDs[i]
 		}
 		newSymbolNames = append(newSymbolNames, sym.Name)
 	}
 
 	// Compute and record diff if this is a re-index (oldHash != "")
 	if oldHash != "" && oldHash != job.ContentHash {
-		computeAndRecordDiff(ctx, tx, store, fileID, oldHash, job, oldSymbols, symbolIDs)
+		computeAndRecordDiff(ctx, store, fileID, oldHash, job, oldSymbols, symbolIDs)
 	} else if oldHash == "" {
 		// New file — record as "add"
 		totalLines := 0
 		for _, c := range job.Chunks {
 			totalLines += c.EndLine - c.StartLine + 1
 		}
-		recordAddDiff(ctx, tx, store, fileID, job.ContentHash, totalLines, job.Symbols, symbolIDs)
+		recordAddDiff(ctx, store, fileID, job.ContentHash, totalLines, job.Symbols, symbolIDs)
 	}
 
 	// Delete old edges for this file, then insert new edges (CA-1)
-	txh := storage.SqliteTxHandle{Tx: tx}
-	if err := store.DeleteEdgesByFile(ctx, txh, fileID); err != nil {
-		return nil, fmt.Errorf("delete old edges for %s: %w", job.FilePath, err)
-	}
-	if err := store.InsertEdges(ctx, txh, fileID, job.Edges, symbolIDs, job.File.Language); err != nil {
-		return nil, fmt.Errorf("insert edges for %s: %w", job.FilePath, err)
-	}
-
-	// Attempt to resolve pending edges for newly inserted symbol names
-	if err := store.ResolvePendingEdges(ctx, txh, newSymbolNames); err != nil {
-		return nil, fmt.Errorf("resolve pending edges for %s: %w", job.FilePath, err)
+	// Use WithWriteTx for edge operations that require a TxHandle.
+	if err := store.WithWriteTx(ctx, func(txh types.TxHandle) error {
+		if err := store.DeleteEdgesByFile(ctx, txh, fileID); err != nil {
+			return fmt.Errorf("delete old edges for %s: %w", job.FilePath, err)
+		}
+		if err := store.InsertEdges(ctx, txh, fileID, job.Edges, symbolIDs, job.File.Language); err != nil {
+			return fmt.Errorf("insert edges for %s: %w", job.FilePath, err)
+		}
+		return store.ResolvePendingEdges(ctx, txh, newSymbolNames)
+	}); err != nil {
+		return nil, err
 	}
 
 	return staleChunkIDs, nil
@@ -419,36 +372,43 @@ type oldSymbolInfo struct {
 	endLine   int
 }
 
-// fetchOldSymbols queries old symbols for a file before they're deleted.
-func fetchOldSymbols(ctx context.Context, tx *sql.Tx, fileID int64) map[string]oldSymbolInfo {
-	symbols := make(map[string]oldSymbolInfo)
-	rows, err := tx.QueryContext(ctx, `
-		SELECT s.name, s.kind, s.signature, s.line,
-		       COALESCE(c.end_line, s.line) as end_line
-		FROM symbols s LEFT JOIN chunks c ON s.chunk_id = c.id
-		WHERE s.file_id = ?`, fileID)
+// buildOldSymbols constructs old symbol info from store queries for diff comparison.
+func buildOldSymbols(ctx context.Context, store types.WriterStore, fileID int64) map[string]oldSymbolInfo {
+	symbols, err := store.GetSymbolsByFile(ctx, fileID)
 	if err != nil {
-		return symbols
+		return nil
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		var s oldSymbolInfo
-		var sig sql.NullString
-		if err := rows.Scan(&s.name, &s.kind, &sig, &s.startLine, &s.endLine); err != nil {
-			continue
+	// Build chunkID -> endLine mapping from chunks
+	chunkEndLines := map[int64]int{}
+	chunks, err := store.GetChunksByFile(ctx, fileID)
+	if err == nil {
+		for _, c := range chunks {
+			chunkEndLines[c.ID] = c.EndLine
 		}
-		s.signature = sig.String
-		symbols[s.name] = s
 	}
-	return symbols
+
+	result := make(map[string]oldSymbolInfo, len(symbols))
+	for _, s := range symbols {
+		endLine := s.Line
+		if el, ok := chunkEndLines[s.ChunkID]; ok {
+			endLine = el
+		}
+		result[s.Name] = oldSymbolInfo{
+			name:      s.Name,
+			kind:      s.Kind,
+			signature: s.Signature,
+			startLine: s.Line,
+			endLine:   endLine,
+		}
+	}
+	return result
 }
 
 // computeAndRecordDiff computes symbol-level diffs and records them.
-func computeAndRecordDiff(ctx context.Context, tx *sql.Tx, store types.WriterStore,
+func computeAndRecordDiff(ctx context.Context, store types.WriterStore,
 	fileID int64, oldHash string, job types.WriteJob,
 	oldSymbols map[string]oldSymbolInfo, newSymbolIDs map[string]int64) {
-	txh := storage.SqliteTxHandle{Tx: tx}
 
 	// Compute lines changed (approximate from chunk content)
 	var totalOldLines, totalNewLines int
@@ -466,92 +426,97 @@ func computeAndRecordDiff(ctx context.Context, tx *sql.Tx, store types.WriterSto
 		linesRemoved = totalOldLines - totalNewLines
 	}
 
-	diffID, err := store.InsertDiffLog(ctx, txh, storage.DiffLogEntry{
-		FileID:       fileID,
-		ChangeType:   "modify",
-		LinesAdded:   linesAdded,
-		LinesRemoved: linesRemoved,
-		HashBefore:   oldHash,
-		HashAfter:    job.ContentHash,
-	})
-	if err != nil {
-		return // non-fatal
-	}
+	_ = store.WithWriteTx(ctx, func(txh types.TxHandle) error {
+		diffID, err := store.InsertDiffLog(ctx, txh, types.DiffLogEntry{
+			FileID:       fileID,
+			ChangeType:   "modify",
+			LinesAdded:   linesAdded,
+			LinesRemoved: linesRemoved,
+			HashBefore:   oldHash,
+			HashAfter:    job.ContentHash,
+		})
+		if err != nil {
+			return err // non-fatal at caller level
+		}
 
-	// Compare old vs new symbols
-	var diffSymbols []storage.DiffSymbolEntry
-	newSymbolSet := make(map[string]types.SymbolRecord)
-	for _, sym := range job.Symbols {
-		newSymbolSet[sym.Name] = sym
-	}
+		// Compare old vs new symbols
+		var diffSymbols []types.DiffSymbolEntry
+		newSymbolSet := make(map[string]types.SymbolRecord)
+		for _, sym := range job.Symbols {
+			newSymbolSet[sym.Name] = sym
+		}
 
-	// Find modified and removed symbols
-	for name, oldSym := range oldSymbols {
-		if newSym, exists := newSymbolSet[name]; exists {
-			if oldSym.signature != newSym.Signature {
-				diffSymbols = append(diffSymbols, storage.DiffSymbolEntry{
+		// Find modified and removed symbols
+		for name, oldSym := range oldSymbols {
+			if newSym, exists := newSymbolSet[name]; exists {
+				if oldSym.signature != newSym.Signature {
+					diffSymbols = append(diffSymbols, types.DiffSymbolEntry{
+						SymbolName: name,
+						SymbolID:   newSymbolIDs[name],
+						ChangeType: "signature_changed",
+					})
+				} else if oldSym.startLine != newSym.Line {
+					diffSymbols = append(diffSymbols, types.DiffSymbolEntry{
+						SymbolName: name,
+						SymbolID:   newSymbolIDs[name],
+						ChangeType: "modified",
+					})
+				}
+			} else {
+				diffSymbols = append(diffSymbols, types.DiffSymbolEntry{
 					SymbolName: name,
-					SymbolID:   newSymbolIDs[name],
-					ChangeType: "signature_changed",
-				})
-			} else if oldSym.startLine != newSym.Line {
-				diffSymbols = append(diffSymbols, storage.DiffSymbolEntry{
-					SymbolName: name,
-					SymbolID:   newSymbolIDs[name],
-					ChangeType: "modified",
+					ChangeType: "removed",
 				})
 			}
-		} else {
-			diffSymbols = append(diffSymbols, storage.DiffSymbolEntry{
-				SymbolName: name,
-				ChangeType: "removed",
-			})
 		}
-	}
 
-	// Find added symbols
-	for name := range newSymbolSet {
-		if _, existed := oldSymbols[name]; !existed {
-			diffSymbols = append(diffSymbols, storage.DiffSymbolEntry{
-				SymbolName: name,
-				SymbolID:   newSymbolIDs[name],
-				ChangeType: "added",
-			})
+		// Find added symbols
+		for name := range newSymbolSet {
+			if _, existed := oldSymbols[name]; !existed {
+				diffSymbols = append(diffSymbols, types.DiffSymbolEntry{
+					SymbolName: name,
+					SymbolID:   newSymbolIDs[name],
+					ChangeType: "added",
+				})
+			}
 		}
-	}
 
-	if len(diffSymbols) > 0 {
-		_ = store.InsertDiffSymbols(ctx, txh, diffID, diffSymbols)
-	}
+		if len(diffSymbols) > 0 {
+			return store.InsertDiffSymbols(ctx, txh, diffID, diffSymbols)
+		}
+		return nil
+	})
 }
 
 // recordAddDiff records a diff for a newly added file.
-func recordAddDiff(ctx context.Context, tx *sql.Tx, store types.WriterStore,
+func recordAddDiff(ctx context.Context, store types.WriterStore,
 	fileID int64, hash string, totalLines int,
 	symbols []types.SymbolRecord, symbolIDs map[string]int64) {
-	txh := storage.SqliteTxHandle{Tx: tx}
 
-	diffID, err := store.InsertDiffLog(ctx, txh, storage.DiffLogEntry{
-		FileID:     fileID,
-		ChangeType: "add",
-		LinesAdded: totalLines,
-		HashAfter:  hash,
-	})
-	if err != nil {
-		return
-	}
-
-	var diffSymbols []storage.DiffSymbolEntry
-	for _, sym := range symbols {
-		diffSymbols = append(diffSymbols, storage.DiffSymbolEntry{
-			SymbolName: sym.Name,
-			SymbolID:   symbolIDs[sym.Name],
-			ChangeType: "added",
+	_ = store.WithWriteTx(ctx, func(txh types.TxHandle) error {
+		diffID, err := store.InsertDiffLog(ctx, txh, types.DiffLogEntry{
+			FileID:     fileID,
+			ChangeType: "add",
+			LinesAdded: totalLines,
+			HashAfter:  hash,
 		})
-	}
-	if len(diffSymbols) > 0 {
-		_ = store.InsertDiffSymbols(ctx, txh, diffID, diffSymbols)
-	}
+		if err != nil {
+			return err
+		}
+
+		var diffSymbols []types.DiffSymbolEntry
+		for _, sym := range symbols {
+			diffSymbols = append(diffSymbols, types.DiffSymbolEntry{
+				SymbolName: sym.Name,
+				SymbolID:   symbolIDs[sym.Name],
+				ChangeType: "added",
+			})
+		}
+		if len(diffSymbols) > 0 {
+			return store.InsertDiffSymbols(ctx, txh, diffID, diffSymbols)
+		}
+		return nil
+	})
 }
 
 func coalesce(val, fallback string) string {
