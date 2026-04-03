@@ -698,3 +698,30 @@ func scanSymbols(rows pgx.Rows) ([]types.SymbolRecord, error) {
 	}
 	return symbols, rows.Err()
 }
+
+// ── Metrics ──
+
+// RecordToolCalls batch-inserts MCP tool call metrics.
+func (s *PgStore) RecordToolCalls(ctx context.Context, records []types.ToolCallRecord) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	for _, rec := range records {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO tool_calls (session_id, timestamp, tool_name, args_json,
+				args_bytes, response_bytes, response_tokens_est, result_count,
+				duration_ms, is_error)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			rec.SessionID, rec.Timestamp.UTC(), rec.ToolName, rec.ArgsJSON,
+			rec.ArgsBytes, rec.ResponseBytes, rec.ResponseTokensEst,
+			rec.ResultCount, rec.DurationMs, rec.IsError,
+		); err != nil {
+			return fmt.Errorf("insert tool call %s: %w", rec.ToolName, err)
+		}
+	}
+
+	return tx.Commit(ctx)
+}

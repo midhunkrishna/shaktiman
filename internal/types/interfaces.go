@@ -1,6 +1,9 @@
 package types
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // FTSResult holds a single full-text search match.
 type FTSResult struct {
@@ -213,7 +216,9 @@ type MetricsWriter interface {
 // ToolCallRecord holds a single MCP tool invocation metric.
 type ToolCallRecord struct {
 	SessionID         string
+	Timestamp         time.Time
 	ToolName          string
+	ArgsJSON          string
 	ArgsBytes         int
 	ResponseBytes     int
 	ResponseTokensEst int
@@ -232,5 +237,6 @@ type WriterStore interface {
 	GraphMutator
 	EmbeddingReconciler
 	EmbedSource
+	MetricsWriter
 	WithWriteTx(ctx context.Context, fn func(tx TxHandle) error) error
 }

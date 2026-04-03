@@ -177,21 +177,14 @@ func (d *Daemon) Start(ctx context.Context) error {
 	}()
 
 	// Start metrics recorder.
-	// MetricsRecorder needs raw *sql.DB — access via concrete Store.DB().Writer().
-	// This will be replaced with a MetricsWriter interface in a future PR.
-	var recorder *mcp.MetricsRecorder
-	if sqliteStore, ok := d.store.(*storage.Store); ok {
-		recorder = mcp.NewMetricsRecorder(mcp.MetricsRecorderInput{
-			DB:        sqliteStore.DB().Writer(),
-			SessionID: d.sessionID,
-			Logger:    d.logger.With("component", "metrics"),
-		})
-	}
-	if recorder != nil {
-		metricsCtx, metricsCancel := context.WithCancel(ctx)
-		defer metricsCancel()
-		go recorder.Run(metricsCtx)
-	}
+	recorder := mcp.NewMetricsRecorder(mcp.MetricsRecorderInput{
+		Writer:    d.store,
+		SessionID: d.sessionID,
+		Logger:    d.logger.With("component", "metrics"),
+	})
+	metricsCtx, metricsCancel := context.WithCancel(ctx)
+	defer metricsCancel()
+	go recorder.Run(metricsCtx)
 
 	// Start MCP server (blocks on stdio)
 	s := mcp.NewServer(mcp.NewServerInput{

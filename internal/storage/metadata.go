@@ -977,3 +977,36 @@ func (s *Store) BatchGetFileHashes(ctx context.Context, paths []string) (map[str
 	}
 	return result, nil
 }
+
+// ── Metrics ──
+
+// RecordToolCalls batch-inserts MCP tool call metrics.
+func (s *Store) RecordToolCalls(ctx context.Context, records []types.ToolCallRecord) error {
+	return s.db.WithWriteTx(func(tx *sql.Tx) error {
+		stmt, err := tx.PrepareContext(ctx, `
+			INSERT INTO tool_calls (session_id, timestamp, tool_name, args_json,
+				args_bytes, response_bytes, response_tokens_est, result_count,
+				duration_ms, is_error)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			return fmt.Errorf("prepare tool_calls insert: %w", err)
+		}
+		defer stmt.Close()
+
+		for _, rec := range records {
+			isErr := 0
+			if rec.IsError {
+				isErr = 1
+			}
+			ts := rec.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z")
+			if _, err := stmt.ExecContext(ctx,
+				rec.SessionID, ts, rec.ToolName, rec.ArgsJSON,
+				rec.ArgsBytes, rec.ResponseBytes, rec.ResponseTokensEst,
+				rec.ResultCount, rec.DurationMs, isErr,
+			); err != nil {
+				return fmt.Errorf("insert tool call %s: %w", rec.ToolName, err)
+			}
+		}
+		return nil
+	})
+}
