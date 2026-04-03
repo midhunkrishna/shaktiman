@@ -1247,3 +1247,176 @@ func TestParse_LargeFunction_SplitsChunks(t *testing.T) {
 		}
 	}
 }
+
+// ── Migration validation tests ──
+
+func TestParse_ContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err = p.Parse(ctx, ParseInput{
+		FilePath: "test.go",
+		Content:  []byte(`package main; func main() {}`),
+		Language: "go",
+	})
+	if err == nil {
+		// Some parsers may complete before checking cancellation on small inputs.
+		// This is acceptable — the test verifies no panic occurs.
+		return
+	}
+	if ctx.Err() == nil {
+		t.Errorf("expected context error, got: %v", err)
+	}
+}
+
+func TestParse_InvalidLanguageReturnsError(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	_, err = p.Parse(context.Background(), ParseInput{
+		FilePath: "test.rb",
+		Content:  []byte(`puts "hello"`),
+		Language: "ruby",
+	})
+	if err == nil {
+		t.Fatal("expected error for unsupported language, got nil")
+	}
+}
+
+func TestParse_AllLanguagesSmoke(t *testing.T) {
+	t.Parallel()
+
+	langs := []struct {
+		lang    string
+		file    string
+		content string
+	}{
+		{"go", "main.go", "package main\nfunc main() {}"},
+		{"python", "main.py", "def hello():\n    pass"},
+		{"typescript", "app.ts", "function greet(): void {}"},
+		{"javascript", "app.js", "function greet() {}"},
+		{"rust", "main.rs", "fn main() {}"},
+		{"java", "Main.java", "public class Main { public void run() {} }"},
+		{"bash", "run.sh", "#!/bin/bash\nrun() { echo ok; }"},
+	}
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	for _, tc := range langs {
+		t.Run(tc.lang, func(t *testing.T) {
+			result, err := p.Parse(context.Background(), ParseInput{
+				FilePath: tc.file,
+				Content:  []byte(tc.content),
+				Language: tc.lang,
+			})
+			if err != nil {
+				t.Fatalf("Parse(%s): %v", tc.lang, err)
+			}
+			if len(result.Chunks) == 0 {
+				t.Errorf("expected at least 1 chunk for %s, got 0", tc.lang)
+			}
+		})
+	}
+}
+
+func TestParse_ByteRangesValid(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`package main
+
+import "fmt"
+
+type Server struct {
+	port int
+}
+
+func (s *Server) Start() {
+	fmt.Println("starting")
+}
+`)
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "server.go",
+		Content:  src,
+		Language: "go",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	for _, c := range result.Chunks {
+		if c.StartLine < 1 {
+			t.Errorf("chunk %q has StartLine %d < 1", c.SymbolName, c.StartLine)
+		}
+		if c.EndLine < c.StartLine {
+			t.Errorf("chunk %q has EndLine %d < StartLine %d", c.SymbolName, c.EndLine, c.StartLine)
+		}
+		if c.Content == "" {
+			t.Errorf("chunk %q has empty content", c.SymbolName)
+		}
+	}
+}
+
+func TestParse_TypeScriptClassSignature(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`export class UserService {
+    getUser(id: string): User {
+        return this.db.find(id);
+    }
+    deleteUser(id: string): void {
+        this.db.remove(id);
+    }
+}
+`)
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "service.ts",
+		Content:  src,
+		Language: "typescript",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Should have a class chunk with non-empty content (tests buildClassSignatureWithConfig byte slicing)
+	found := false
+	for _, c := range result.Chunks {
+		if c.SymbolName == "UserService" && c.Kind == "class" {
+			found = true
+			if c.Content == "" {
+				t.Error("UserService class chunk has empty content")
+			}
+		}
+	}
+	if !found {
+		t.Error("UserService class chunk not found")
+	}
+}

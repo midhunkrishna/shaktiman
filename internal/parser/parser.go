@@ -66,10 +66,29 @@ func (p *Parser) Parse(ctx context.Context, input ParseInput) (*ParseResult, err
 		return nil, fmt.Errorf("set language %s: %w", input.Language, err)
 	}
 
-	// ParseCtx is deprecated in v0.25 (removed in v0.26).
-	// Note: official API arg order is (ctx, text, oldTree) — differs from smacker's (ctx, oldTree, text).
-	tree := p.ts.ParseCtx(ctx, input.Content, nil)
+	tree := p.ts.ParseWithOptions(
+		func(offset int, _ tree_sitter.Point) []byte {
+			if offset >= len(input.Content) {
+				return nil
+			}
+			return input.Content[offset:]
+		},
+		nil, // no old tree for incremental parsing
+		&tree_sitter.ParseOptions{
+			ProgressCallback: func(_ tree_sitter.ParseState) bool {
+				select {
+				case <-ctx.Done():
+					return true // cancel parsing
+				default:
+					return false
+				}
+			},
+		},
+	)
 	if tree == nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("parse cancelled for %s: %w", input.FilePath, ctx.Err())
+		}
 		return nil, fmt.Errorf("tree-sitter returned nil tree for %s", input.FilePath)
 	}
 	defer tree.Close()
