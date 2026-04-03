@@ -3,21 +3,20 @@ package parser
 import (
 	"fmt"
 
-	sitter "github.com/smacker/go-tree-sitter"
-	"github.com/smacker/go-tree-sitter/bash"
-	"github.com/smacker/go-tree-sitter/golang"
-	"github.com/smacker/go-tree-sitter/groovy"
-	"github.com/smacker/go-tree-sitter/java"
-	"github.com/smacker/go-tree-sitter/javascript"
-	"github.com/smacker/go-tree-sitter/python"
-	"github.com/smacker/go-tree-sitter/rust"
-	"github.com/smacker/go-tree-sitter/typescript/typescript"
+	tree_sitter "github.com/tree-sitter/go-tree-sitter"
+	tree_sitter_bash "github.com/tree-sitter/tree-sitter-bash/bindings/go"
+	tree_sitter_go "github.com/tree-sitter/tree-sitter-go/bindings/go"
+	tree_sitter_java "github.com/tree-sitter/tree-sitter-java/bindings/go"
+	tree_sitter_javascript "github.com/tree-sitter/tree-sitter-javascript/bindings/go"
+	tree_sitter_python "github.com/tree-sitter/tree-sitter-python/bindings/go"
+	tree_sitter_rust "github.com/tree-sitter/tree-sitter-rust/bindings/go"
+	tree_sitter_typescript "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
 )
 
 // LanguageConfig holds tree-sitter grammar and node type mappings for a language.
 type LanguageConfig struct {
 	Name           string
-	Grammar        *sitter.Language
+	Grammar        *tree_sitter.Language
 	ChunkableTypes map[string]string // node_type → chunk kind
 	SymbolKindMap  map[string]string // node_type → symbol kind
 	ClassBodyTypes map[string]bool   // method-like types inside class bodies
@@ -40,8 +39,6 @@ func GetLanguageConfig(lang string) (*LanguageConfig, error) {
 		return rustConfig(), nil
 	case "java":
 		return javaConfig(), nil
-	case "groovy":
-		return groovyConfig(), nil
 	case "bash":
 		return bashConfig(), nil
 	case "javascript":
@@ -54,7 +51,7 @@ func GetLanguageConfig(lang string) (*LanguageConfig, error) {
 // SupportedLanguage returns true if the language is supported.
 func SupportedLanguage(lang string) bool {
 	switch lang {
-	case "typescript", "python", "go", "rust", "java", "groovy", "bash", "javascript":
+	case "typescript", "python", "go", "rust", "java", "bash", "javascript":
 		return true
 	default:
 		return false
@@ -64,7 +61,7 @@ func SupportedLanguage(lang string) bool {
 func typescriptConfig() *LanguageConfig {
 	return &LanguageConfig{
 		Name:    "typescript",
-		Grammar: typescript.GetLanguage(),
+		Grammar: tree_sitter.NewLanguage(tree_sitter_typescript.LanguageTypescript()),
 		ChunkableTypes: map[string]string{
 			"function_declaration":       "function",
 			"class_declaration":          "class",
@@ -106,7 +103,7 @@ func typescriptConfig() *LanguageConfig {
 func pythonConfig() *LanguageConfig {
 	return &LanguageConfig{
 		Name:    "python",
-		Grammar: python.GetLanguage(),
+		Grammar: tree_sitter.NewLanguage(tree_sitter_python.Language()),
 		ChunkableTypes: map[string]string{
 			"function_definition":  "function",
 			"class_definition":     "class",
@@ -136,7 +133,7 @@ func pythonConfig() *LanguageConfig {
 func goConfig() *LanguageConfig {
 	return &LanguageConfig{
 		Name:    "go",
-		Grammar: golang.GetLanguage(),
+		Grammar: tree_sitter.NewLanguage(tree_sitter_go.Language()),
 		ChunkableTypes: map[string]string{
 			"function_declaration": "function",
 			"method_declaration":   "method",
@@ -165,7 +162,7 @@ func goConfig() *LanguageConfig {
 func rustConfig() *LanguageConfig {
 	return &LanguageConfig{
 		Name:    "rust",
-		Grammar: rust.GetLanguage(),
+		Grammar: tree_sitter.NewLanguage(tree_sitter_rust.Language()),
 		ChunkableTypes: map[string]string{
 			"function_item":    "function",
 			"struct_item":      "type",
@@ -207,7 +204,7 @@ func rustConfig() *LanguageConfig {
 func javaConfig() *LanguageConfig {
 	return &LanguageConfig{
 		Name:    "java",
-		Grammar: java.GetLanguage(),
+		Grammar: tree_sitter.NewLanguage(tree_sitter_java.Language()),
 		ChunkableTypes: map[string]string{
 			"class_declaration":           "class",
 			"interface_declaration":       "interface",
@@ -246,42 +243,12 @@ func javaConfig() *LanguageConfig {
 	}
 }
 
-func groovyConfig() *LanguageConfig {
-	return &LanguageConfig{
-		Name:    "groovy",
-		Grammar: groovy.GetLanguage(),
-		ChunkableTypes: map[string]string{
-			"function_definition":  "function",
-			"function_declaration": "function",
-			"class_definition":     "class",
-			"groovy_import":        "",
-			"groovy_package":       "",
-			"declaration":          "block",
-		},
-		SymbolKindMap: map[string]string{
-			"function_definition":  "function",
-			"function_declaration": "function",
-			"class_definition":     "class",
-		},
-		ClassBodyTypes: map[string]bool{
-			"function_definition":  true,
-			"function_declaration": true,
-		},
-		ImportTypes: map[string]bool{
-			"groovy_import": true,
-		},
-		ExportType:    "",
-		ClassBodyType: "closure",
-		ClassTypes: map[string]bool{
-			"class_definition": true,
-		},
-	}
-}
+// TODO: groovy support dropped pending official tree-sitter-groovy Go bindings.
 
 func bashConfig() *LanguageConfig {
 	return &LanguageConfig{
 		Name:    "bash",
-		Grammar: bash.GetLanguage(),
+		Grammar: tree_sitter.NewLanguage(tree_sitter_bash.Language()),
 		ChunkableTypes: map[string]string{
 			"function_definition": "function",
 		},
@@ -299,7 +266,7 @@ func bashConfig() *LanguageConfig {
 func javascriptConfig() *LanguageConfig {
 	return &LanguageConfig{
 		Name:    "javascript",
-		Grammar: javascript.GetLanguage(),
+		Grammar: tree_sitter.NewLanguage(tree_sitter_javascript.Language()),
 		ChunkableTypes: map[string]string{
 			"function_declaration":           "function",
 			"class_declaration":              "class",

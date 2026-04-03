@@ -113,6 +113,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Migrated tree-sitter bindings** — replaced stalled community
+  `smacker/go-tree-sitter` (no activity since Aug 2024) with official
+  `tree-sitter/go-tree-sitter` v0.25.0 and per-language grammar packages
+  from `tree-sitter/*`. Actively maintained, semantically versioned.
+- **Replaced deprecated `ParseCtx`** — migrated to `ParseWithOptions` with
+  `ProgressCallback` for proper context cancellation. Callback checks
+  `ctx.Done()` channel; nil-tree return differentiates cancellation from
+  parse failure.
+
+### Removed
+
+- **Groovy language support temporarily dropped** — no official
+  `tree-sitter/tree-sitter-groovy` Go bindings exist. Community fork has
+  module path mismatch preventing use. Removed `.groovy`/`.gradle` extension
+  mappings, `groovyConfig()`, groovy import/edge extraction, and related
+  test fixtures. TODO comments mark all removal points for re-addition when
+  official bindings become available.
+
+### Added (migration)
+
+- **Migration validation tests** (`internal/parser/parser_test.go`) —
+  `TestParse_ContextCancellation` (no panic on immediate cancel),
+  `TestParse_InvalidLanguageReturnsError` (unsupported language error),
+  `TestParse_AllLanguagesSmoke` (7 languages parse without error),
+  `TestParse_ByteRangesValid` (chunk line ranges valid),
+  `TestParse_TypeScriptClassSignature` (class signature byte slicing correct).
+
+### Dependencies
+
+- Removed `github.com/smacker/go-tree-sitter` and all `smacker/go-tree-sitter-*`
+  grammar packages.
+- Added `github.com/tree-sitter/go-tree-sitter` v0.25.0.
+- Added official grammar packages: `tree-sitter-typescript` v0.23.2,
+  `tree-sitter-javascript` v0.23.1, `tree-sitter-python` v0.23.6,
+  `tree-sitter-go` v0.23.4, `tree-sitter-rust` v0.23.2,
+  `tree-sitter-java` v0.23.5, `tree-sitter-bash` v0.23.3.
+- Added `github.com/mattn/go-pointer` v0.0.1 (transitive dependency).
+
+---
+
+## [Unreleased]
+
 ### Added
 
 - **`shaktiman init` command** (`cmd/shaktiman/main.go`) — scaffolds

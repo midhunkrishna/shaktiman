@@ -306,7 +306,6 @@ The `--format` flag is persistent and applies to all subcommands.
 | Go | `.go` | tree-sitter-go |
 | Rust | `.rs` | tree-sitter-rust |
 | Java | `.java` | tree-sitter-java |
-| Groovy | `.groovy`, `.gradle` | tree-sitter-groovy |
 | Shell | `.sh`, `.bash` | tree-sitter-bash |
 
 Adding a new language: implement a `LanguageConfig` in `internal/parser/languages.go` with the AST node type mappings for your language.
@@ -425,7 +424,7 @@ testdata/              Test fixtures (TypeScript, Python, Go projects)
 |-----------|-----------|
 | Language | Go |
 | Storage | SQLite (WAL mode, FTS5 full-text search) |
-| Parsing | Tree-sitter via CGo |
+| Parsing | Tree-sitter via official [go-tree-sitter](https://github.com/tree-sitter/go-tree-sitter) bindings (CGo) |
 | Protocol | MCP (Model Context Protocol) via `mcp-go` |
 | Embeddings | Ollama (optional, `nomic-embed-text` default) |
 | Tokenizer | `tiktoken-go` (cl100k_base) |

@@ -183,6 +183,7 @@ func TestEdges_PythonInheritance(t *testing.T) {
 }
 
 func TestEdges_GroovyImports(t *testing.T) {
+	t.Skip("TODO: groovy support dropped pending official tree-sitter-groovy Go bindings")
 	t.Parallel()
 
 	p, err := NewParser()
@@ -855,6 +856,7 @@ def process():
 }
 
 func TestEdges_GroovyImportQualifiedName(t *testing.T) {
+	t.Skip("TODO: groovy support dropped pending official tree-sitter-groovy Go bindings")
 	t.Parallel()
 
 	p, err := NewParser()

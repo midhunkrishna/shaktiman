@@ -3,7 +3,7 @@ package parser
 import (
 	"strings"
 
-	sitter "github.com/smacker/go-tree-sitter"
+	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
@@ -15,31 +15,31 @@ const maxChunkTokens = 1024
 const minChunkTokens = 20
 
 // chunkFile splits a parsed tree into semantic chunks using language-specific config.
-func (p *Parser) chunkFile(root *sitter.Node, source []byte, cfg *LanguageConfig) []types.ChunkRecord {
+func (p *Parser) chunkFile(root *tree_sitter.Node, source []byte, cfg *LanguageConfig) []types.ChunkRecord {
 	var chunks []types.ChunkRecord
 	var headerParts []headerFragment
 
 	childCount := int(root.NamedChildCount())
 	for i := 0; i < childCount; i++ {
-		child := root.NamedChild(i)
-		nodeType := child.Type()
+		child := root.NamedChild(uint(i))
+		nodeType := child.Kind()
 
 		// Collect imports and comments for header
 		if cfg.ImportTypes[nodeType] || nodeType == "comment" {
 			headerParts = append(headerParts, headerFragment{
-				content:   child.Content(source),
-				startLine: int(child.StartPoint().Row) + 1,
-				endLine:   int(child.EndPoint().Row) + 1,
+				content:   child.Utf8Text(source),
+				startLine: int(child.StartPosition().Row) + 1,
+				endLine:   int(child.EndPosition().Row) + 1,
 			})
 			continue
 		}
 
 		// Package declarations go to header (Go, Java, Groovy)
-		if nodeType == "package_clause" || nodeType == "package_declaration" || nodeType == "groovy_package" {
+		if nodeType == "package_clause" || nodeType == "package_declaration" {
 			headerParts = append(headerParts, headerFragment{
-				content:   child.Content(source),
-				startLine: int(child.StartPoint().Row) + 1,
-				endLine:   int(child.EndPoint().Row) + 1,
+				content:   child.Utf8Text(source),
+				startLine: int(child.StartPosition().Row) + 1,
+				endLine:   int(child.EndPosition().Row) + 1,
 			})
 			continue
 		}
@@ -48,9 +48,9 @@ func (p *Parser) chunkFile(root *sitter.Node, source []byte, cfg *LanguageConfig
 		if !ok {
 			// Non-chunkable top-level node → include in header
 			headerParts = append(headerParts, headerFragment{
-				content:   child.Content(source),
-				startLine: int(child.StartPoint().Row) + 1,
-				endLine:   int(child.EndPoint().Row) + 1,
+				content:   child.Utf8Text(source),
+				startLine: int(child.StartPosition().Row) + 1,
+				endLine:   int(child.EndPosition().Row) + 1,
 			})
 			continue
 		}
@@ -76,13 +76,13 @@ func (p *Parser) chunkFile(root *sitter.Node, source []byte, cfg *LanguageConfig
 		// Go type_declaration: extract type name from type_spec child
 		if nodeType == "type_declaration" {
 			name := extractGoTypeName(child, source)
-			content := child.Content(source)
+			content := child.Utf8Text(source)
 			chunks = append(chunks, types.ChunkRecord{
 				ChunkIndex: len(chunks),
 				SymbolName: name,
 				Kind:       kind,
-				StartLine:  int(child.StartPoint().Row) + 1,
-				EndLine:    int(child.EndPoint().Row) + 1,
+				StartLine:  int(child.StartPosition().Row) + 1,
+				EndLine:    int(child.EndPosition().Row) + 1,
 				Content:    content,
 				TokenCount: p.tokens.Count(content),
 			})
@@ -91,15 +91,15 @@ func (p *Parser) chunkFile(root *sitter.Node, source []byte, cfg *LanguageConfig
 
 		// Regular chunkable node
 		name := extractName(child, source)
-		content := child.Content(source)
+		content := child.Utf8Text(source)
 		tokenCount := p.tokens.Count(content)
 
 		chunks = append(chunks, types.ChunkRecord{
 			ChunkIndex: len(chunks),
 			SymbolName: name,
 			Kind:       kind,
-			StartLine:  int(child.StartPoint().Row) + 1,
-			EndLine:    int(child.EndPoint().Row) + 1,
+			StartLine:  int(child.StartPosition().Row) + 1,
+			EndLine:    int(child.EndPosition().Row) + 1,
 			Content:    content,
 			TokenCount: tokenCount,
 			Signature:  extractSignature(child, source),
@@ -130,21 +130,21 @@ func (p *Parser) chunkFile(root *sitter.Node, source []byte, cfg *LanguageConfig
 }
 
 // chunkExportStatement handles `export function/class/interface/type/const` (TypeScript).
-func (p *Parser) chunkExportStatement(node *sitter.Node, source []byte, baseIndex int, cfg *LanguageConfig) []types.ChunkRecord {
+func (p *Parser) chunkExportStatement(node *tree_sitter.Node, source []byte, baseIndex int, cfg *LanguageConfig) []types.ChunkRecord {
 	declChild := findDeclarationChild(node)
 	if declChild == nil {
-		content := node.Content(source)
+		content := node.Utf8Text(source)
 		return []types.ChunkRecord{{
 			ChunkIndex: baseIndex,
 			Kind:       "block",
-			StartLine:  int(node.StartPoint().Row) + 1,
-			EndLine:    int(node.EndPoint().Row) + 1,
+			StartLine:  int(node.StartPosition().Row) + 1,
+			EndLine:    int(node.EndPosition().Row) + 1,
 			Content:    content,
 			TokenCount: p.tokens.Count(content),
 		}}
 	}
 
-	declType := declChild.Type()
+	declType := declChild.Kind()
 	kind, ok := cfg.ChunkableTypes[declType]
 	if !ok {
 		kind = "block"
@@ -155,13 +155,13 @@ func (p *Parser) chunkExportStatement(node *sitter.Node, source []byte, baseInde
 	}
 
 	name := extractName(declChild, source)
-	content := node.Content(source)
+	content := node.Utf8Text(source)
 	return []types.ChunkRecord{{
 		ChunkIndex: baseIndex,
 		SymbolName: name,
 		Kind:       kind,
-		StartLine:  int(node.StartPoint().Row) + 1,
-		EndLine:    int(node.EndPoint().Row) + 1,
+		StartLine:  int(node.StartPosition().Row) + 1,
+		EndLine:    int(node.EndPosition().Row) + 1,
 		Content:    content,
 		TokenCount: p.tokens.Count(content),
 		Signature:  extractSignature(declChild, source),
@@ -169,29 +169,29 @@ func (p *Parser) chunkExportStatement(node *sitter.Node, source []byte, baseInde
 }
 
 // chunkDecoratedDef handles Python `@decorator\ndef/class` nodes.
-func (p *Parser) chunkDecoratedDef(node *sitter.Node, source []byte, baseIndex int, cfg *LanguageConfig) []types.ChunkRecord {
+func (p *Parser) chunkDecoratedDef(node *tree_sitter.Node, source []byte, baseIndex int, cfg *LanguageConfig) []types.ChunkRecord {
 	// Find the actual definition inside the decorated_definition
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		child := node.NamedChild(i)
-		if cfg.ClassTypes[child.Type()] {
+		child := node.NamedChild(uint(i))
+		if cfg.ClassTypes[child.Kind()] {
 			// Include the decorator in the class content
 			chunks := p.chunkClass(child, source, baseIndex, cfg)
 			if len(chunks) > 0 {
-				chunks[0].Content = node.Content(source)
+				chunks[0].Content = node.Utf8Text(source)
 				chunks[0].TokenCount = p.tokens.Count(chunks[0].Content)
-				chunks[0].StartLine = int(node.StartPoint().Row) + 1
+				chunks[0].StartLine = int(node.StartPosition().Row) + 1
 			}
 			return chunks
 		}
-		if child.Type() == "function_definition" {
+		if child.Kind() == "function_definition" {
 			name := extractName(child, source)
-			content := node.Content(source)
+			content := node.Utf8Text(source)
 			return []types.ChunkRecord{{
 				ChunkIndex: baseIndex,
 				SymbolName: name,
 				Kind:       "function",
-				StartLine:  int(node.StartPoint().Row) + 1,
-				EndLine:    int(node.EndPoint().Row) + 1,
+				StartLine:  int(node.StartPosition().Row) + 1,
+				EndLine:    int(node.EndPosition().Row) + 1,
 				Content:    content,
 				TokenCount: p.tokens.Count(content),
 				Signature:  extractSignature(child, source),
@@ -200,12 +200,12 @@ func (p *Parser) chunkDecoratedDef(node *sitter.Node, source []byte, baseIndex i
 	}
 
 	// Fallback: treat whole node as a block
-	content := node.Content(source)
+	content := node.Utf8Text(source)
 	return []types.ChunkRecord{{
 		ChunkIndex: baseIndex,
 		Kind:       "block",
-		StartLine:  int(node.StartPoint().Row) + 1,
-		EndLine:    int(node.EndPoint().Row) + 1,
+		StartLine:  int(node.StartPosition().Row) + 1,
+		EndLine:    int(node.EndPosition().Row) + 1,
 		Content:    content,
 		TokenCount: p.tokens.Count(content),
 	}}
@@ -213,27 +213,27 @@ func (p *Parser) chunkDecoratedDef(node *sitter.Node, source []byte, baseIndex i
 
 // chunkClass creates a class chunk and child method chunks.
 // node may be a class_declaration or an export_statement wrapping one.
-func (p *Parser) chunkClass(node *sitter.Node, source []byte, baseIndex int, cfg *LanguageConfig) []types.ChunkRecord {
+func (p *Parser) chunkClass(node *tree_sitter.Node, source []byte, baseIndex int, cfg *LanguageConfig) []types.ChunkRecord {
 	var chunks []types.ChunkRecord
 
 	// If node is an export wrapper, find the inner class for tree walking
 	classNode := node
-	if cfg.ExportType != "" && node.Type() == cfg.ExportType {
+	if cfg.ExportType != "" && node.Kind() == cfg.ExportType {
 		if inner := findDeclarationChild(node); inner != nil {
 			classNode = inner
 		}
 	}
 
 	className := extractName(classNode, source)
-	classContent := node.Content(source)
+	classContent := node.Utf8Text(source)
 
 	parentIdx := baseIndex
 	classChunk := types.ChunkRecord{
 		ChunkIndex: baseIndex,
 		SymbolName: className,
 		Kind:       "class",
-		StartLine:  int(node.StartPoint().Row) + 1,
-		EndLine:    int(node.EndPoint().Row) + 1,
+		StartLine:  int(node.StartPosition().Row) + 1,
+		EndLine:    int(node.EndPosition().Row) + 1,
 		Content:    classContent,
 		TokenCount: p.tokens.Count(classContent),
 		Signature:  extractSignature(classNode, source),
@@ -246,17 +246,17 @@ func (p *Parser) chunkClass(node *sitter.Node, source []byte, baseIndex int, cfg
 		if classBody != nil {
 			bodyChildCount := int(classBody.NamedChildCount())
 			for i := 0; i < bodyChildCount; i++ {
-				member := classBody.NamedChild(i)
-				if cfg.ClassBodyTypes[member.Type()] {
+				member := classBody.NamedChild(uint(i))
+				if cfg.ClassBodyTypes[member.Kind()] {
 					methodName := extractName(member, source)
-					methodContent := member.Content(source)
+					methodContent := member.Utf8Text(source)
 					pi := parentIdx
 					methodChunks = append(methodChunks, types.ChunkRecord{
 						ChunkIndex:  baseIndex + 1 + len(methodChunks),
 						SymbolName:  methodName,
 						Kind:        "method",
-						StartLine:   int(member.StartPoint().Row) + 1,
-						EndLine:     int(member.EndPoint().Row) + 1,
+						StartLine:   int(member.StartPosition().Row) + 1,
+						EndLine:     int(member.EndPosition().Row) + 1,
 						Content:     methodContent,
 						TokenCount:  p.tokens.Count(methodContent),
 						Signature:   extractSignature(member, source),
@@ -400,25 +400,25 @@ func buildHeaderChunk(parts []headerFragment, tc *tokenCounter) types.ChunkRecor
 }
 
 // extractName finds the identifier name of a declaration node.
-func extractName(node *sitter.Node, source []byte) string {
+func extractName(node *tree_sitter.Node, source []byte) string {
 	// Try common field names
 	for _, field := range []string{"name", "property", "function"} {
 		if child := node.ChildByFieldName(field); child != nil {
-			t := child.Type()
+			t := child.Kind()
 			if t == "identifier" || t == "type_identifier" ||
 				t == "property_identifier" || t == "package_identifier" ||
 				t == "field_identifier" || t == "word" {
-				return child.Content(source)
+				return child.Utf8Text(source)
 			}
 		}
 	}
 
 	// Walk named children for an identifier
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		child := node.NamedChild(i)
-		t := child.Type()
+		child := node.NamedChild(uint(i))
+		t := child.Kind()
 		if t == "identifier" || t == "type_identifier" || t == "field_identifier" {
-			return child.Content(source)
+			return child.Utf8Text(source)
 		}
 		if t != "comment" && t != "decorator" {
 			name := extractName(child, source)
@@ -431,7 +431,7 @@ func extractName(node *sitter.Node, source []byte) string {
 }
 
 // extractSignature extracts a function/method signature (params + return type).
-func extractSignature(node *sitter.Node, source []byte) string {
+func extractSignature(node *tree_sitter.Node, source []byte) string {
 	params := node.ChildByFieldName("parameters")
 	retType := node.ChildByFieldName("return_type")
 
@@ -439,18 +439,18 @@ func extractSignature(node *sitter.Node, source []byte) string {
 		return ""
 	}
 
-	sig := params.Content(source)
+	sig := params.Utf8Text(source)
 	if retType != nil {
-		sig += ": " + retType.Content(source)
+		sig += ": " + retType.Utf8Text(source)
 	}
 	return sig
 }
 
 // extractGoTypeName extracts the type name from a Go type_declaration via type_spec.
-func extractGoTypeName(node *sitter.Node, source []byte) string {
+func extractGoTypeName(node *tree_sitter.Node, source []byte) string {
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		child := node.NamedChild(i)
-		if child.Type() == "type_spec" {
+		child := node.NamedChild(uint(i))
+		if child.Kind() == "type_spec" {
 			return extractName(child, source)
 		}
 	}
@@ -458,10 +458,10 @@ func extractGoTypeName(node *sitter.Node, source []byte) string {
 }
 
 // findChildByType finds the first named child with the given type.
-func findChildByType(node *sitter.Node, nodeType string) *sitter.Node {
+func findChildByType(node *tree_sitter.Node, nodeType string) *tree_sitter.Node {
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		child := node.NamedChild(i)
-		if child.Type() == nodeType {
+		child := node.NamedChild(uint(i))
+		if child.Kind() == nodeType {
 			return child
 		}
 	}
@@ -469,7 +469,7 @@ func findChildByType(node *sitter.Node, nodeType string) *sitter.Node {
 }
 
 // findDeclarationChild finds the declaration within an export_statement.
-func findDeclarationChild(node *sitter.Node) *sitter.Node {
+func findDeclarationChild(node *tree_sitter.Node) *tree_sitter.Node {
 	declTypes := map[string]bool{
 		"function_declaration":       true,
 		"class_declaration":          true,
@@ -491,8 +491,8 @@ func findDeclarationChild(node *sitter.Node) *sitter.Node {
 	}
 
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		child := node.NamedChild(i)
-		if declTypes[child.Type()] {
+		child := node.NamedChild(uint(i))
+		if declTypes[child.Kind()] {
 			return child
 		}
 	}
@@ -500,7 +500,7 @@ func findDeclarationChild(node *sitter.Node) *sitter.Node {
 }
 
 // buildClassSignatureWithConfig creates a summary of a class using language config.
-func buildClassSignatureWithConfig(node *sitter.Node, source []byte, className string, cfg *LanguageConfig) string {
+func buildClassSignatureWithConfig(node *tree_sitter.Node, source []byte, className string, cfg *LanguageConfig) string {
 	var sb strings.Builder
 
 	if cfg.ClassBodyType == "" {
@@ -525,8 +525,8 @@ func buildClassSignatureWithConfig(node *sitter.Node, source []byte, className s
 
 		bodyChildCount := int(classBody.NamedChildCount())
 		for i := 0; i < bodyChildCount; i++ {
-			member := classBody.NamedChild(i)
-			if cfg.ClassBodyTypes[member.Type()] {
+			member := classBody.NamedChild(uint(i))
+			if cfg.ClassBodyTypes[member.Kind()] {
 				name := extractName(member, source)
 				sig := extractSignature(member, source)
 				sb.WriteString("  ")
