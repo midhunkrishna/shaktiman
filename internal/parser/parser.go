@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	sitter "github.com/smacker/go-tree-sitter"
+	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
@@ -14,14 +14,14 @@ import (
 // Parser wraps a tree-sitter parser and token counter.
 // NOT goroutine-safe — each worker goroutine must own its own instance (IP-2).
 type Parser struct {
-	ts      *sitter.Parser
+	ts      *tree_sitter.Parser
 	tokens  *tokenCounter
 	configs map[string]*LanguageConfig // cached per language
 }
 
 // NewParser creates a fresh Parser supporting all registered languages.
 func NewParser() (*Parser, error) {
-	ts := sitter.NewParser()
+	ts := tree_sitter.NewParser()
 
 	tc, err := newTokenCounter("cl100k_base")
 	if err != nil {
@@ -62,12 +62,13 @@ func (p *Parser) Parse(ctx context.Context, input ParseInput) (*ParseResult, err
 		return nil, fmt.Errorf("get language config for %s: %w", input.Language, err)
 	}
 
-	p.ts.SetLanguage(cfg.Grammar)
-
-	tree, err := p.ts.ParseCtx(ctx, nil, input.Content)
-	if err != nil {
-		return nil, fmt.Errorf("tree-sitter parse %s: %w", input.FilePath, err)
+	if err := p.ts.SetLanguage(cfg.Grammar); err != nil {
+		return nil, fmt.Errorf("set language %s: %w", input.Language, err)
 	}
+
+	// ParseCtx is deprecated in v0.25 (removed in v0.26).
+	// Note: official API arg order is (ctx, text, oldTree) — differs from smacker's (ctx, oldTree, text).
+	tree := p.ts.ParseCtx(ctx, input.Content, nil)
 	if tree == nil {
 		return nil, fmt.Errorf("tree-sitter returned nil tree for %s", input.FilePath)
 	}
