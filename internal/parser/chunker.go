@@ -407,7 +407,7 @@ func extractName(node *tree_sitter.Node, source []byte) string {
 			t := child.Kind()
 			if t == "identifier" || t == "type_identifier" ||
 				t == "property_identifier" || t == "package_identifier" ||
-				t == "field_identifier" || t == "word" {
+				t == "field_identifier" || t == "word" || t == "constant" {
 				return child.Utf8Text(source)
 			}
 		}
@@ -417,7 +417,7 @@ func extractName(node *tree_sitter.Node, source []byte) string {
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		child := node.NamedChild(uint(i))
 		t := child.Kind()
-		if t == "identifier" || t == "type_identifier" || t == "field_identifier" {
+		if t == "identifier" || t == "type_identifier" || t == "field_identifier" || t == "constant" {
 			return child.Utf8Text(source)
 		}
 		if t != "comment" && t != "decorator" {
