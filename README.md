@@ -307,6 +307,7 @@ The `--format` flag is persistent and applies to all subcommands.
 | Rust | `.rs` | tree-sitter-rust |
 | Java | `.java` | tree-sitter-java |
 | Ruby | `.rb`, `.rake`, `.gemspec` | tree-sitter-ruby |
+| ERB | `.erb` | tree-sitter-embedded-template |
 | Shell | `.sh`, `.bash` | tree-sitter-bash |
 
 Adding a new language: implement a `LanguageConfig` in `internal/parser/languages.go` with the AST node type mappings for your language.

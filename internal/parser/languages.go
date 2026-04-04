@@ -5,6 +5,7 @@ import (
 
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 	tree_sitter_bash "github.com/tree-sitter/tree-sitter-bash/bindings/go"
+	tree_sitter_embedded_template "github.com/tree-sitter/tree-sitter-embedded-template/bindings/go"
 	tree_sitter_go "github.com/tree-sitter/tree-sitter-go/bindings/go"
 	tree_sitter_java "github.com/tree-sitter/tree-sitter-java/bindings/go"
 	tree_sitter_javascript "github.com/tree-sitter/tree-sitter-javascript/bindings/go"
@@ -46,6 +47,8 @@ func GetLanguageConfig(lang string) (*LanguageConfig, error) {
 		return javascriptConfig(), nil
 	case "ruby":
 		return rubyConfig(), nil
+	case "erb":
+		return erbConfig(), nil
 	default:
 		return nil, fmt.Errorf("unsupported language: %s", lang)
 	}
@@ -54,7 +57,7 @@ func GetLanguageConfig(lang string) (*LanguageConfig, error) {
 // SupportedLanguage returns true if the language is supported.
 func SupportedLanguage(lang string) bool {
 	switch lang {
-	case "typescript", "python", "go", "rust", "java", "bash", "javascript", "ruby":
+	case "typescript", "python", "go", "rust", "java", "bash", "javascript", "ruby", "erb":
 		return true
 	default:
 		return false
@@ -332,5 +335,27 @@ func rubyConfig() *LanguageConfig {
 			"class":  true,
 			"module": true,
 		},
+	}
+}
+
+func erbConfig() *LanguageConfig {
+	return &LanguageConfig{
+		Name:    "erb",
+		Grammar: tree_sitter.NewLanguage(tree_sitter_embedded_template.Language()),
+		ChunkableTypes: map[string]string{
+			// ERB templates are chunked by their directive types
+			"directive":        "block", // <% code %>
+			"output_directive": "block", // <%= expression %>
+			"template":         "block", // entire template as fallback
+		},
+		SymbolKindMap: map[string]string{
+			// ERB doesn't have traditional symbols like functions/classes
+			// The Ruby code inside directives would need language injection to parse
+		},
+		ClassBodyTypes: map[string]bool{},
+		ImportTypes:    map[string]bool{},
+		ExportType:     "",
+		ClassBodyType:  "",
+		ClassTypes:     map[string]bool{},
 	}
 }

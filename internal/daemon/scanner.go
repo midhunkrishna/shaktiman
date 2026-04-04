@@ -63,6 +63,7 @@ var languageExtensions = map[string]string{
 	".rb":      "ruby",
 	".rake":    "ruby",
 	".gemspec": "ruby",
+	".erb":     "erb",
 }
 
 // LanguageForExt returns the language for a file extension (e.g. ".go" → "go").

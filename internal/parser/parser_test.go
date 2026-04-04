@@ -913,6 +913,7 @@ func TestSupportedLanguage(t *testing.T) {
 		{"bash", true},
 		{"javascript", true},
 		{"ruby", true},
+		{"erb", true},
 		{"", false},
 		{"c++", false},
 		{"csharp", false},
@@ -1546,5 +1547,67 @@ end
 		if !methods[m] {
 			t.Errorf("expected singleton method symbol %q", m)
 		}
+	}
+}
+
+// ── ERB tests ──
+
+func TestParse_ERBTemplate(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`<!DOCTYPE html>
+<html>
+<head>
+  <title><%= @page_title %></title>
+</head>
+<body>
+  <% if current_user %>
+    <h1>Welcome, <%= current_user.name %></h1>
+  <% end %>
+  <% @items.each do |item| %>
+    <p><%= item.name %></p>
+  <% end %>
+</body>
+</html>
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "index.html.erb",
+		Content:  src,
+		Language: "erb",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// ERB files should produce chunks (template content is indexed)
+	if len(result.Chunks) == 0 {
+		t.Error("expected at least one chunk from ERB template")
+	}
+
+	// Verify we can find the template content
+	foundContent := false
+	for _, c := range result.Chunks {
+		if len(c.Content) > 0 {
+			foundContent = true
+			break
+		}
+	}
+	if !foundContent {
+		t.Error("expected chunks to have content")
+	}
+}
+
+func TestParse_ERBSupportedLanguage(t *testing.T) {
+	t.Parallel()
+
+	if !SupportedLanguage("erb") {
+		t.Error("expected erb to be a supported language")
 	}
 }
