@@ -22,7 +22,7 @@ type ScannedFile struct {
 	Mtime       float64 // Unix timestamp
 	Size        int64
 	Language    string
-	Content     []byte  // file content carried from scan to avoid double read; nil after enrichment
+	Content     []byte // file content carried from scan to avoid double read; nil after enrichment
 }
 
 // ScanInput configures a file scanning operation.
@@ -54,12 +54,16 @@ var languageExtensions = map[string]string{
 	".go":      "go",
 	".rs":      "rust",
 	".java":    "java",
-".sh":      "bash",
+	".sh":      "bash",
 	".bash":    "bash",
 	".js":      "javascript",
 	".jsx":     "javascript",
 	".mjs":     "javascript",
 	".cjs":     "javascript",
+	".rb":      "ruby",
+	".rake":    "ruby",
+	".gemspec": "ruby",
+	".erb":     "erb",
 }
 
 // LanguageForExt returns the language for a file extension (e.g. ".go" → "go").
@@ -212,10 +216,10 @@ func ScanRepo(ctx context.Context, input ScanInput) (*ScanResult, error) {
 		}
 
 		sum := sha256.Sum256(content)
-			hash := hex.EncodeToString(sum[:])
+		hash := hex.EncodeToString(sum[:])
 
-			files = append(files, ScannedFile{
-				Path:        relPath,
+		files = append(files, ScannedFile{
+			Path:        relPath,
 			AbsPath:     absPath,
 			ContentHash: hash,
 			Mtime:       float64(info.ModTime().UnixMilli()) / 1000.0,

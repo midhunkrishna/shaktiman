@@ -912,7 +912,8 @@ func TestSupportedLanguage(t *testing.T) {
 		{"groovy", false}, // TODO: dropped pending official tree-sitter-groovy Go bindings
 		{"bash", true},
 		{"javascript", true},
-		{"ruby", false},
+		{"ruby", true},
+		{"erb", true},
 		{"", false},
 		{"c++", false},
 		{"csharp", false},
@@ -1287,9 +1288,9 @@ func TestParse_InvalidLanguageReturnsError(t *testing.T) {
 	defer p.Close()
 
 	_, err = p.Parse(context.Background(), ParseInput{
-		FilePath: "test.rb",
-		Content:  []byte(`puts "hello"`),
-		Language: "ruby",
+		FilePath: "test.swift",
+		Content:  []byte(`print("hello")`),
+		Language: "swift",
 	})
 	if err == nil {
 		t.Fatal("expected error for unsupported language, got nil")
@@ -1418,5 +1419,195 @@ func TestParse_TypeScriptClassSignature(t *testing.T) {
 	}
 	if !found {
 		t.Error("UserService class chunk not found")
+	}
+}
+
+// ── Ruby tests ──
+
+func TestParse_RubyClassWithMethods(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`# frozen_string_literal: true
+
+class UserService
+  def initialize(repo)
+    @repo = repo
+  end
+
+  def create_user(name:, email:)
+    user = User.new(name: name, email: email)
+    @repo.add(user)
+    user
+  end
+
+  def get_user(user_id)
+    @repo.get(user_id)
+  end
+
+  def self.create_admin(repo, name:, email:)
+    user = User.new(name: name, email: email, role: 'admin')
+    repo.add(user)
+    user
+  end
+end
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "service.rb",
+		Content:  src,
+		Language: "ruby",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Check for class
+	foundClass := false
+	for _, s := range result.Symbols {
+		if s.Name == "UserService" && s.Kind == "class" {
+			foundClass = true
+			break
+		}
+	}
+	if !foundClass {
+		t.Error("expected class symbol UserService")
+	}
+
+	// Check for methods
+	methods := map[string]bool{}
+	for _, s := range result.Symbols {
+		if s.Kind == "method" {
+			methods[s.Name] = true
+		}
+	}
+	for _, m := range []string{"initialize", "create_user", "get_user", "create_admin"} {
+		if !methods[m] {
+			t.Errorf("expected method symbol %q", m)
+		}
+	}
+}
+
+func TestParse_RubyModule(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`module Utils
+  MAX_RETRIES = 3
+
+  def self.hash_string(value)
+    Digest::SHA256.hexdigest(value)
+  end
+
+  def self.format_user(user)
+    JSON.generate(user.to_h)
+  end
+end
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "utils.rb",
+		Content:  src,
+		Language: "ruby",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Check for module (treated as class)
+	foundModule := false
+	for _, s := range result.Symbols {
+		if s.Name == "Utils" && s.Kind == "class" {
+			foundModule = true
+			break
+		}
+	}
+	if !foundModule {
+		t.Error("expected module symbol Utils (kind=class)")
+	}
+
+	// Check for singleton methods
+	methods := map[string]bool{}
+	for _, s := range result.Symbols {
+		if s.Kind == "method" {
+			methods[s.Name] = true
+		}
+	}
+	for _, m := range []string{"hash_string", "format_user"} {
+		if !methods[m] {
+			t.Errorf("expected singleton method symbol %q", m)
+		}
+	}
+}
+
+// ── ERB tests ──
+
+func TestParse_ERBTemplate(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`<!DOCTYPE html>
+<html>
+<head>
+  <title><%= @page_title %></title>
+</head>
+<body>
+  <% if current_user %>
+    <h1>Welcome, <%= current_user.name %></h1>
+  <% end %>
+  <% @items.each do |item| %>
+    <p><%= item.name %></p>
+  <% end %>
+</body>
+</html>
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "index.html.erb",
+		Content:  src,
+		Language: "erb",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// ERB files should produce chunks (template content is indexed)
+	if len(result.Chunks) == 0 {
+		t.Error("expected at least one chunk from ERB template")
+	}
+
+	// Verify we can find the template content
+	foundContent := false
+	for _, c := range result.Chunks {
+		if len(c.Content) > 0 {
+			foundContent = true
+			break
+		}
+	}
+	if !foundContent {
+		t.Error("expected chunks to have content")
+	}
+}
+
+func TestParse_ERBSupportedLanguage(t *testing.T) {
+	t.Parallel()
+
+	if !SupportedLanguage("erb") {
+		t.Error("expected erb to be a supported language")
 	}
 }
