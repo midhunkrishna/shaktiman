@@ -5,10 +5,12 @@ import (
 
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 	tree_sitter_bash "github.com/tree-sitter/tree-sitter-bash/bindings/go"
+	tree_sitter_embedded_template "github.com/tree-sitter/tree-sitter-embedded-template/bindings/go"
 	tree_sitter_go "github.com/tree-sitter/tree-sitter-go/bindings/go"
 	tree_sitter_java "github.com/tree-sitter/tree-sitter-java/bindings/go"
 	tree_sitter_javascript "github.com/tree-sitter/tree-sitter-javascript/bindings/go"
 	tree_sitter_python "github.com/tree-sitter/tree-sitter-python/bindings/go"
+	tree_sitter_ruby "github.com/tree-sitter/tree-sitter-ruby/bindings/go"
 	tree_sitter_rust "github.com/tree-sitter/tree-sitter-rust/bindings/go"
 	tree_sitter_typescript "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
 )
@@ -43,6 +45,10 @@ func GetLanguageConfig(lang string) (*LanguageConfig, error) {
 		return bashConfig(), nil
 	case "javascript":
 		return javascriptConfig(), nil
+	case "ruby":
+		return rubyConfig(), nil
+	case "erb":
+		return erbConfig(), nil
 	default:
 		return nil, fmt.Errorf("unsupported language: %s", lang)
 	}
@@ -51,7 +57,7 @@ func GetLanguageConfig(lang string) (*LanguageConfig, error) {
 // SupportedLanguage returns true if the language is supported.
 func SupportedLanguage(lang string) bool {
 	switch lang {
-	case "typescript", "python", "go", "rust", "java", "bash", "javascript":
+	case "typescript", "python", "go", "rust", "java", "bash", "javascript", "ruby", "erb":
 		return true
 	default:
 		return false
@@ -85,7 +91,7 @@ func typescriptConfig() *LanguageConfig {
 			"variable_declaration":       "variable",
 		},
 		ClassBodyTypes: map[string]bool{
-			"method_definition":      true,
+			"method_definition":       true,
 			"public_field_definition": true,
 		},
 		ImportTypes: map[string]bool{
@@ -105,15 +111,15 @@ func pythonConfig() *LanguageConfig {
 		Name:    "python",
 		Grammar: tree_sitter.NewLanguage(tree_sitter_python.Language()),
 		ChunkableTypes: map[string]string{
-			"function_definition":  "function",
-			"class_definition":     "class",
-			"decorated_definition": "", // resolved based on child
-			"import_statement":     "",
+			"function_definition":   "function",
+			"class_definition":      "class",
+			"decorated_definition":  "", // resolved based on child
+			"import_statement":      "",
 			"import_from_statement": "",
 		},
 		SymbolKindMap: map[string]string{
 			"function_definition": "function",
-			"class_definition":   "class",
+			"class_definition":    "class",
 		},
 		ClassBodyTypes: map[string]bool{
 			"function_definition": true,
@@ -295,5 +301,61 @@ func javascriptConfig() *LanguageConfig {
 		ClassTypes: map[string]bool{
 			"class_declaration": true,
 		},
+	}
+}
+
+func rubyConfig() *LanguageConfig {
+	return &LanguageConfig{
+		Name:    "ruby",
+		Grammar: tree_sitter.NewLanguage(tree_sitter_ruby.Language()),
+		ChunkableTypes: map[string]string{
+			"method":           "function",
+			"singleton_method": "function",
+			"class":            "class",
+			"module":           "class",
+			"lambda":           "function",
+		},
+		SymbolKindMap: map[string]string{
+			"method":           "method",
+			"singleton_method": "method",
+			"class":            "class",
+			"module":           "class",
+		},
+		ClassBodyTypes: map[string]bool{
+			"method":           true,
+			"singleton_method": true,
+		},
+		ImportTypes: map[string]bool{
+			// Ruby uses require/require_relative which are method calls, not special nodes.
+			// We don't track them as imports for now.
+		},
+		ExportType:    "", // Ruby has no export wrapper
+		ClassBodyType: "body_statement",
+		ClassTypes: map[string]bool{
+			"class":  true,
+			"module": true,
+		},
+	}
+}
+
+func erbConfig() *LanguageConfig {
+	return &LanguageConfig{
+		Name:    "erb",
+		Grammar: tree_sitter.NewLanguage(tree_sitter_embedded_template.Language()),
+		ChunkableTypes: map[string]string{
+			// ERB templates are chunked by their directive types
+			"directive":        "block", // <% code %>
+			"output_directive": "block", // <%= expression %>
+			"template":         "block", // entire template as fallback
+		},
+		SymbolKindMap: map[string]string{
+			// ERB doesn't have traditional symbols like functions/classes
+			// The Ruby code inside directives would need language injection to parse
+		},
+		ClassBodyTypes: map[string]bool{},
+		ImportTypes:    map[string]bool{},
+		ExportType:     "",
+		ClassBodyType:  "",
+		ClassTypes:     map[string]bool{},
 	}
 }

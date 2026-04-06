@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title><%= @page_title %></title>
+</head>
+<body>
+  <header>
+    <h1>Welcome, <%= current_user.name %></h1>
+    <% if current_user.admin? %>
+      <nav class="admin-nav">
+        <%= link_to "Admin Dashboard", admin_path %>
+      </nav>
+    <% end %>
+  </header>
+
+  <main>
+    <% @posts.each do |post| %>
+      <article class="post">
+        <h2><%= post.title %></h2>
+        <p class="meta">
+          By <%= post.author.name %> on <%= post.created_at.strftime("%B %d, %Y") %>
+        </p>
+        <div class="content">
+          <%= truncate(post.content, length: 200) %>
+        </div>
+        <%= link_to "Read more", post_path(post) %>
+      </article>
+    <% end %>
+  </main>
+
+  <footer>
+    <p>&copy; <%= Time.current.year %> My Application</p>
+  </footer>
+</body>
+</html>
