@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,19 +15,71 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/format"
 	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
+	"github.com/shaktimanai/shaktiman/internal/vector"
 )
 
 // openStore creates a WriterStore using the registry for the given config.
 // The returned closer must be deferred by the caller.
 func openStore(cfg types.Config) (types.WriterStore, func() error, error) {
-	store, _, closer, err := storage.NewMetadataStore(storage.MetadataStoreConfig{
-		Backend:    cfg.DatabaseBackend,
-		SQLitePath: cfg.DBPath,
-	})
+	store, _, closer, err := storage.NewMetadataStore(storage.MetadataStoreConfigFrom(cfg))
 	if err != nil {
 		return nil, nil, err
 	}
 	return store, closer, nil
+}
+
+// openEngine creates a QueryEngine with vector store + embedder when available.
+// Read-only: loads existing embeddings from disk, does not start embed worker.
+// Falls back to keyword-only if embeddings are unavailable.
+func openEngine(cfg types.Config, store types.WriterStore, root string) (*core.QueryEngine, types.VectorStore) {
+	engine := core.NewQueryEngine(store, root)
+
+	if !cfg.EmbedEnabled {
+		return engine, nil
+	}
+
+	vs, err := vector.NewVectorStore(vector.VectorStoreConfigFrom(cfg, store))
+	if err != nil {
+		slog.Warn("vector store unavailable, using keyword search", "err", err)
+		return engine, nil
+	}
+
+	// Load persisted embeddings (brute_force/hnsw use disk files)
+	if p, ok := vs.(types.VectorPersister); ok {
+		if err := p.LoadFromDisk(embeddingsPath(cfg)); err != nil {
+			slog.Info("no embeddings on disk, using keyword search", "path", embeddingsPath(cfg))
+			return engine, vs
+		}
+	}
+
+	client := vector.NewOllamaClient(vector.OllamaClientInput{
+		BaseURL: cfg.OllamaURL,
+		Model:   cfg.EmbeddingModel,
+	})
+
+	// Check Ollama availability for query embedding
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if !client.Healthy(ctx) {
+		slog.Warn("Ollama not available, falling back to keyword search", "url", cfg.OllamaURL)
+		return engine, vs
+	}
+
+	engine.SetVectorStore(vs, client, func() bool { return true })
+	return engine, vs
+}
+
+// embeddingsPath returns the persistence file path, matching daemon.embeddingsPath.
+func embeddingsPath(cfg types.Config) string {
+	if cfg.VectorBackend == "hnsw" {
+		base := cfg.EmbeddingsPath
+		ext := filepath.Ext(base)
+		if ext != "" {
+			return base[:len(base)-len(ext)] + ".hnsw"
+		}
+		return base + ".hnsw"
+	}
+	return cfg.EmbeddingsPath
 }
 
 func searchCmd() *cobra.Command {
@@ -36,6 +90,7 @@ func searchCmd() *cobra.Command {
 		minScore   float64
 		explain    bool
 		path       string
+		scope      string
 	)
 	cmd := &cobra.Command{
 		Use:   "search <query>",
@@ -53,7 +108,7 @@ func searchCmd() *cobra.Command {
 				return fmt.Errorf("open store: %w", err)
 			}
 			defer closer()
-			engine := core.NewQueryEngine(store, root)
+			engine, _ := openEngine(cfg, store, root)
 
 			if maxResults == 0 {
 				maxResults = cfg.SearchMaxResults
@@ -65,6 +120,8 @@ func searchCmd() *cobra.Command {
 				mode = cfg.SearchDefaultMode
 			}
 
+			filter := core.ScopeToFilter(scope)
+
 			// Over-fetch when path filter is set to compensate for post-filtering.
 			engineMax := maxResults
 			if path != "" {
@@ -75,10 +132,13 @@ func searchCmd() *cobra.Command {
 			}
 
 			results, err := engine.Search(context.Background(), core.SearchInput{
-				Query:      args[0],
-				MaxResults: engineMax,
-				Mode:       mode,
-				MinScore:   minScore,
+				Query:        args[0],
+				MaxResults:   engineMax,
+				Explain:      explain,
+				Mode:         mode,
+				MinScore:     minScore,
+				ExcludeTests: filter.ExcludeTests,
+				TestOnly:     filter.TestOnly,
 			})
 			if err != nil {
 				return fmt.Errorf("search: %w", err)
@@ -121,6 +181,7 @@ func searchCmd() *cobra.Command {
 	cmd.Flags().Float64Var(&minScore, "min-score", 0, "Minimum relevance score (0 = use config default)")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Include score breakdown (text format only)")
 	cmd.Flags().StringVar(&path, "path", "", "Filter results to file or directory prefix")
+	cmd.Flags().StringVar(&scope, "scope", "impl", `Result scope: "impl", "test", or "all"`)
 	return cmd
 }
 
@@ -128,6 +189,7 @@ func contextCmd() *cobra.Command {
 	var (
 		root   string
 		budget int
+		scope  string
 	)
 	cmd := &cobra.Command{
 		Use:   "context <query>",
@@ -145,15 +207,19 @@ func contextCmd() *cobra.Command {
 				return fmt.Errorf("open store: %w", err)
 			}
 			defer closer()
-			engine := core.NewQueryEngine(store, root)
+			engine, _ := openEngine(cfg, store, root)
 
 			if budget == 0 {
 				budget = cfg.ContextBudgetTokens
 			}
 
+			filter := core.ScopeToFilter(scope)
+
 			pkg, err := engine.Context(context.Background(), core.ContextInput{
 				Query:        args[0],
 				BudgetTokens: budget,
+				ExcludeTests: filter.ExcludeTests,
+				TestOnly:     filter.TestOnly,
 			})
 			if err != nil {
 				return fmt.Errorf("context: %w", err)
@@ -174,13 +240,15 @@ func contextCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&root, "root", ".", "Project root directory")
 	cmd.Flags().IntVar(&budget, "budget", 0, "Token budget (0 = use config default)")
+	cmd.Flags().StringVar(&scope, "scope", "impl", `Result scope: "impl", "test", or "all"`)
 	return cmd
 }
 
 func symbolsCmd() *cobra.Command {
 	var (
-		root string
-		kind string
+		root  string
+		kind  string
+		scope string
 	)
 	cmd := &cobra.Command{
 		Use:   "symbols <name>",
@@ -198,35 +266,33 @@ func symbolsCmd() *cobra.Command {
 				return fmt.Errorf("open store: %w", err)
 			}
 			defer closer()
-			ctx := context.Background()
 
-			syms, err := store.GetSymbolByName(ctx, args[0])
+			filter := core.ScopeToFilter(scope)
+			result, err := core.LookupSymbols(context.Background(), store, args[0], kind, filter)
 			if err != nil {
 				return fmt.Errorf("symbol lookup: %w", err)
 			}
 
-			var results []format.SymbolResult
-			for _, s := range syms {
-				if kind != "" && s.Kind != kind {
-					continue
-				}
-				path, _ := store.GetFilePathByID(ctx, s.FileID)
-				results = append(results, format.SymbolResult{
-					Name:       s.Name,
-					Kind:       s.Kind,
-					Line:       s.Line,
-					Signature:  s.Signature,
-					Visibility: s.Visibility,
-					FilePath:   path,
-				})
-			}
-
 			if outputFormat == "text" {
-				fmt.Print(format.Symbols(results))
+				fmt.Print(format.Symbols(result.Definitions))
 				return nil
 			}
 
-			data, err := json.MarshalIndent(results, "", "  ")
+			// Return enriched response when pending_edges fallback triggered
+			if len(result.ReferencedBy) > 0 {
+				data, err := json.MarshalIndent(format.SymbolsWithRefs{
+					Definitions:  result.Definitions,
+					ReferencedBy: result.ReferencedBy,
+					Note:         result.Note,
+				}, "", "  ")
+				if err != nil {
+					return fmt.Errorf("marshal: %w", err)
+				}
+				fmt.Println(string(data))
+				return nil
+			}
+
+			data, err := json.MarshalIndent(result.Definitions, "", "  ")
 			if err != nil {
 				return fmt.Errorf("marshal: %w", err)
 			}
@@ -236,6 +302,7 @@ func symbolsCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&root, "root", ".", "Project root directory")
 	cmd.Flags().StringVar(&kind, "kind", "", "Filter by symbol kind (function, class, method, type, interface, variable)")
+	cmd.Flags().StringVar(&scope, "scope", "impl", `Result scope: "impl", "test", or "all"`)
 	return cmd
 }
 
@@ -244,6 +311,7 @@ func depsCmd() *cobra.Command {
 		root      string
 		direction string
 		depth     int
+		scope     string
 	)
 	cmd := &cobra.Command{
 		Use:   "deps <symbol>",
@@ -261,7 +329,6 @@ func depsCmd() *cobra.Command {
 				return fmt.Errorf("open store: %w", err)
 			}
 			defer closer()
-			ctx := context.Background()
 
 			dir := direction
 			switch dir {
@@ -275,34 +342,10 @@ func depsCmd() *cobra.Command {
 				return fmt.Errorf("direction must be callers, callees, or both")
 			}
 
-			syms, err := store.GetSymbolByName(ctx, args[0])
-			if err != nil || len(syms) == 0 {
-				if outputFormat == "text" {
-					fmt.Print(format.Dependencies(nil))
-				} else {
-					fmt.Println("[]")
-				}
-				return nil
-			}
-
-			neighborIDs, err := store.Neighbors(ctx, syms[0].ID, depth, dir)
+			filter := core.ScopeToFilter(scope)
+			results, err := core.LookupDependencies(context.Background(), store, args[0], dir, depth, filter)
 			if err != nil {
-				return fmt.Errorf("graph query: %w", err)
-			}
-
-			var results []format.DepResult
-			for _, nID := range neighborIDs {
-				sym, err := store.GetSymbolByID(ctx, nID)
-				if err != nil || sym == nil {
-					continue
-				}
-				path, _ := store.GetFilePathByID(ctx, sym.FileID)
-				results = append(results, format.DepResult{
-					Name:     sym.Name,
-					Kind:     sym.Kind,
-					FilePath: path,
-					Line:     sym.Line,
-				})
+				return fmt.Errorf("dependency lookup: %w", err)
 			}
 
 			if outputFormat == "text" {
@@ -321,6 +364,7 @@ func depsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&root, "root", ".", "Project root directory")
 	cmd.Flags().StringVar(&direction, "direction", "both", "Direction: callers, callees, or both")
 	cmd.Flags().IntVar(&depth, "depth", 2, "BFS depth (1-5)")
+	cmd.Flags().StringVar(&scope, "scope", "impl", `Result scope: "impl", "test", or "all"`)
 	return cmd
 }
 
@@ -329,6 +373,7 @@ func diffCmd() *cobra.Command {
 		root  string
 		since string
 		limit int
+		scope string
 	)
 	cmd := &cobra.Command{
 		Use:   "diff",
@@ -345,7 +390,6 @@ func diffCmd() *cobra.Command {
 				return fmt.Errorf("open store: %w", err)
 			}
 			defer closer()
-			ctx := context.Background()
 
 			duration, err := time.ParseDuration(since)
 			if err != nil {
@@ -355,31 +399,12 @@ func diffCmd() *cobra.Command {
 				duration = 720 * time.Hour
 			}
 
+			filter := core.ScopeToFilter(scope)
 			sinceTime := time.Now().Add(-duration)
-			diffs, err := store.GetRecentDiffs(ctx, types.RecentDiffsInput{
-				Since: sinceTime,
-				Limit: limit,
-			})
+
+			results, err := core.LookupDiffs(context.Background(), store, sinceTime, limit, filter)
 			if err != nil {
 				return fmt.Errorf("diff query: %w", err)
-			}
-
-			var results []format.DiffResult
-			for _, d := range diffs {
-				path, _ := store.GetFilePathByID(ctx, d.FileID)
-				dr := format.DiffResult{
-					FileID:       d.FileID,
-					FilePath:     path,
-					ChangeType:   d.ChangeType,
-					LinesAdded:   d.LinesAdded,
-					LinesRemoved: d.LinesRemoved,
-					Timestamp:    d.Timestamp,
-				}
-				dsyms, _ := store.GetDiffSymbols(ctx, d.ID)
-				for _, ds := range dsyms {
-					dr.Symbols = append(dr.Symbols, ds.SymbolName+" ("+ds.ChangeType+")")
-				}
-				results = append(results, dr)
 			}
 
 			if outputFormat == "text" {
@@ -398,6 +423,7 @@ func diffCmd() *cobra.Command {
 	cmd.Flags().StringVar(&root, "root", ".", "Project root directory")
 	cmd.Flags().StringVar(&since, "since", "24h", "Time window (e.g. 24h, 1h, 30m)")
 	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum diffs to return")
+	cmd.Flags().StringVar(&scope, "scope", "impl", `Result scope: "impl", "test", or "all"`)
 	return cmd
 }
 
@@ -418,17 +444,67 @@ func enrichmentStatusCmd() *cobra.Command {
 				return fmt.Errorf("open store: %w", err)
 			}
 			defer closer()
-			stats, err := store.GetIndexStats(context.Background())
+
+			_, vs := openEngine(cfg, store, root)
+
+			result, err := core.GetEnrichmentStatus(context.Background(), core.EnrichmentStatusInput{
+				Store:       store,
+				VectorStore: vs,
+			})
 			if err != nil {
 				return fmt.Errorf("stats: %w", err)
 			}
 
 			if outputFormat == "text" {
+				stats, _ := store.GetIndexStats(context.Background())
 				fmt.Print(format.IndexStats(stats))
 				return nil
 			}
 
-			data, err := json.MarshalIndent(stats, "", "  ")
+			data, err := json.MarshalIndent(result, "", "  ")
+			if err != nil {
+				return fmt.Errorf("marshal: %w", err)
+			}
+			fmt.Println(string(data))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&root, "root", ".", "Project root directory")
+	return cmd
+}
+
+func summaryCmd() *cobra.Command {
+	var root string
+	cmd := &cobra.Command{
+		Use:   "summary",
+		Short: "Show codebase summary: files, languages, symbols, embedding %",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := types.DefaultConfig(root)
+			cfg, err := types.LoadConfigFromFile(cfg)
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+
+			store, closer, err := openStore(cfg)
+			if err != nil {
+				return fmt.Errorf("open store: %w", err)
+			}
+			defer closer()
+
+			_, vs := openEngine(cfg, store, root)
+
+			result, err := core.GetSummary(context.Background(), store, vs)
+			if err != nil {
+				return fmt.Errorf("summary: %w", err)
+			}
+
+			if outputFormat == "text" {
+				stats, _ := store.GetIndexStats(context.Background())
+				fmt.Print(format.IndexStats(stats))
+				return nil
+			}
+
+			data, err := json.MarshalIndent(result, "", "  ")
 			if err != nil {
 				return fmt.Errorf("marshal: %w", err)
 			}

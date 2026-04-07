@@ -198,6 +198,8 @@ func processWriteJob(ctx context.Context, store types.WriterStore, logger *slog.
 			return nil, fmt.Errorf("delete file %s: %w", job.FilePath, err)
 		}
 		return staleChunkIDs, nil
+	case types.WriteJobSync:
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("unknown write job type: %d", job.Type)
 	}

@@ -48,6 +48,7 @@ func main() {
 	rootCmd.AddCommand(depsCmd())
 	rootCmd.AddCommand(diffCmd())
 	rootCmd.AddCommand(enrichmentStatusCmd())
+	rootCmd.AddCommand(summaryCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -243,6 +244,10 @@ func statusCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectRoot := args[0]
 			cfg := types.DefaultConfig(projectRoot)
+			cfg, err := types.LoadConfigFromFile(cfg)
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
 
 			store, closer, err := openStore(cfg)
 			if err != nil {

@@ -345,3 +345,88 @@ func TestEnrichmentStatusCmd_Text(t *testing.T) {
 	}
 }
 
+func TestSearchCmd_ScopeTest(t *testing.T) {
+	dir := seedProject(t)
+	outputFormat = "json"
+	cmd := searchCmd()
+	cmd.SetArgs([]string{"--root", dir, "--scope", "test", "Hello"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("searchCmd --scope test: %v", err)
+	}
+}
+
+func TestSearchCmd_ScopeAll(t *testing.T) {
+	dir := seedProject(t)
+	outputFormat = "json"
+	cmd := searchCmd()
+	cmd.SetArgs([]string{"--root", dir, "--scope", "all", "Hello"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("searchCmd --scope all: %v", err)
+	}
+}
+
+func TestSymbolsCmd_ScopeTest(t *testing.T) {
+	dir := seedProject(t)
+	outputFormat = "json"
+	cmd := symbolsCmd()
+	cmd.SetArgs([]string{"--root", dir, "--scope", "test", "Hello"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("symbolsCmd --scope test: %v", err)
+	}
+}
+
+func TestDepsCmd_ScopeImpl(t *testing.T) {
+	dir := seedProject(t)
+	outputFormat = "json"
+	cmd := depsCmd()
+	cmd.SetArgs([]string{"--root", dir, "--direction", "callers", "--scope", "impl", "Hello"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("depsCmd --scope impl: %v", err)
+	}
+}
+
+func TestDiffCmd_ScopeAll(t *testing.T) {
+	dir := seedProject(t)
+	outputFormat = "json"
+	cmd := diffCmd()
+	cmd.SetArgs([]string{"--root", dir, "--since", "1h", "--scope", "all"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("diffCmd --scope all: %v", err)
+	}
+}
+
+func TestSummaryCmd_JSON(t *testing.T) {
+	dir := seedProject(t)
+	outputFormat = "json"
+	cmd := summaryCmd()
+	cmd.SetArgs([]string{"--root", dir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("summaryCmd: %v", err)
+	}
+}
+
+func TestSummaryCmd_Text(t *testing.T) {
+	dir := seedProject(t)
+	outputFormat = "text"
+	cmd := summaryCmd()
+	cmd.SetArgs([]string{"--root", dir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("summaryCmd text: %v", err)
+	}
+}
+
+func TestOpenEngine_NoEmbeddings(t *testing.T) {
+	dir := seedProject(t)
+	cfg := types.DefaultConfig(dir)
+	store, closer, err := openStore(cfg)
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	defer closer()
+
+	engine, _ := openEngine(cfg, store, dir)
+	if engine == nil {
+		t.Fatal("expected non-nil engine even without embeddings")
+	}
+}
+
