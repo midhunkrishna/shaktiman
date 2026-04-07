@@ -352,10 +352,10 @@ func (s *PgStore) KeywordSearch(ctx context.Context, query string, limit int) ([
 	}
 
 	rows, err := s.query(ctx, `
-		SELECT id, ts_rank(content_tsv, to_tsquery('simple', $1)) AS rank
+		SELECT id, -ts_rank(content_tsv, to_tsquery('simple', $1)) AS rank
 		FROM chunks
 		WHERE content_tsv @@ to_tsquery('simple', $1)
-		ORDER BY rank DESC
+		ORDER BY rank
 		LIMIT $2`, tsQuery, limit)
 	if err != nil {
 		return nil, fmt.Errorf("FTS search %q: %w", query, err)

@@ -911,3 +911,35 @@ func TestPostgres_RegistrationFactory(t *testing.T) {
 		t.Fatalf("UpsertFile via registry: %v", err)
 	}
 }
+
+func TestKeywordSearch_RankIsNegative(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	fileID, err := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "hello.go", ContentHash: "h1", Mtime: 1.0,
+		Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	_, err = store.InsertChunks(ctx, fileID, []types.ChunkRecord{
+		{ChunkIndex: 0, Kind: "function", StartLine: 1, EndLine: 10,
+			Content: "func Hello() string { return \"hello world\" }", TokenCount: 10, ParseQuality: "full"},
+	})
+	if err != nil {
+		t.Fatalf("InsertChunks: %v", err)
+	}
+
+	results, err := store.KeywordSearch(ctx, "Hello", 10)
+	if err != nil {
+		t.Fatalf("KeywordSearch: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one FTS result")
+	}
+	if results[0].Rank >= 0 {
+		t.Errorf("FTSResult.Rank must be negative (got %f); positive ranks break normalizeBM25", results[0].Rank)
+	}
+}

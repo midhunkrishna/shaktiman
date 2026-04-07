@@ -397,22 +397,14 @@ func TestEnrichFile_UnreadableFile(t *testing.T) {
 	}
 }
 
-// waitForWriter submits a sync marker to the writer and waits for it,
+// waitForWriter submits a sync job to the writer and waits for it,
 // ensuring all preceding jobs are processed. Same pattern as IndexAll.
 func waitForWriter(t *testing.T, wm *WriterManager) {
 	t.Helper()
 	done := make(chan error, 1)
 	if err := wm.Submit(types.WriteJob{
-		Type: types.WriteJobEnrichment,
-		File: &types.FileRecord{
-			Path:            "__test_sync__",
-			ContentHash:     "sync",
-			EmbeddingStatus: "pending",
-			ParseQuality:    "full",
-		},
-		FilePath:  "__test_sync__",
-		Timestamp: time.Now(),
-		Done:      done,
+		Type: types.WriteJobSync,
+		Done: done,
 	}); err != nil {
 		t.Fatalf("submit sync: %v", err)
 	}
@@ -532,5 +524,45 @@ func TestFilterChanged_NonBatchFallback(t *testing.T) {
 	}
 	if paths["a.go"] {
 		t.Error("a.go should NOT be in changed set (hash unchanged)")
+	}
+}
+
+func TestIndexAll_NoSyncMarkerLeftBehind(t *testing.T) {
+	t.Parallel()
+
+	store := testutil.NewTestWriterStore(t)
+	wm := NewWriterManager(store, 100, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	go wm.Run(ctx)
+	defer func() {
+		cancel()
+		<-wm.Done()
+	}()
+
+	pipeline := NewEnrichmentPipeline(store, wm, 1, nil)
+
+	dir := t.TempDir()
+	goFile := filepath.Join(dir, "main.go")
+	os.WriteFile(goFile, []byte("package main\n\nfunc Main() {}\n"), 0o644)
+
+	scanResult, err := ScanRepo(context.Background(), ScanInput{ProjectRoot: dir})
+	if err != nil {
+		t.Fatalf("ScanRepo: %v", err)
+	}
+
+	if err := pipeline.IndexAll(context.Background(), IndexAllInput{
+		ProjectRoot: dir,
+		Files:       scanResult.Files,
+	}); err != nil {
+		t.Fatalf("IndexAll: %v", err)
+	}
+
+	// No __sync_marker__ record should exist in the database.
+	f, err := store.GetFileByPath(context.Background(), "__sync_marker__")
+	if err != nil {
+		t.Fatalf("GetFileByPath: %v", err)
+	}
+	if f != nil {
+		t.Error("IndexAll must not leave a __sync_marker__ record in the database")
 	}
 }

@@ -148,34 +148,18 @@ func (ep *EnrichmentPipeline) IndexAll(ctx context.Context, input IndexAllInput)
 	wg.Wait()
 	ep.writer.RemoveProducer()
 
-	// Wait for all writes to complete by submitting a sync job
+	// Wait for all writes to complete by submitting a no-op sync job.
+	// WriteJobSync touches no database, so no cleanup delete is needed
+	// and there is no race with callers that cancel the writer context
+	// immediately after IndexAll returns (e.g. IndexProject).
 	done := make(chan error, 1)
 	if err := ep.writer.Submit(types.WriteJob{
-		Type: types.WriteJobEnrichment,
-		File: &types.FileRecord{
-			Path:            "__sync_marker__",
-			ContentHash:     "sync",
-			EmbeddingStatus: "pending",
-			ParseQuality:    "full",
-		},
-		FilePath:  "__sync_marker__",
-		Timestamp: time.Now(),
-		Done:      done,
+		Type: types.WriteJobSync,
+		Done: done,
 	}); err != nil {
-		ep.logger.Warn("submit sync marker failed", "err", err)
+		ep.logger.Warn("submit sync failed", "err", err)
 	} else {
 		<-done
-	}
-
-	// Clean up sync marker
-	if ep.writer.AddProducer() {
-		if err := ep.writer.Submit(types.WriteJob{
-			Type:     types.WriteJobFileDelete,
-			FilePath: "__sync_marker__",
-		}); err != nil {
-			ep.logger.Warn("submit sync marker cleanup failed", "err", err)
-		}
-		ep.writer.RemoveProducer()
 	}
 
 	elapsed := time.Since(startTime)

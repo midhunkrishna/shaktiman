@@ -56,17 +56,6 @@ For exact strings or regex, use Grep.`),
 	)
 }
 
-// scopeToFilter converts a scope string ("impl", "test", "all") to core.TestFilter flags.
-func scopeToFilter(scope string) (excludeTests, testOnly bool) {
-	switch scope {
-	case "test":
-		return false, true
-	case "all":
-		return false, false
-	default: // "impl"
-		return true, false
-	}
-}
 
 // searchHandler returns an MCP tool handler for the search tool.
 func searchHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
@@ -98,8 +87,7 @@ func searchHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 
 		explain := req.GetBool("explain", false)
 		pathFilter := req.GetString("path", "")
-		scope := req.GetString("scope", "impl")
-		excludeTests, testOnly := scopeToFilter(scope)
+		filter := core.ScopeToFilter(req.GetString("scope", "impl"))
 
 		// Over-fetch when path or scope filter is set to compensate for post-filtering.
 		engineMax := maxResults
@@ -115,8 +103,8 @@ func searchHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 			MaxResults:   engineMax,
 			Explain:      explain,
 			MinScore:     minScore,
-			ExcludeTests: excludeTests,
-			TestOnly:     testOnly,
+			ExcludeTests: filter.ExcludeTests,
+			TestOnly:     filter.TestOnly,
 		})
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("search failed: ", err)), nil
@@ -190,14 +178,13 @@ func contextHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 			return mcpsdk.NewToolResultError("budget_tokens must be between 256 and 32768"), nil
 		}
 
-		scope := req.GetString("scope", "impl")
-		excludeTests, testOnly := scopeToFilter(scope)
+		filter := core.ScopeToFilter(req.GetString("scope", "impl"))
 
 		pkg, err := engine.Context(ctx, core.ContextInput{
 			Query:        query,
 			BudgetTokens: budget,
-			ExcludeTests: excludeTests,
-			TestOnly:     testOnly,
+			ExcludeTests: filter.ExcludeTests,
+			TestOnly:     filter.TestOnly,
 		})
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("context assembly failed: ", err)), nil
@@ -245,98 +232,32 @@ func symbolsHandler(store types.WriterStore) handlerFunc {
 			return mcpsdk.NewToolResultError("missing required parameter: name"), nil
 		}
 
-		syms, err := store.GetSymbolByName(ctx, name)
+		kind := req.GetString("kind", "")
+		filter := core.ScopeToFilter(req.GetString("scope", "impl"))
+
+		result, err := core.LookupSymbols(ctx, store, name, kind, filter)
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("symbol lookup failed: ", err)), nil
 		}
 
-		kindFilter := req.GetString("kind", "")
-		scope := req.GetString("scope", "impl")
-		excludeTests, testOnly := scopeToFilter(scope)
-
-		var results []format.SymbolResult
-		for _, s := range syms {
-			if kindFilter != "" && s.Kind != kindFilter {
-				continue
+		if len(result.ReferencedBy) > 0 {
+			enriched := format.SymbolsWithRefs{
+				Definitions:  result.Definitions,
+				ReferencedBy: result.ReferencedBy,
+				Note:         result.Note,
 			}
-			if excludeTests || testOnly {
-				isTest, err := store.GetFileIsTestByID(ctx, s.FileID)
-				if err != nil {
-					continue
-				}
-				if excludeTests && isTest {
-					continue
-				}
-				if testOnly && !isTest {
-					continue
-				}
+			data, err := json.Marshal(enriched)
+			if err != nil {
+				return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
 			}
-			path, _ := store.GetFilePathByID(ctx, s.FileID)
-			results = append(results, format.SymbolResult{
-				Name:       s.Name,
-				Kind:       s.Kind,
-				Line:       s.Line,
-				Signature:  s.Signature,
-				Visibility: s.Visibility,
-				FilePath:   path,
-			})
+			return withResultCount(mcpsdk.NewToolResultText(string(data)), len(result.ReferencedBy)), nil
 		}
 
-		// When the symbol genuinely doesn't exist in the project (not just
-		// filtered by kind), check pending_edges for references. External
-		// types (e.g. JDK's ExecutorService) are never in the symbols table
-		// but may be referenced as imports by project symbols.
-		if len(results) == 0 && len(syms) == 0 {
-			callers, err := store.PendingEdgeCallersWithKind(ctx, name)
-			if err == nil && len(callers) > 0 {
-				var refs []format.SymbolRef
-				for _, c := range callers {
-					sym, err := store.GetSymbolByID(ctx, c.SrcSymbolID)
-					if err != nil || sym == nil {
-						continue
-					}
-					if excludeTests || testOnly {
-						isTest, err := store.GetFileIsTestByID(ctx, sym.FileID)
-						if err != nil {
-							continue
-						}
-						if excludeTests && isTest {
-							continue
-						}
-						if testOnly && !isTest {
-							continue
-						}
-					}
-					path, _ := store.GetFilePathByID(ctx, sym.FileID)
-					refs = append(refs, format.SymbolRef{
-						Symbol:        sym.Name,
-						Kind:          sym.Kind,
-						FilePath:      path,
-						Line:          sym.Line,
-						Via:           c.Kind,
-						QualifiedName: c.DstQualifiedName,
-					})
-				}
-				if len(refs) > 0 {
-					enriched := format.SymbolsWithRefs{
-						Definitions:  results,
-						ReferencedBy: refs,
-						Note:         fmt.Sprintf("No definitions for %q in project. Referenced by %d symbol(s). Use 'dependencies direction:callers' or 'search' for more.", name, len(refs)),
-					}
-					data, err := json.Marshal(enriched)
-					if err != nil {
-						return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
-					}
-					return withResultCount(mcpsdk.NewToolResultText(string(data)), len(refs)), nil
-				}
-			}
-		}
-
-		data, err := json.Marshal(results)
+		data, err := json.Marshal(result.Definitions)
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
 		}
-		return withResultCount(mcpsdk.NewToolResultText(string(data)), len(results)), nil
+		return withResultCount(mcpsdk.NewToolResultText(string(data)), len(result.Definitions)), nil
 	}
 }
 
@@ -391,65 +312,11 @@ func dependenciesHandler(store types.WriterStore) handlerFunc {
 			return mcpsdk.NewToolResultError("depth must be between 1 and 5"), nil
 		}
 
-		// Find the symbol
-		syms, err := store.GetSymbolByName(ctx, symbolName)
+		filter := core.ScopeToFilter(req.GetString("scope", "impl"))
+
+		results, err := core.LookupDependencies(ctx, store, symbolName, direction, depth, filter)
 		if err != nil {
-			return mcpsdk.NewToolResultError(sanitizeError("symbol lookup failed: ", err)), nil
-		}
-
-		var neighborIDs []int64
-		if len(syms) > 0 {
-			symbolID := syms[0].ID
-			neighborIDs, err = store.Neighbors(ctx, symbolID, depth, direction)
-			if err != nil {
-				return mcpsdk.NewToolResultError(sanitizeError("graph query failed: ", err)), nil
-			}
-		}
-
-		// When no resolved neighbors found and direction includes incoming,
-		// also check pending_edges. This covers two cases:
-		// 1. Symbol not defined in project (external type like ExecutorService)
-		// 2. Symbol exists but edges are still pending (incremental indexing)
-		if len(neighborIDs) == 0 && (direction == "incoming" || direction == "both") {
-			pendingIDs, err := store.PendingEdgeCallers(ctx, symbolName)
-			if err != nil {
-				return mcpsdk.NewToolResultError(sanitizeError("pending edge lookup failed: ", err)), nil
-			}
-			neighborIDs = append(neighborIDs, pendingIDs...)
-		}
-
-		if len(neighborIDs) == 0 {
-			return withResultCount(mcpsdk.NewToolResultText("[]"), 0), nil
-		}
-
-		scope := req.GetString("scope", "impl")
-		excludeTests, testOnly := scopeToFilter(scope)
-
-		var results []format.DepResult
-		for _, nID := range neighborIDs {
-			sym, err := store.GetSymbolByID(ctx, nID)
-			if err != nil || sym == nil {
-				continue
-			}
-			if excludeTests || testOnly {
-				isTest, err := store.GetFileIsTestByID(ctx, sym.FileID)
-				if err != nil {
-					continue
-				}
-				if excludeTests && isTest {
-					continue
-				}
-				if testOnly && !isTest {
-					continue
-				}
-			}
-			path, _ := store.GetFilePathByID(ctx, sym.FileID)
-			results = append(results, format.DepResult{
-				Name:     sym.Name,
-				Kind:     sym.Kind,
-				FilePath: path,
-				Line:     sym.Line,
-			})
+			return mcpsdk.NewToolResultError(sanitizeError("dependency lookup failed: ", err)), nil
 		}
 
 		data, err := json.Marshal(results)
@@ -501,48 +368,12 @@ func diffHandler(store types.WriterStore) handlerFunc {
 			limit = 50
 		}
 
+		filter := core.ScopeToFilter(req.GetString("scope", "impl"))
 		since := time.Now().Add(-duration)
-		diffs, err := store.GetRecentDiffs(ctx, types.RecentDiffsInput{
-			Since: since,
-			Limit: limit,
-		})
+
+		results, err := core.LookupDiffs(ctx, store, since, limit, filter)
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("diff query failed: ", err)), nil
-		}
-
-		scope := req.GetString("scope", "impl")
-		excludeTests, testOnly := scopeToFilter(scope)
-
-		var results []format.DiffResult
-		for _, d := range diffs {
-			if excludeTests || testOnly {
-				isTest, err := store.GetFileIsTestByID(ctx, d.FileID)
-				if err != nil {
-					continue
-				}
-				if excludeTests && isTest {
-					continue
-				}
-				if testOnly && !isTest {
-					continue
-				}
-			}
-			path, _ := store.GetFilePathByID(ctx, d.FileID)
-			dr := format.DiffResult{
-				FileID:       d.FileID,
-				FilePath:     path,
-				ChangeType:   d.ChangeType,
-				LinesAdded:   d.LinesAdded,
-				LinesRemoved: d.LinesRemoved,
-				Timestamp:    d.Timestamp,
-			}
-
-			// Get affected symbols
-			dsyms, _ := store.GetDiffSymbols(ctx, d.ID)
-			for _, ds := range dsyms {
-				dr.Symbols = append(dr.Symbols, ds.SymbolName+" ("+ds.ChangeType+")")
-			}
-			results = append(results, dr)
 		}
 
 		data, err := json.Marshal(results)
@@ -569,55 +400,32 @@ Returns chunk counts, embedding percentage, and circuit breaker state.`),
 
 func enrichmentStatusHandler(store types.WriterStore, vs types.VectorStore, ew *vector.EmbedWorker) handlerFunc {
 	return func(ctx context.Context, _ mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-		stats, err := store.GetIndexStats(ctx)
-		if err != nil {
-			return mcpsdk.NewToolResultError(sanitizeError("stats query failed: ", err)), nil
-		}
-
-		vectorCount := 0
-		if vs != nil {
-			vectorCount, _ = vs.Count(ctx)
-		}
-
-		readiness := 0.0
-		if stats.TotalChunks > 0 {
-			readiness = float64(vectorCount) / float64(stats.TotalChunks)
-		}
-
-		cbState := "disabled"
-		pending := 0
+		pendingFn := func() int { return 0 }
+		circuitFn := func() string { return "disabled" }
 		if ew != nil {
-			pending = ew.Pending()
-			switch ew.CircuitBreaker().State() {
-			case vector.StateClosed:
-				cbState = "closed"
-			case vector.StateOpen:
-				cbState = "open"
-			case vector.StateHalfOpen:
-				cbState = "half_open"
-			case vector.StateDisabled:
-				cbState = "disabled"
+			pendingFn = ew.Pending
+			circuitFn = func() string {
+				switch ew.CircuitBreaker().State() {
+				case vector.StateClosed:
+					return "closed"
+				case vector.StateOpen:
+					return "open"
+				case vector.StateHalfOpen:
+					return "half_open"
+				default:
+					return "disabled"
+				}
 			}
 		}
 
-		type statusResult struct {
-			TotalChunks    int     `json:"total_chunks"`
-			EmbeddedChunks int     `json:"embedded_chunks"`
-			EmbeddingPct   float64 `json:"embedding_pct"`
-			PendingJobs    int     `json:"pending_jobs"`
-			CircuitState   string  `json:"circuit_state"`
-			TotalFiles     int     `json:"total_files"`
-			TotalSymbols   int     `json:"total_symbols"`
-		}
-
-		result := statusResult{
-			TotalChunks:    stats.TotalChunks,
-			EmbeddedChunks: vectorCount,
-			EmbeddingPct:   readiness * 100,
-			PendingJobs:    pending,
-			CircuitState:   cbState,
-			TotalFiles:     stats.TotalFiles,
-			TotalSymbols:   stats.TotalSymbols,
+		result, err := core.GetEnrichmentStatus(ctx, core.EnrichmentStatusInput{
+			Store:       store,
+			VectorStore: vs,
+			PendingFn:   pendingFn,
+			CircuitFn:   circuitFn,
+		})
+		if err != nil {
+			return mcpsdk.NewToolResultError(sanitizeError("stats query failed: ", err)), nil
 		}
 
 		data, err := json.Marshal(result)
@@ -643,39 +451,9 @@ Start here to orient in an unfamiliar codebase — gives structure at a glance w
 
 func summaryHandler(store types.WriterStore, vs types.VectorStore) handlerFunc {
 	return func(ctx context.Context, _ mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-		stats, err := store.GetIndexStats(ctx)
+		result, err := core.GetSummary(ctx, store, vs)
 		if err != nil {
-			return mcpsdk.NewToolResultError(sanitizeError("stats query failed: ", err)), nil
-		}
-
-		vectorCount := 0
-		if vs != nil {
-			vectorCount, _ = vs.Count(ctx)
-		}
-
-		embeddingPct := 0.0
-		if stats.TotalChunks > 0 {
-			embeddingPct = float64(vectorCount) / float64(stats.TotalChunks) * 100
-		}
-
-		type summaryResult struct {
-			TotalFiles   int            `json:"total_files"`
-			TotalChunks  int            `json:"total_chunks"`
-			TotalSymbols int            `json:"total_symbols"`
-			Languages    map[string]int `json:"languages"`
-			EmbeddingPct float64        `json:"embedding_pct"`
-			ParseErrors  int            `json:"parse_errors"`
-			StaleFiles   int            `json:"stale_files"`
-		}
-
-		result := summaryResult{
-			TotalFiles:   stats.TotalFiles,
-			TotalChunks:  stats.TotalChunks,
-			TotalSymbols: stats.TotalSymbols,
-			Languages:    stats.Languages,
-			EmbeddingPct: embeddingPct,
-			ParseErrors:  stats.ParseErrors,
-			StaleFiles:   stats.StaleFiles,
+			return mcpsdk.NewToolResultError(sanitizeError("summary failed: ", err)), nil
 		}
 
 		data, err := json.Marshal(result)

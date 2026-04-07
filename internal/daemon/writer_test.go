@@ -284,3 +284,76 @@ func TestWriterManager_ProcessJobViaWriterStore(t *testing.T) {
 		t.Errorf("ContentHash = %q, want 'ifhash'", f.ContentHash)
 	}
 }
+
+func TestWriterManager_SyncJob(t *testing.T) {
+	t.Parallel()
+
+	store := testutil.NewTestWriterStore(t)
+	wm := NewWriterManager(store, 10, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go wm.Run(ctx)
+	wm.AddProducer()
+
+	done := make(chan error, 1)
+	if err := wm.Submit(types.WriteJob{
+		Type: types.WriteJobSync,
+		Done: done,
+	}); err != nil {
+		t.Fatalf("Submit sync: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("sync job returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("sync job did not complete within 2s")
+	}
+
+	// WriteJobSync must not create any database record.
+	f, err := store.GetFileByPath(context.Background(), "__sync_marker__")
+	if err != nil {
+		t.Fatalf("GetFileByPath: %v", err)
+	}
+	if f != nil {
+		t.Error("sync job must not create a database record")
+	}
+
+	wm.RemoveProducer()
+	cancel()
+	<-wm.Done()
+}
+
+func TestWriterManager_UnknownJobType(t *testing.T) {
+	t.Parallel()
+
+	store := testutil.NewTestWriterStore(t)
+	wm := NewWriterManager(store, 10, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go wm.Run(ctx)
+	wm.AddProducer()
+
+	done := make(chan error, 1)
+	if err := wm.Submit(types.WriteJob{
+		Type: types.WriteJobType(99),
+		Done: done,
+	}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected error for unknown job type")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("unknown job type did not complete within 2s")
+	}
+
+	wm.RemoveProducer()
+	cancel()
+	<-wm.Done()
+}
