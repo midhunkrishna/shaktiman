@@ -8,7 +8,7 @@ import (
 )
 
 func TestNewPgVectorStore_NilPool(t *testing.T) {
-	_, err := NewPgVectorStore(nil, 768)
+	_, err := NewPgVectorStore(nil, 768, 1)
 	if err == nil {
 		t.Fatal("expected error for nil pool")
 	}

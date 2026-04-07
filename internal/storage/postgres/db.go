@@ -4,6 +4,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,14 +20,16 @@ func (PgTxHandle) IsTxHandle() {}
 
 // PgStore provides metadata CRUD operations backed by PostgreSQL.
 type PgStore struct {
-	pool   *pgxpool.Pool
-	schema string
+	pool      *pgxpool.Pool
+	schema    string
+	projectID int64
 }
 
 // Compile-time check: *PgStore satisfies WriterStore.
 var _ types.WriterStore = (*PgStore)(nil)
 
 // NewPgStore creates a PgStore connected to the given Postgres instance.
+// Call EnsureProject after running migrations to register the project.
 func NewPgStore(ctx context.Context, connStr string, maxOpen, maxIdle int, schema string) (*PgStore, error) {
 	cfg, err := pgxpool.ParseConfig(connStr)
 	if err != nil {
@@ -86,4 +89,54 @@ func (s *PgStore) query(ctx context.Context, sql string, args ...any) (pgx.Rows,
 // queryRow executes a single-row read query using the pool.
 func (s *PgStore) queryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	return s.pool.QueryRow(ctx, sql, args...)
+}
+
+// ProjectID returns the project ID for this store instance.
+func (s *PgStore) ProjectID() int64 {
+	return s.projectID
+}
+
+// EnsureProject registers the project in the projects table and stores its ID.
+// Must be called after migrations have run (projects table must exist).
+// Uses INSERT ... ON CONFLICT DO NOTHING + fallback SELECT to handle concurrent starts.
+// The project root path is canonicalized to prevent duplicates from symlinks or relative paths.
+func (s *PgStore) EnsureProject(ctx context.Context, projectRoot string) error {
+	// Canonicalize path to prevent symlink/relative path duplicates.
+	absPath, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return fmt.Errorf("abs path %s: %w", projectRoot, err)
+	}
+	resolved, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		// Directory may not exist yet (e.g., fresh project). Fall back to abs path.
+		resolved = absPath
+	}
+
+	name := filepath.Base(resolved)
+
+	// First-run: claim the default project if it still holds the placeholder path.
+	// This is idempotent — only the first daemon claims it, others get affected=0.
+	s.pool.Exec(ctx,
+		`UPDATE projects SET root_path = $1, name = $2 WHERE id = 1 AND root_path = '__default__'`,
+		resolved, name)
+
+	// Try insert; ON CONFLICT DO NOTHING avoids errors on concurrent starts.
+	var id int64
+	err = s.pool.QueryRow(ctx,
+		`INSERT INTO projects (root_path, name) VALUES ($1, $2)
+		 ON CONFLICT (root_path) DO NOTHING
+		 RETURNING id`, resolved, name).Scan(&id)
+	if err == nil {
+		s.projectID = id
+		return nil
+	}
+
+	// Row already exists (conflict) — select it.
+	err = s.pool.QueryRow(ctx,
+		`SELECT id FROM projects WHERE root_path = $1`, resolved).Scan(&id)
+	if err != nil {
+		return fmt.Errorf("lookup project %s: %w", resolved, err)
+	}
+	s.projectID = id
+	return nil
 }

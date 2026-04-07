@@ -26,6 +26,14 @@ func init() {
 			return nil, nil, nil, err
 		}
 
+		// Register project after migrations (projects table must exist).
+		if cfg.ProjectRoot != "" {
+			if err := store.EnsureProject(ctx, cfg.ProjectRoot); err != nil {
+				store.Close()
+				return nil, nil, nil, err
+			}
+		}
+
 		closer := func() error { return store.Close() }
 		// Postgres needs no StoreLifecycle (generated tsvector columns, no FTS triggers)
 		return store, nil, closer, nil

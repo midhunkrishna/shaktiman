@@ -67,6 +67,10 @@ func newPostgresTestStore(t testing.TB) types.WriterStore {
 	if err != nil {
 		t.Fatalf("NewTestWriterStore(postgres): %v", err)
 	}
+	// Register a test project for multi-project isolation.
+	if err := store.EnsureProject(ctx, "/tmp/test-project"); err != nil {
+		t.Fatalf("EnsureProject: %v", err)
+	}
 
 	// Publish connection URL so the pgvector factory can reuse it.
 	testPgConnStrs.Store(t.Name(), testURL)

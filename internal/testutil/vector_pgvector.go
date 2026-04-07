@@ -45,11 +45,13 @@ func newPgVectorTestStore(t *testing.T, dims int) types.VectorStore {
 		pool.Exec(ctx, "DROP TABLE IF EXISTS embeddings")
 		pool.Exec(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS embeddings (
 			chunk_id BIGINT PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
-			embedding vector(%d) NOT NULL
+			embedding vector(%d) NOT NULL,
+			project_id BIGINT NOT NULL DEFAULT 1
 		)`, dims))
 	}
 
-	store, err := pgvector.NewPgVectorStore(pool, dims)
+	// Use project_id=1 (the default seeded by migration 005).
+	store, err := pgvector.NewPgVectorStore(pool, dims, 1)
 	if err != nil {
 		pool.Close()
 		t.Fatalf("NewPgVectorStore: %v", err)

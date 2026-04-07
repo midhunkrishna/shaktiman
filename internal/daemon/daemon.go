@@ -77,6 +77,12 @@ func New(cfg types.Config) (*Daemon, error) {
 		savePollInterval:   10 * time.Second,
 	}
 
+	// Warn about Qdrant multi-project isolation gap.
+	if cfg.VectorBackend == "qdrant" && cfg.DatabaseBackend == "postgres" {
+		d.logger.Warn("Qdrant vector backend does not support multi-project isolation; " +
+			"semantic search may return results from other projects sharing this Qdrant instance")
+	}
+
 	// Initialize vector store + embedding pipeline
 	if cfg.EmbedEnabled {
 		d.initEmbedding()
