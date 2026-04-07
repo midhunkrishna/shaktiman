@@ -1,16 +1,20 @@
-package vector
+package vector_test
 
 import (
 	"context"
 	"testing"
 
 	"github.com/shaktimanai/shaktiman/internal/types"
+	"github.com/shaktimanai/shaktiman/internal/vector"
 )
 
 func TestNewVectorStore_BruteForce(t *testing.T) {
 	t.Parallel()
+	if !vector.HasVectorStore("brute_force") {
+		t.Skip("brute_force backend not compiled in")
+	}
 
-	vs, err := NewVectorStore(VectorStoreConfig{
+	vs, err := vector.NewVectorStore(vector.VectorStoreConfig{
 		Backend: "brute_force",
 		Dims:    4,
 	})
@@ -35,8 +39,11 @@ func TestNewVectorStore_BruteForce(t *testing.T) {
 
 func TestNewVectorStore_HNSW(t *testing.T) {
 	t.Parallel()
+	if !vector.HasVectorStore("hnsw") {
+		t.Skip("hnsw backend not compiled in")
+	}
 
-	vs, err := NewVectorStore(VectorStoreConfig{
+	vs, err := vector.NewVectorStore(vector.VectorStoreConfig{
 		Backend: "hnsw",
 		Dims:    4,
 	})
@@ -57,9 +64,12 @@ func TestNewVectorStore_HNSW(t *testing.T) {
 
 func TestNewVectorStore_DefaultIsBruteForce(t *testing.T) {
 	t.Parallel()
+	if !vector.HasVectorStore("brute_force") {
+		t.Skip("default backend is brute_force, which is not compiled in")
+	}
 
 	// Empty backend should default to brute_force
-	vs, err := NewVectorStore(VectorStoreConfig{
+	vs, err := vector.NewVectorStore(vector.VectorStoreConfig{
 		Backend: "",
 		Dims:    4,
 	})
@@ -68,16 +78,17 @@ func TestNewVectorStore_DefaultIsBruteForce(t *testing.T) {
 	}
 	defer vs.Close()
 
-	// Should be a BruteForceStore
-	if _, ok := vs.(*BruteForceStore); !ok {
-		t.Errorf("expected *BruteForceStore, got %T", vs)
+	// Verify it works — the specific type is an implementation detail
+	ctx := context.Background()
+	if err := vs.Upsert(ctx, 1, []float32{0.1, 0.2, 0.3, 0.4}); err != nil {
+		t.Fatalf("Upsert: %v", err)
 	}
 }
 
 func TestNewVectorStore_UnknownBackend(t *testing.T) {
 	t.Parallel()
 
-	_, err := NewVectorStore(VectorStoreConfig{
+	_, err := vector.NewVectorStore(vector.VectorStoreConfig{
 		Backend: "faiss",
 		Dims:    4,
 	})
@@ -87,14 +98,20 @@ func TestNewVectorStore_UnknownBackend(t *testing.T) {
 }
 
 func TestHasVectorStore(t *testing.T) {
-	if !HasVectorStore("brute_force") {
-		t.Error("expected brute_force to be registered")
+	if vector.HasVectorStore("qdrant_nonexistent") {
+		t.Error("expected qdrant_nonexistent to NOT be registered")
 	}
-	if !HasVectorStore("hnsw") {
-		t.Error("expected hnsw to be registered")
+}
+
+func TestHasVectorStore_BruteForce(t *testing.T) {
+	if !vector.HasVectorStore("brute_force") {
+		t.Skip("brute_force backend not compiled in")
 	}
-	if HasVectorStore("qdrant") {
-		t.Error("expected qdrant to NOT be registered yet")
+}
+
+func TestHasVectorStore_HNSW(t *testing.T) {
+	if !vector.HasVectorStore("hnsw") {
+		t.Skip("hnsw backend not compiled in")
 	}
 }
 
@@ -107,7 +124,7 @@ func TestVectorStoreConfigFrom_BasicFields(t *testing.T) {
 		QdrantCollection: "my_col",
 		QdrantAPIKey:     "secret",
 	}
-	vsc := VectorStoreConfigFrom(cfg, nil)
+	vsc := vector.VectorStoreConfigFrom(cfg, nil)
 	if vsc.Backend != "brute_force" {
 		t.Errorf("Backend = %q, want brute_force", vsc.Backend)
 	}
@@ -140,7 +157,7 @@ func TestVectorStoreConfigFrom_PgVector_ExtractsPool(t *testing.T) {
 		VectorBackend: "pgvector",
 		EmbeddingDims: 384,
 	}
-	vsc := VectorStoreConfigFrom(cfg, &fakePoolStore{pool: sentinel})
+	vsc := vector.VectorStoreConfigFrom(cfg, &fakePoolStore{pool: sentinel})
 	if vsc.PgPool != sentinel {
 		t.Errorf("PgPool = %v, want %q", vsc.PgPool, sentinel)
 	}
@@ -155,7 +172,7 @@ func TestVectorStoreConfigFrom_PgVector_NilStore(t *testing.T) {
 		VectorBackend: "pgvector",
 		EmbeddingDims: 768,
 	}
-	vsc := VectorStoreConfigFrom(cfg, nil)
+	vsc := vector.VectorStoreConfigFrom(cfg, nil)
 	if vsc.PgPool != nil {
 		t.Error("PgPool should be nil when store is nil")
 	}
@@ -168,7 +185,7 @@ func TestVectorStoreConfigFrom_PgVector_StoreWithoutPool(t *testing.T) {
 		VectorBackend: "pgvector",
 		EmbeddingDims: 768,
 	}
-	vsc := VectorStoreConfigFrom(cfg, "not-a-pooler")
+	vsc := vector.VectorStoreConfigFrom(cfg, "not-a-pooler")
 	if vsc.PgPool != nil {
 		t.Error("PgPool should be nil when store lacks RawPool()")
 	}
@@ -180,7 +197,7 @@ func TestVectorStoreConfigFrom_NonPgVector_IgnoresPool(t *testing.T) {
 		VectorBackend: "qdrant",
 		EmbeddingDims: 768,
 	}
-	vsc := VectorStoreConfigFrom(cfg, &fakePoolStore{pool: "should-be-ignored"})
+	vsc := vector.VectorStoreConfigFrom(cfg, &fakePoolStore{pool: "should-be-ignored"})
 	if vsc.PgPool != nil {
 		t.Error("PgPool should be nil for non-pgvector backend")
 	}

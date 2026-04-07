@@ -14,6 +14,9 @@ import (
 // Returns the project root directory (containing .shaktiman/index.db).
 func seedProject(t *testing.T) string {
 	t.Helper()
+	if !storage.HasMetadataStore("sqlite") {
+		t.Skip("seedProject requires sqlite backend")
+	}
 	dir := t.TempDir()
 
 	// Create a Go source file
@@ -28,15 +31,13 @@ func seedProject(t *testing.T) string {
 	os.MkdirAll(dbDir, 0o755)
 	dbPath := filepath.Join(dbDir, "index.db")
 
-	db, err := storage.Open(storage.OpenInput{Path: dbPath})
+	store, _, closer, err := storage.NewMetadataStore(storage.MetadataStoreConfig{
+		Backend:    "sqlite",
+		SQLitePath: dbPath,
+	})
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		t.Fatalf("NewMetadataStore: %v", err)
 	}
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	store := storage.NewStore(db)
 	ctx := context.Background()
 
 	// Seed file + chunks + symbols
@@ -76,7 +77,7 @@ func seedProject(t *testing.T) string {
 		})
 	})
 
-	db.Close()
+	closer()
 	return dir
 }
 

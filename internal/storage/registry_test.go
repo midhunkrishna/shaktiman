@@ -1,16 +1,20 @@
-package storage
+package storage_test
 
 import (
 	"context"
 	"testing"
 
+	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
 func TestNewMetadataStore_SQLite(t *testing.T) {
 	t.Parallel()
+	if !storage.HasMetadataStore("sqlite") {
+		t.Skip("sqlite backend not compiled in")
+	}
 
-	store, lifecycle, closer, err := NewMetadataStore(MetadataStoreConfig{
+	store, lifecycle, closer, err := storage.NewMetadataStore(storage.MetadataStoreConfig{
 		Backend:        "sqlite",
 		SQLiteInMemory: true,
 	})
@@ -47,8 +51,11 @@ func TestNewMetadataStore_SQLite(t *testing.T) {
 
 func TestNewMetadataStore_SQLiteWithLifecycle(t *testing.T) {
 	t.Parallel()
+	if !storage.HasMetadataStore("sqlite") {
+		t.Skip("sqlite backend not compiled in")
+	}
 
-	store, lifecycle, closer, err := NewMetadataStore(MetadataStoreConfig{
+	store, lifecycle, closer, err := storage.NewMetadataStore(storage.MetadataStoreConfig{
 		Backend:        "sqlite",
 		SQLiteInMemory: true,
 	})
@@ -94,7 +101,7 @@ func TestNewMetadataStore_SQLiteWithLifecycle(t *testing.T) {
 func TestNewMetadataStore_UnknownBackend(t *testing.T) {
 	t.Parallel()
 
-	_, _, _, err := NewMetadataStore(MetadataStoreConfig{
+	_, _, _, err := storage.NewMetadataStore(storage.MetadataStoreConfig{
 		Backend: "mysql",
 	})
 	if err == nil {
@@ -103,21 +110,25 @@ func TestNewMetadataStore_UnknownBackend(t *testing.T) {
 }
 
 func TestHasMetadataStore(t *testing.T) {
-	if !HasMetadataStore("sqlite") {
-		t.Error("expected SQLite to be registered")
-	}
-	if HasMetadataStore("postgres") {
-		t.Error("expected postgres to NOT be registered yet")
-	}
-	if HasMetadataStore("nonexistent") {
+	if storage.HasMetadataStore("nonexistent") {
 		t.Error("expected nonexistent to NOT be registered")
 	}
 }
 
+func TestHasMetadataStore_SQLite(t *testing.T) {
+	if !storage.HasMetadataStore("sqlite") {
+		t.Skip("sqlite backend not compiled in")
+	}
+	// If we get here, sqlite is registered — test passes.
+}
+
 func TestNewMetadataStore_CloserWorks(t *testing.T) {
 	t.Parallel()
+	if !storage.HasMetadataStore("sqlite") {
+		t.Skip("sqlite backend not compiled in")
+	}
 
-	_, _, closer, err := NewMetadataStore(MetadataStoreConfig{
+	_, _, closer, err := storage.NewMetadataStore(storage.MetadataStoreConfig{
 		Backend:        "sqlite",
 		SQLiteInMemory: true,
 	})
@@ -141,7 +152,7 @@ func TestMetadataStoreConfigFrom(t *testing.T) {
 		PostgresMaxIdle:    10,
 		PostgresSchema:     "myschema",
 	}
-	msc := MetadataStoreConfigFrom(cfg)
+	msc := storage.MetadataStoreConfigFrom(cfg)
 	if msc.Backend != "postgres" {
 		t.Errorf("Backend = %q, want postgres", msc.Backend)
 	}
@@ -166,7 +177,7 @@ func TestMetadataStoreConfigFrom_Defaults(t *testing.T) {
 	t.Parallel()
 	// Empty config should produce empty MetadataStoreConfig fields
 	cfg := types.Config{}
-	msc := MetadataStoreConfigFrom(cfg)
+	msc := storage.MetadataStoreConfigFrom(cfg)
 	if msc.Backend != "" {
 		t.Errorf("Backend = %q, want empty", msc.Backend)
 	}
@@ -177,8 +188,11 @@ func TestMetadataStoreConfigFrom_Defaults(t *testing.T) {
 
 func TestNewMetadataStore_DefaultBackend(t *testing.T) {
 	t.Parallel()
+	if !storage.HasMetadataStore("sqlite") {
+		t.Skip("default backend is sqlite, which is not compiled in")
+	}
 	// Empty backend should default to sqlite
-	store, _, closer, err := NewMetadataStore(MetadataStoreConfig{
+	store, _, closer, err := storage.NewMetadataStore(storage.MetadataStoreConfig{
 		Backend:        "",
 		SQLiteInMemory: true,
 	})

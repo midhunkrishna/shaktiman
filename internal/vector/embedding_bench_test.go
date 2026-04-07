@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
 // newMockOllamaServerB is the benchmark variant of newMockOllamaServer.
@@ -60,7 +62,7 @@ func newMockOllamaServerB(b *testing.B, failCount *atomic.Int32, dims int) *http
 }
 
 // newBenchWorker builds an EmbedWorker for benchmarks using an httptest.Server.
-func newBenchWorker(b *testing.B, srv *httptest.Server, store *BruteForceStore, batchSize int) *EmbedWorker {
+func newBenchWorker(b *testing.B, srv *httptest.Server, store types.VectorStore, batchSize int) *EmbedWorker {
 	b.Helper()
 	client := NewOllamaClient(OllamaClientInput{
 		BaseURL: srv.URL,
@@ -91,7 +93,7 @@ func BenchmarkRunFromDB_Throughput(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		source := newMockEmbedSource(jobs, totalJobs)
-		store := NewBruteForceStore(dims)
+		store := newTestVectorStore(b, dims)
 		worker := newBenchWorker(b, srv, store, batchSize)
 
 		if err := worker.RunFromDB(context.Background(), source, nil); err != nil {
@@ -121,7 +123,7 @@ func BenchmarkRunFromDB_Memory(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		source := newMockEmbedSource(jobs, totalJobs)
-		store := NewBruteForceStore(dims)
+		store := newTestVectorStore(b, dims)
 		worker := newBenchWorker(b, srv, store, batchSize)
 
 		if err := worker.RunFromDB(context.Background(), source, nil); err != nil {

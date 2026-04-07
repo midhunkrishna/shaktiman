@@ -13,7 +13,6 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/shaktimanai/shaktiman/internal/core"
-	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/testutil"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
@@ -325,19 +324,10 @@ func setupStore(t *testing.T) types.WriterStore {
 	return testutil.NewTestWriterStore(t)
 }
 
-// setupStoreWithData creates a store and seeds files, chunks, symbols, and returns both.
-func setupStoreWithData(t *testing.T) (*storage.Store, *storage.DB) {
+// setupStoreWithData creates a store via the test registry and seeds files, chunks, symbols.
+func setupStoreWithData(t *testing.T) types.WriterStore {
 	t.Helper()
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-
-	store := storage.NewStore(db)
+	store := testutil.NewTestWriterStore(t)
 	ctx := context.Background()
 
 	f1, err := store.UpsertFile(ctx, &types.FileRecord{
@@ -372,7 +362,7 @@ func setupStoreWithData(t *testing.T) (*storage.Store, *storage.DB) {
 		t.Fatalf("InsertSymbols: %v", err)
 	}
 
-	return store, db
+	return store
 }
 
 // setupContextHandler creates a contextHandler backed by an in-memory store.
@@ -387,7 +377,7 @@ func setupContextHandler(t *testing.T) handlerFunc {
 // setupSymbolsHandler creates a symbolsHandler backed by a seeded store.
 func setupSymbolsHandler(t *testing.T) handlerFunc {
 	t.Helper()
-	store, _ := setupStoreWithData(t)
+	store := setupStoreWithData(t)
 	return symbolsHandler(store)
 }
 
@@ -395,7 +385,7 @@ func setupSymbolsHandler(t *testing.T) handlerFunc {
 // with two symbols and an edge from NewServer -> handleRequest.
 func setupDependenciesHandler(t *testing.T) handlerFunc {
 	t.Helper()
-	store, _ := setupStoreWithData(t)
+	store := setupStoreWithData(t)
 	ctx := context.Background()
 
 	// Get symbol IDs so we can create edges.
@@ -431,7 +421,7 @@ func setupDependenciesHandler(t *testing.T) handlerFunc {
 // setupDiffHandler creates a diffHandler backed by a store with seeded diff_log data.
 func setupDiffHandler(t *testing.T) handlerFunc {
 	t.Helper()
-	store, _ := setupStoreWithData(t)
+	store := setupStoreWithData(t)
 	ctx := context.Background()
 
 	// Get a valid file ID.
@@ -1192,9 +1182,9 @@ func TestDiffHandler_LargeLimitClamped(t *testing.T) {
 
 // setupHandlersWithPendingEdge creates store+handlers with a pending edge:
 // NewServer --imports--> "ExternalLib" (unresolved, lives in pending_edges).
-func setupHandlersWithPendingEdge(t *testing.T) (*storage.Store, handlerFunc, handlerFunc) {
+func setupHandlersWithPendingEdge(t *testing.T) (types.WriterStore, handlerFunc, handlerFunc) {
 	t.Helper()
-	store, _ := setupStoreWithData(t)
+	store := setupStoreWithData(t)
 	ctx := context.Background()
 
 	syms, err := store.GetSymbolByName(ctx, "NewServer")
@@ -1289,7 +1279,7 @@ func TestDependenciesHandler_PendingEdgeCalleesReturnsEmpty(t *testing.T) {
 func TestDependenciesHandler_FoundSymbolWithPendingEdges(t *testing.T) {
 	t.Parallel()
 
-	store, _ := setupStoreWithData(t)
+	store := setupStoreWithData(t)
 	ctx := context.Background()
 
 	// NewServer exists in the symbols table (from setupStoreWithData).

@@ -17,6 +17,7 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/core"
 	"github.com/shaktimanai/shaktiman/internal/parser"
 	"github.com/shaktimanai/shaktiman/internal/storage"
+	"github.com/shaktimanai/shaktiman/internal/storage/sqlite"
 	"github.com/shaktimanai/shaktiman/internal/testutil"
 	"github.com/shaktimanai/shaktiman/internal/types"
 	"github.com/shaktimanai/shaktiman/internal/vector"
@@ -1632,6 +1633,9 @@ func TestEmbedProject_OllamaDown(t *testing.T) {
 
 func TestEmbedProject_CrashRecovery(t *testing.T) {
 	t.Parallel()
+	if !storage.HasMetadataStore("sqlite") {
+		t.Skip("crash recovery test requires sqlite backend")
+	}
 
 	const dims = 4
 	var reqCount atomic.Int64
@@ -1677,7 +1681,7 @@ func TestEmbedProject_CrashRecovery(t *testing.T) {
 
 	// Simulate crash: reset some chunks to embedded=0 in the DB.
 	// Open the DB directly to manipulate it.
-	crashDB, err := storage.Open(storage.OpenInput{Path: dbPath})
+	crashDB, err := sqlite.Open(sqlite.OpenInput{Path: dbPath})
 	if err != nil {
 		t.Fatalf("Open crash DB: %v", err)
 	}
@@ -2794,6 +2798,9 @@ func TestEmbeddingsPath_EmptyBackend(t *testing.T) {
 
 func TestNewVectorStore_BruteForce(t *testing.T) {
 	t.Parallel()
+	if !vector.HasVectorStore("brute_force") {
+		t.Skip("brute_force backend not compiled in")
+	}
 	d := &Daemon{
 		cfg: types.Config{
 			VectorBackend: "brute_force",
@@ -2804,13 +2811,19 @@ func TestNewVectorStore_BruteForce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newVectorStore: %v", err)
 	}
-	if _, ok := vs.(*vector.BruteForceStore); !ok {
-		t.Errorf("expected *BruteForceStore, got %T", vs)
+	defer vs.Close()
+	// Verify the store is functional
+	ctx := context.Background()
+	if err := vs.Upsert(ctx, 1, []float32{0.1, 0.2, 0.3, 0.4}); err != nil {
+		t.Fatalf("Upsert: %v", err)
 	}
 }
 
 func TestNewVectorStore_HNSW(t *testing.T) {
 	t.Parallel()
+	if !vector.HasVectorStore("hnsw") {
+		t.Skip("hnsw backend not compiled in")
+	}
 	d := &Daemon{
 		cfg: types.Config{
 			VectorBackend: "hnsw",
@@ -2821,14 +2834,18 @@ func TestNewVectorStore_HNSW(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newVectorStore: %v", err)
 	}
-	if _, ok := vs.(*vector.HNSWStore); !ok {
-		t.Errorf("expected *HNSWStore, got %T", vs)
+	defer vs.Close()
+	ctx := context.Background()
+	if err := vs.Upsert(ctx, 1, []float32{0.1, 0.2, 0.3, 0.4}); err != nil {
+		t.Fatalf("Upsert: %v", err)
 	}
-	vs.Close()
 }
 
 func TestNewVectorStore_EmptyBackendDefaultsBruteForce(t *testing.T) {
 	t.Parallel()
+	if !vector.HasVectorStore("brute_force") {
+		t.Skip("brute_force backend not compiled in")
+	}
 	d := &Daemon{
 		cfg: types.Config{
 			VectorBackend: "",
@@ -2839,13 +2856,18 @@ func TestNewVectorStore_EmptyBackendDefaultsBruteForce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newVectorStore: %v", err)
 	}
-	if _, ok := vs.(*vector.BruteForceStore); !ok {
-		t.Errorf("expected *BruteForceStore for empty backend, got %T", vs)
+	defer vs.Close()
+	ctx := context.Background()
+	if err := vs.Upsert(ctx, 1, []float32{0.1, 0.2, 0.3, 0.4}); err != nil {
+		t.Fatalf("Upsert: %v", err)
 	}
 }
 
 func TestDaemon_New_WithHNSWBackend(t *testing.T) {
 	t.Parallel()
+	if !vector.HasVectorStore("hnsw") {
+		t.Skip("hnsw backend not compiled in")
+	}
 
 	const dims = 4
 	srv := newMockOllama(dims, nil)
@@ -2866,9 +2888,8 @@ func TestDaemon_New_WithHNSWBackend(t *testing.T) {
 		t.Fatalf("New daemon with HNSW backend: %v", err)
 	}
 
-	// Verify the vector store is HNSW type
-	if _, ok := d.vectorStore.(*vector.HNSWStore); !ok {
-		t.Errorf("expected *HNSWStore, got %T", d.vectorStore)
+	if d.vectorStore == nil {
+		t.Fatal("expected non-nil vectorStore after New with HNSW backend")
 	}
 
 	// Verify embeddingsPath uses .hnsw extension

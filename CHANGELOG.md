@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Backend isolation** — storage and vector implementations moved into
+  sub-packages (`internal/storage/sqlite/`, `internal/vector/bruteforce/`,
+  `internal/vector/hnsw/`). Backends register via `init()` and are selected
+  at runtime via config. The parent packages (`internal/storage/`,
+  `internal/vector/`) are now pure registry + interface hubs.
+- **Build tags for default backends** — `sqlite`, `bruteforce`, and `hnsw`
+  are now gated by build tags (matching the existing pattern for `postgres`,
+  `pgvector`, `qdrant`). This enables CGo-free builds for postgres-only
+  deployments. Default build command is now:
+  `go build -tags "sqlite_fts5 sqlite bruteforce hnsw" ./...`
+- **Test matrix resilience** — tests that target specific backends now skip
+  gracefully when the backend is not compiled in, instead of failing.
+
 ## [0.8.0] — 2026-03-30
 
 ### Added
