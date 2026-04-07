@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/shaktimanai/shaktiman/internal/storage"
+	_ "github.com/shaktimanai/shaktiman/internal/storage/sqlite"
 	"github.com/shaktimanai/shaktiman/internal/testutil"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
@@ -418,21 +419,20 @@ func waitForWriter(t *testing.T, wm *WriterManager) {
 	<-done
 }
 
-// Suppress unused import
-var _ = types.Config{}
-
 func TestIndexAll_WithLifecycleHooks(t *testing.T) {
 	t.Parallel()
+	if !storage.HasMetadataStore("sqlite") {
+		t.Skip("lifecycle hooks test requires sqlite backend")
+	}
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	store, lifecycle, closer, err := storage.NewMetadataStore(storage.MetadataStoreConfig{
+		Backend:        "sqlite",
+		SQLiteInMemory: true,
+	})
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		t.Fatalf("NewMetadataStore: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	store := storage.NewStore(db)
+	t.Cleanup(func() { closer() })
 
 	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -442,9 +442,8 @@ func TestIndexAll_WithLifecycleHooks(t *testing.T) {
 		<-wm.Done()
 	}()
 
-	// Use a real SQLiteLifecycle instead of nil — this exercises the
+	// lifecycle from the registry exercises the
 	// OnBulkWriteBegin/OnBulkWriteEnd code paths in IndexAll.
-	lifecycle := storage.NewSQLiteLifecycle(store)
 	pipeline := NewEnrichmentPipeline(store, wm, 1, lifecycle)
 
 	dir := t.TempDir()

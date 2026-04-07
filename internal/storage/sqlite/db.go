@@ -1,5 +1,5 @@
-// Package storage provides SQLite-backed persistence for the Shaktiman index.
-package storage
+// Package sqlite provides SQLite-backed persistence for the Shaktiman index.
+package sqlite
 
 import (
 	"context"

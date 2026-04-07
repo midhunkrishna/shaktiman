@@ -71,7 +71,7 @@ func TestEmbedWorker_Accessors(t *testing.T) {
 	t.Parallel()
 
 	srv := newMockOllamaServer(t, nil, 4)
-	store := NewBruteForceStore(4)
+	store := newTestVectorStore(t, 4)
 	w := newTestWorker(t, srv, store, 32)
 
 	if w.CircuitBreaker() == nil {
@@ -89,7 +89,7 @@ func TestEmbedWorker_EmbedReady_CircuitOpen(t *testing.T) {
 	t.Parallel()
 
 	srv := newMockOllamaServer(t, nil, 4)
-	store := NewBruteForceStore(4)
+	store := newTestVectorStore(t, 4)
 	w := newTestWorker(t, srv, store, 32)
 
 	// Trip the circuit breaker
@@ -112,7 +112,7 @@ func TestEmbedWorker_Submit(t *testing.T) {
 	t.Parallel()
 
 	srv := newMockOllamaServer(t, nil, 4)
-	store := NewBruteForceStore(4)
+	store := newTestVectorStore(t, 4)
 	w := newTestWorker(t, srv, store, 32)
 
 	ok := w.Submit(EmbedJob{ChunkID: 1, Content: "hello"})
@@ -128,7 +128,7 @@ func TestEmbedWorker_Submit_QueueFull(t *testing.T) {
 	t.Parallel()
 
 	srv := newMockOllamaServer(t, nil, 4)
-	store := NewBruteForceStore(4)
+	store := newTestVectorStore(t, 4)
 	w := newTestWorker(t, srv, store, 32)
 
 	// Fill the queue (cap is 1000)
@@ -146,7 +146,7 @@ func TestEmbedWorker_SubmitBatch(t *testing.T) {
 	t.Parallel()
 
 	srv := newMockOllamaServer(t, nil, 4)
-	store := NewBruteForceStore(4)
+	store := newTestVectorStore(t, 4)
 	w := newTestWorker(t, srv, store, 32)
 
 	jobs := []EmbedJob{
@@ -168,7 +168,7 @@ func TestProcessBatch_Success(t *testing.T) {
 
 	const dims = 4
 	srv := newMockOllamaServer(t, nil, dims)
-	store := NewBruteForceStore(dims)
+	store := newTestVectorStore(t, dims)
 	w := newTestWorker(t, srv, store, 32)
 
 	var doneIDs []int64
@@ -205,7 +205,7 @@ func TestProcessBatch_CircuitOpen(t *testing.T) {
 
 	const dims = 4
 	srv := newMockOllamaServer(t, nil, dims)
-	store := NewBruteForceStore(dims)
+	store := newTestVectorStore(t, dims)
 	w := newTestWorker(t, srv, store, 32)
 
 	// Trip the circuit breaker
@@ -229,7 +229,7 @@ func TestEmbedWorker_RunAndWaitIdle(t *testing.T) {
 
 	const dims = 4
 	srv := newMockOllamaServer(t, nil, dims)
-	store := NewBruteForceStore(dims)
+	store := newTestVectorStore(t, dims)
 	// Use batchSz=2 so batch fills quickly without waiting for ticker
 	w := newTestWorker(t, srv, store, 2)
 
@@ -265,7 +265,7 @@ func TestEmbedWorker_Run_ContextCancel(t *testing.T) {
 
 	const dims = 4
 	srv := newMockOllamaServer(t, nil, dims)
-	store := NewBruteForceStore(dims)
+	store := newTestVectorStore(t, dims)
 	w := newTestWorker(t, srv, store, 100) // large batch so ticker path is used
 
 	ctx, cancel := context.WithCancel(context.Background())

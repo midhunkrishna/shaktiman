@@ -1,6 +1,6 @@
 //go:build sqlite_fts5
 
-package storage
+package sqlite
 
 import (
 	"context"

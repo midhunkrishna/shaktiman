@@ -626,7 +626,7 @@ func makeJobs(n int) []types.EmbedJob {
 }
 
 // newTestWorker builds an EmbedWorker pointing at the given mock server.
-func newTestWorker(t *testing.T, srv *httptest.Server, store *BruteForceStore, batchSize int) *EmbedWorker {
+func newTestWorker(t *testing.T, srv *httptest.Server, store types.VectorStore, batchSize int) *EmbedWorker {
 	t.Helper()
 	client := NewOllamaClient(OllamaClientInput{
 		BaseURL: srv.URL,
@@ -650,7 +650,7 @@ func TestRunFromDB_AllChunksEmbedded(t *testing.T) {
 
 	jobs := makeJobs(totalJobs)
 	source := newMockEmbedSource(jobs, totalJobs)
-	store := NewBruteForceStore(dims)
+	store := newTestVectorStore(t, dims)
 	srv := newMockOllamaServer(t, nil, dims)
 	worker := newTestWorker(t, srv, store, 32)
 
@@ -716,7 +716,7 @@ func TestRunFromDB_CircuitBreakerRetry(t *testing.T) {
 
 	jobs := makeJobs(totalJobs)
 	source := newMockEmbedSource(jobs, totalJobs)
-	store := NewBruteForceStore(dims)
+	store := newTestVectorStore(t, dims)
 
 	// Server fails first 3 requests, then succeeds.
 	failCount := &atomic.Int32{}
@@ -761,7 +761,7 @@ func TestRunFromDB_ContextCancellation(t *testing.T) {
 
 	jobs := makeJobs(totalJobs)
 	source := newMockEmbedSource(jobs, totalJobs)
-	store := NewBruteForceStore(dims)
+	store := newTestVectorStore(t, dims)
 	srv := newMockOllamaServer(t, nil, dims)
 	worker := newTestWorker(t, srv, store, 16) // small batch to increase iterations
 
@@ -805,7 +805,7 @@ func TestRunFromDB_EmptySource(t *testing.T) {
 	const dims = 4
 
 	source := newMockEmbedSource(nil, 0)
-	store := NewBruteForceStore(dims)
+	store := newTestVectorStore(t, dims)
 	srv := newMockOllamaServer(t, nil, dims)
 	worker := newTestWorker(t, srv, store, 32)
 
@@ -843,7 +843,7 @@ func TestRunFromDB_HasReconciliation(t *testing.T) {
 
 	jobs := makeJobs(totalJobs)
 	source := newMockEmbedSource(jobs, totalJobs)
-	store := NewBruteForceStore(dims)
+	store := newTestVectorStore(t, dims)
 
 	// Pre-populate store with vectors for the first half of chunks.
 	// This simulates crash recovery: DB says embedded=0, but vector store
@@ -948,7 +948,7 @@ func TestRunFromDB_AdaptiveBatchShrink(t *testing.T) {
 
 	jobs := makeJobs(totalJobs)
 	source := newMockEmbedSource(jobs, totalJobs)
-	store := NewBruteForceStore(dims)
+	store := newTestVectorStore(t, dims)
 
 	// Server returns 500 for batches > maxAccepted, 200 otherwise.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1012,7 +1012,7 @@ func TestRunFromDB_AdaptiveBatchRestore(t *testing.T) {
 
 	jobs := makeJobs(totalJobs)
 	source := newMockEmbedSource(jobs, totalJobs)
-	store := NewBruteForceStore(dims)
+	store := newTestVectorStore(t, dims)
 
 	// Server fails first 3 requests, then succeeds.
 	failCount := &atomic.Int32{}
@@ -1041,7 +1041,7 @@ func TestRunFromDB_LargeBatchSuccess(t *testing.T) {
 
 	jobs := makeJobs(totalJobs)
 	source := newMockEmbedSource(jobs, totalJobs)
-	store := NewBruteForceStore(dims)
+	store := newTestVectorStore(t, dims)
 
 	var embedCalls atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1178,7 +1178,7 @@ func TestRunFromDB_TransientDeferredRetry(t *testing.T) {
 
 	jobs := makeJobs(totalJobs)
 	source := newMockEmbedSource(jobs, totalJobs)
-	store := NewBruteForceStore(dims)
+	store := newTestVectorStore(t, dims)
 
 	// Server fails first 6 requests (500), then succeeds.
 	// Phase 1 quick retries (3) will fail, chunks get deferred.
@@ -1210,7 +1210,7 @@ func TestRunFromDB_PermanentErrorSkipped(t *testing.T) {
 
 	jobs := makeJobs(totalJobs)
 	source := newMockEmbedSource(jobs, totalJobs)
-	store := NewBruteForceStore(dims)
+	store := newTestVectorStore(t, dims)
 
 	// Server returns 400 for all requests (permanent error).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1254,7 +1254,7 @@ func TestRunFromDB_PermanentErrorNoCBTrip(t *testing.T) {
 
 	jobs := makeJobs(totalJobs)
 	source := newMockEmbedSource(jobs, totalJobs)
-	store := NewBruteForceStore(dims)
+	store := newTestVectorStore(t, dims)
 
 	// Server returns 400 (permanent) for all requests.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1285,7 +1285,7 @@ func TestRunFromDB_DeferredExhaustsRetries(t *testing.T) {
 
 	jobs := makeJobs(totalJobs)
 	source := newMockEmbedSource(jobs, totalJobs)
-	store := NewBruteForceStore(dims)
+	store := newTestVectorStore(t, dims)
 
 	// Server always returns 500 (transient but never recovers).
 	failCount := &atomic.Int32{}
@@ -1325,7 +1325,7 @@ func TestRunFromDB_MixedErrors(t *testing.T) {
 
 	jobs := makeJobs(totalJobs)
 	source := newMockEmbedSource(jobs, totalJobs)
-	store := NewBruteForceStore(dims)
+	store := newTestVectorStore(t, dims)
 
 	// First 2 requests: 400 (permanent). Next 2: 500 (transient). Rest: success.
 	var callCount atomic.Int32
@@ -1503,7 +1503,7 @@ func TestEmbedderHealthy_Reachable(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	store := NewBruteForceStore(4)
+	store := newTestVectorStore(t, 4)
 	worker := newTestWorker(t, srv, store, 32)
 
 	if !worker.EmbedderHealthy(context.Background()) {
@@ -1524,7 +1524,7 @@ func TestEmbedderHealthy_Unreachable(t *testing.T) {
 		Model:   "test-model",
 		Timeout: 1 * time.Second,
 	})
-	store := NewBruteForceStore(4)
+	store := newTestVectorStore(t, 4)
 	worker := NewEmbedWorker(EmbedWorkerInput{
 		Store:    store,
 		Embedder: client,
@@ -1552,7 +1552,7 @@ func TestEmbedProgress_Warning(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	store := NewBruteForceStore(dims)
+	store := newTestVectorStore(t, dims)
 	worker := newTestWorker(t, srv, store, 32)
 
 	jobs := makeJobs(5)

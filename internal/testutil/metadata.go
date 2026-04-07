@@ -10,7 +10,7 @@ import (
 
 // extraMetadataFactory creates a WriterStore with backend-specific setup
 // (e.g. per-test Postgres schema). Registered from build-tagged init().
-type extraMetadataFactory func(t *testing.T) types.WriterStore
+type extraMetadataFactory func(t testing.TB) types.WriterStore
 
 var extraMetadataFactories = map[string]extraMetadataFactory{}
 
@@ -20,7 +20,7 @@ var extraMetadataFactories = map[string]extraMetadataFactory{}
 //
 // For sqlite, each call returns a fresh in-memory database.
 // For postgres, each call creates an isolated schema for parallel safety.
-func NewTestWriterStore(t *testing.T) types.WriterStore {
+func NewTestWriterStore(t testing.TB) types.WriterStore {
 	t.Helper()
 
 	backend := os.Getenv("SHAKTIMAN_TEST_DB_BACKEND")
@@ -31,6 +31,12 @@ func NewTestWriterStore(t *testing.T) types.WriterStore {
 	// Backends that need special setup register their own factory.
 	if f, ok := extraMetadataFactories[backend]; ok {
 		return f(t)
+	}
+
+	// Skip if the requested backend is not compiled in.
+	if !storage.HasMetadataStore(backend) {
+		t.Skipf("metadata backend %q not compiled in (missing build tag?)", backend)
+		return nil
 	}
 
 	// Default: use the production registry.

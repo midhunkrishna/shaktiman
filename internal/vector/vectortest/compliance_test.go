@@ -8,18 +8,34 @@ import (
 )
 
 func TestBruteForceCompliance(t *testing.T) {
+	if !vector.HasVectorStore("brute_force") {
+		t.Skip("brute_force backend not compiled in")
+	}
 	RunVectorStoreTests(t, func(t *testing.T, dims int) types.VectorStore {
 		t.Helper()
-		return vector.NewBruteForceStore(dims)
+		vs, err := vector.NewVectorStore(vector.VectorStoreConfig{
+			Backend: "brute_force",
+			Dims:    dims,
+		})
+		if err != nil {
+			t.Fatalf("NewVectorStore brute_force: %v", err)
+		}
+		return vs
 	})
 }
 
 func TestHNSWCompliance(t *testing.T) {
+	if !vector.HasVectorStore("hnsw") {
+		t.Skip("hnsw backend not compiled in")
+	}
 	RunVectorStoreTests(t, func(t *testing.T, dims int) types.VectorStore {
 		t.Helper()
-		vs, err := vector.NewHNSWStore(vector.HNSWStoreInput{Dim: dims})
+		vs, err := vector.NewVectorStore(vector.VectorStoreConfig{
+			Backend: "hnsw",
+			Dims:    dims,
+		})
 		if err != nil {
-			t.Fatalf("NewHNSWStore: %v", err)
+			t.Fatalf("NewVectorStore hnsw: %v", err)
 		}
 		return vs
 	})

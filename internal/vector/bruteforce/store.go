@@ -1,5 +1,5 @@
-// Package vector provides in-process vector storage and similarity search.
-package vector
+// Package bruteforce provides in-memory vector storage and similarity search.
+package bruteforce
 
 import (
 	"bufio"

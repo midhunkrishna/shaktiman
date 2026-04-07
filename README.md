@@ -14,9 +14,9 @@ Shaktiman indexes your codebase and gives Claude Code (or any MCP client) tools 
 ## Quick Start
 
 ```bash
-# 1. Build
-go build -tags sqlite_fts5 -o shaktiman ./cmd/shaktiman
-go build -tags sqlite_fts5 -o shaktimand ./cmd/shaktimand
+# 1. Build (default: SQLite + local vector stores)
+go build -tags "sqlite_fts5 sqlite bruteforce hnsw" -o shaktiman ./cmd/shaktiman
+go build -tags "sqlite_fts5 sqlite bruteforce hnsw" -o shaktimand ./cmd/shaktimand
 
 # 2. Add to Claude Code (see "Usage with Claude Code" below)
 
@@ -27,8 +27,8 @@ go build -tags sqlite_fts5 -o shaktimand ./cmd/shaktimand
 
 | Requirement | Notes |
 |-------------|-------|
-| **Go 1.25+** | CGo must be enabled (it is by default) |
-| **C compiler** | Required by SQLite and tree-sitter (gcc/clang, included on macOS) |
+| **Go 1.25+** | CGo must be enabled when building with the `sqlite` tag |
+| **C compiler** | Required by SQLite and tree-sitter (gcc/clang, included on macOS). Not needed for postgres-only builds. |
 | **Ollama** (optional) | Only needed for semantic/vector search. Without it, keyword search still works. |
 
 ## Installation
@@ -37,13 +37,47 @@ go build -tags sqlite_fts5 -o shaktimand ./cmd/shaktimand
 git clone https://github.com/shaktimanai/shaktiman.git
 cd shaktiman
 
-# Build both binaries (sqlite_fts5 tag is required)
-go build -tags sqlite_fts5 -o shaktiman ./cmd/shaktiman
-go build -tags sqlite_fts5 -o shaktimand ./cmd/shaktimand
+# Build both binaries (default: SQLite + local vector stores)
+go build -tags "sqlite_fts5 sqlite bruteforce hnsw" -o shaktiman ./cmd/shaktiman
+go build -tags "sqlite_fts5 sqlite bruteforce hnsw" -o shaktimand ./cmd/shaktimand
 
 # Verify
 ./shaktiman --help
 ```
+
+### Build Tags
+
+Backends are selected at build time via Go build tags. Include only the tags you need.
+
+| Tag | Category | What it includes |
+|-----|----------|-----------------|
+| `sqlite_fts5` | required | SQLite FTS5 full-text search support |
+| `sqlite` | storage | SQLite metadata backend (requires CGo + C compiler) |
+| `bruteforce` | vector | In-memory brute-force vector store |
+| `hnsw` | vector | HNSW approximate nearest neighbor vector store |
+| `postgres` | storage | PostgreSQL metadata backend |
+| `pgvector` | vector | pgvector vector store (requires `postgres`) |
+| `qdrant` | vector | Qdrant vector store |
+
+**Default build** (all local backends, requires CGo):
+
+```bash
+go build -tags "sqlite_fts5 sqlite bruteforce hnsw" -o shaktimand ./cmd/shaktimand
+```
+
+**Postgres-only build** (no CGo, no C compiler needed):
+
+```bash
+go build -tags "postgres pgvector" -o shaktimand ./cmd/shaktimand
+```
+
+**Everything** (local + remote backends):
+
+```bash
+go build -tags "sqlite_fts5 sqlite bruteforce hnsw postgres pgvector qdrant" -o shaktimand ./cmd/shaktimand
+```
+
+Omitting `sqlite`, `bruteforce`, and `hnsw` produces a static binary with no CGo dependency — useful for containerized postgres-only deployments.
 
 ### Optional: Ollama for Semantic Search
 
@@ -382,14 +416,17 @@ All configuration uses sensible defaults. Optionally create `.shaktiman/shaktima
 ### Build and Test
 
 ```bash
-# Build all packages
-go build -tags sqlite_fts5 ./...
+# Build all packages (default backends)
+go build -tags "sqlite_fts5 sqlite bruteforce hnsw" ./...
 
 # Run tests with race detection
-go test -race -tags sqlite_fts5 ./...
+go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw" ./...
 
 # Vet
-go vet -tags sqlite_fts5 ./...
+go vet -tags "sqlite_fts5 sqlite bruteforce hnsw" ./...
+
+# Postgres-only tests (no CGo)
+SHAKTIMAN_TEST_DB_BACKEND=postgres go test -race -tags "postgres pgvector" ./...
 ```
 
 ### Project Structure
@@ -400,12 +437,18 @@ cmd/
   shaktimand/          MCP daemon (stdio server)
 internal/
   types/               Shared types, config, interfaces
-  storage/             SQLite backend (schema, FTS5, graph, diffs)
+  storage/             Backend registry + interfaces
+    sqlite/            SQLite backend (schema, FTS5, graph, diffs)
+    postgres/          PostgreSQL backend (optional, build tag: postgres)
   parser/              Tree-sitter parsing, chunking, symbol extraction
   core/                Query engine, ranking, context assembly, fallback
   format/              Shared text formatters for CLI and MCP output
   daemon/              Lifecycle, writer, file watcher, enrichment pipeline
-  vector/              In-memory vector store, Ollama client, circuit breaker
+  vector/              Backend registry, Ollama client, circuit breaker
+    bruteforce/        In-memory brute-force vector store
+    hnsw/              HNSW approximate nearest neighbor store
+    pgvector/          pgvector backend (optional, build tag: pgvector)
+    qdrant/            Qdrant backend (optional, build tag: qdrant)
   mcp/                 MCP server, tool handlers, resources
   eval/                Evaluation harness (recall, precision, MRR)
 docs/                  Architecture and design documents
@@ -418,7 +461,7 @@ testdata/              Test fixtures (TypeScript, Python, Go projects)
 2. Add the tree-sitter grammar import
 3. Register file extensions in `internal/daemon/scan.go` and `internal/core/fallback.go`
 4. Add test fixtures in `testdata/`
-5. Run `go test -race -tags sqlite_fts5 ./...`
+5. Run `go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw" ./...`
 
 ## Stack
 

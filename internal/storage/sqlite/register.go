@@ -1,12 +1,15 @@
-package storage
+package sqlite
 
-import "github.com/shaktimanai/shaktiman/internal/types"
+import (
+	"github.com/shaktimanai/shaktiman/internal/storage"
+	"github.com/shaktimanai/shaktiman/internal/types"
+)
 
 // init registers the SQLite backend with the provider registry.
-// This is called automatically when the storage package is imported.
-// Future backends (postgres) will register from their own sub-packages.
+// This is called automatically when the sqlite package is imported
+// via a blank import in the binary's main package.
 func init() {
-	RegisterMetadataStore("sqlite", func(cfg MetadataStoreConfig) (types.WriterStore, types.StoreLifecycle, func() error, error) {
+	storage.RegisterMetadataStore("sqlite", func(cfg storage.MetadataStoreConfig) (types.WriterStore, types.StoreLifecycle, func() error, error) {
 		input := OpenInput{
 			Path:     cfg.SQLitePath,
 			InMemory: cfg.SQLiteInMemory,
