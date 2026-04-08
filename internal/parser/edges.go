@@ -104,10 +104,16 @@ func (p *Parser) walkForEdges(node *tree_sitter.Node, owner string, ctx *edgeCon
 		}
 	}
 
-	// Call expressions
+	// Call expressions — bug #9: the parser records the syntactic edge as
+	// it appears in source, including self-calls. Recursive functions show
+	// up as `fn → fn` edges, which downstream consumers need for
+	// recursion-aware analyses. The previous `callee != newOwner` filter
+	// silently dropped self-calls and same-named calls; semantic
+	// deduplication (e.g., distinguishing overloads) belongs in the graph
+	// layer, not the parser.
 	if nodeType == "call_expression" || nodeType == "call" || nodeType == "method_invocation" || nodeType == "function_call" {
 		callee := extractCalleeName(node, ctx.source)
-		if callee != "" && callee != newOwner {
+		if callee != "" {
 			ctx.addEdge(newOwner, callee, "calls")
 		}
 	}

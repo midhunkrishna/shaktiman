@@ -131,18 +131,12 @@ Noted during research for ADR-004 but not addressed. These affect the dependency
 - `internal/parser/edges.go` — `resolveCallee` switch extended to read both the object/operand and property/field children for `member_expression` (TypeScript/JavaScript), `selector_expression` (Go), `attribute` (Python), `field_access` (Java), and `scoped_identifier` (Rust, joined with `::`). A helper `joinReceiverProp` concatenates receiver and property, recursing through the receiver for multi-level chains.
 - Regression covered by `TestEdges_MemberCallPreservesReceiver` which parses a TypeScript function with four member calls on distinct receivers and asserts the call graph contains four distinct edge targets.
 
-### 9. Recursive calls are silently dropped
+### 9. Recursive calls are silently dropped — **RESOLVED**
 
-**Location:** `internal/parser/edges.go:110`
+**Status:** Fixed. The `callee != newOwner` filter in `extractEdges` is removed, so the parser records the syntactic edge as it appears in source. Recursive functions now show up as `fn → fn` edges in the call graph, and same-named calls (method overriding, same-name helpers) are preserved as-is. Semantic deduplication belongs in the graph resolution layer, not the parser.
 
-**Code:**
-```go
-if callee != "" && callee != newOwner {
-    ctx.addEdge(newOwner, callee, "calls")
-}
-```
-
-**Problem:** The `callee != newOwner` filter drops self-calls, which means recursive functions show no self-edge in the call graph. Also catches cases where a function calls a different function with the same name (method overriding, same-name helpers in different scopes).
+- `internal/parser/edges.go` — `if callee != ""` only; self-call suppression removed.
+- Regression covered by `TestEdges_RecursiveFunctionHasSelfEdge` which parses a Go recursive factorial function and asserts a `fact → fact` edge exists.
 
 ### 10. Generic type arguments are skipped entirely
 
@@ -174,6 +168,6 @@ if n.Kind() == "type_arguments" {
 **Lower impact:**
 - ~~Bug #6: Signature comment stripping~~ — **RESOLVED**
 - ~~Bug #7: Depth guard observability~~ — **RESOLVED**
-- Bug #9: Recursive call tracking.
+- ~~Bug #9: Recursive call tracking~~ — **RESOLVED**
 - Bug #10: Generic type arguments.
 - ~~Bug #12: Depth guard off-by-one~~ — **RESOLVED**
