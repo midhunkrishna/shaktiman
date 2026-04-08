@@ -48,23 +48,14 @@ Regression covered by `TestParse_JavaMultiDeclaratorField`.
 
 ## Chunker / Architecture Bugs
 
-### 4. `ChunkableTypes` conflates two different concepts
+### 4. `ChunkableTypes` conflates two different concepts — **RESOLVED**
 
-**Location:** `internal/parser/languages.go` — `ChunkableTypes` map
+**Status:** Fixed. `ChunkableTypes` is now `map[string]NodeMeta` with a `NodeMeta` struct carrying both the chunk kind and an `IsContainer` flag. `walkForSymbols` reads `IsContainer` directly — the hardcoded kind-string switch and the `case "impl_item", "mod_item", ..."` whitelist are gone.
 
-**Problem:** A node type in `ChunkableTypes` can be either:
-- A **container** (`class_declaration`, `interface_declaration`, `mod_item`, `impl_item`, `internal_module`) that holds nested definitions and should be recursed into
-- A **leaf declaration** (`field_declaration`, `const_item`, `static_item`) that should be emitted as-is and not recursed into
-
-**Current workaround:** `walkForSymbols` has a hardcoded whitelist of container node types:
-```go
-case "impl_item", "mod_item", "foreign_mod_item", "internal_module", "static_initializer":
-    shouldRecurse = true
-```
-
-This list must be kept in sync with the configs, duplicating information that should live in one place.
-
-**Proper fix:** Either split into `ContainerTypes` and `LeafTypes` maps, or change `ChunkableTypes` to `map[string]NodeMeta` where `NodeMeta` has `Kind string` and `IsContainer bool`.
+- `internal/parser/languages.go` — `NodeMeta{Kind, IsContainer}` struct added. All 9 language configs rewritten to use it. Containers flagged: Java `class_declaration`, `interface_declaration`, `record_declaration`, `static_initializer`; TypeScript `class_declaration`, `abstract_class_declaration`, `interface_declaration`, `internal_module`, `export_statement`, `ambient_declaration`; Python `class_definition`, `decorated_definition`; Rust `trait_item`, `impl_item`, `mod_item`, `foreign_mod_item`; JavaScript `class_declaration`, `export_statement`; Ruby `class`, `module`, `singleton_class`.
+- `internal/parser/chunker.go` — `kind := cfg.ChunkableTypes[nodeType].Kind` replaces the old `string` lookup.
+- `internal/parser/symbols.go` — the hardcoded whitelist and kind-string switch are replaced with `shouldRecurse = cfg.ChunkableTypes[nodeType].IsContainer`. Adding a new container kind to a language config no longer requires touching the walker.
+- Regression covered by `TestSymbols_ContainerRecursionDrivenByIsContainerFlag` which mutates Java's cached config at runtime, renames `class_declaration`'s chunk kind to `"custom_container"` while keeping `IsContainer: true`, and asserts that method symbols inside the class body are still extracted.
 
 ### 5. `decorated_definition` wrapper kind resolution depends on `findDeclarationChild`
 
@@ -182,7 +173,7 @@ if n.Kind() == "type_arguments" {
 
 **Highest impact:**
 - ~~Bug #1 + #2: Field and multi-declarator symbol extraction~~ — **RESOLVED**
-- Bug #4: `ChunkableTypes` conflation. The current workaround is fragile and will cause subtle bugs when adding new languages or new node types.
+- ~~Bug #4: `ChunkableTypes` conflation~~ — **RESOLVED**
 - ~~Bug #13: `namespace` symbol kind rejected by schema CHECK constraint~~ — **RESOLVED**
 
 **Medium impact:**

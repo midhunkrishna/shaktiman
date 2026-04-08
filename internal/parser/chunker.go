@@ -119,14 +119,14 @@ func (p *Parser) chunkNode(node *tree_sitter.Node, source []byte, cfg *LanguageC
 	tokens := p.tokens.Count(content)
 	nodeType := node.Kind()
 
-	kind := cfg.ChunkableTypes[nodeType]
+	kind := cfg.ChunkableTypes[nodeType].Kind
 
 	// Resolve kind for wrapper types (decorated_definition, export_statement, etc.)
 	// by looking at the inner definition child.
 	nameNode := node
 	if kind == "" {
 		if inner := findDeclarationChild(node); inner != nil {
-			if innerKind := cfg.ChunkableTypes[inner.Kind()]; innerKind != "" {
+			if innerKind := cfg.ChunkableTypes[inner.Kind()].Kind; innerKind != "" {
 				kind = innerKind
 			}
 			nameNode = inner

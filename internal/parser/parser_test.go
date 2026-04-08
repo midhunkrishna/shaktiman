@@ -2874,11 +2874,12 @@ func TestSymbols_ContainerRecursionDrivenByIsContainerFlag(t *testing.T) {
 		t.Fatalf("getConfig java: %v", err)
 	}
 
-	// Rename class_declaration's chunk kind to a value the current
-	// walkForSymbols switch does not recognize. This does NOT change that
-	// class_declaration is still chunkable, and it does not touch
-	// SymbolKindMap — class_declaration is still a symbol node.
-	cfg.ChunkableTypes["class_declaration"] = "custom_container"
+	// Rename class_declaration's chunk kind to a value the old
+	// walkForSymbols switch would not have recognized, while keeping
+	// IsContainer=true. After the NodeMeta refactor, recursion must be
+	// driven by the IsContainer flag — NOT by the kind string — so method
+	// symbols inside the class body must still be extracted.
+	cfg.ChunkableTypes["class_declaration"] = NodeMeta{Kind: "custom_container", IsContainer: true}
 
 	src := []byte(`public class Outer {
     public void first() {}

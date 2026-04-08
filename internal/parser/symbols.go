@@ -89,26 +89,13 @@ func (p *Parser) walkForSymbols(node *tree_sitter.Node, source []byte, exported 
 	}
 
 	// Recurse into containers and structural nodes to find nested symbols.
-	// For symbol nodes: only recurse if the chunk kind indicates a container
-	// (class, interface, namespace) that can hold nested definitions, or if
-	// the kind is "" (wrapper types like export_statement, decorated_definition).
-	// "block" kind nodes (field_declaration, impl_item, mod_item, etc.) are
-	// handled by checking if the node type is a known container.
-	shouldRecurse := !isSymbol // always recurse into non-symbol structural nodes
+	// For symbol nodes, recursion is driven by NodeMeta.IsContainer — the
+	// single source of truth set in the language config. Non-symbol
+	// structural nodes (body_statement, class_body, declaration_list, etc.)
+	// always recurse so symbol nodes nested inside them are reachable.
+	shouldRecurse := !isSymbol
 	if isSymbol {
-		chunkKind := cfg.ChunkableTypes[nodeType]
-		switch chunkKind {
-		case "class", "interface", "namespace", "":
-			shouldRecurse = true
-		case "block":
-			// Only recurse into "block" kind if it's a known container type,
-			// not a leaf like field_declaration or const_item
-			switch nodeType {
-			case "impl_item", "mod_item", "foreign_mod_item", "internal_module",
-				"static_initializer":
-				shouldRecurse = true
-			}
-		}
+		shouldRecurse = cfg.ChunkableTypes[nodeType].IsContainer
 	}
 	if shouldRecurse {
 		for i := 0; i < int(node.NamedChildCount()); i++ {
