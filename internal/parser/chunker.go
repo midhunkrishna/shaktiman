@@ -261,32 +261,44 @@ func (p *Parser) splitNodeByLines(node *tree_sitter.Node, source []byte, name st
 }
 
 // buildSignatureFromExtracted creates a compact summary of a container node
-// (class, module, trait, etc.) showing its declaration and member listing.
-// Comments are excluded — signatures are pure code structure.
+// (class, module, trait, etc.) showing its full declaration header and a
+// member listing. The header is reconstructed from tree-sitter's AST: the
+// range from the node's start to the `body` child's start. Everything in
+// that range is the header (modifiers, keywords, name, generics,
+// extends/implements clauses), possibly spanning multiple source lines.
+// The closing delimiter is derived from the source bytes after the body.
+// Comment children in the header range are stripped so they don't leak
+// into the signature.
+//
+// Bug #6 in docs/review-findings/parser-bugs-from-recursive-chunking.md:
+// the previous implementation scanned raw source lines and picked only the
+// first non-comment line as the declaration, truncating multi-line headers
+// and brittly matching comment prefixes with string operations.
 func buildSignatureFromExtracted(node *tree_sitter.Node, source []byte, name string, children []types.ChunkRecord) string {
 	var sb strings.Builder
 
-	// Extract declaration line(s) by finding the first non-comment source line
-	startByte := node.StartByte()
-	endByte := node.EndByte()
-	nodeText := string(source[startByte:endByte])
-	lines := strings.Split(nodeText, "\n")
+	// Find the body child — most grammars expose it via a `body` field.
+	// Fallback: the last named child, which is the body for grammars that
+	// use positional children (rare).
+	bodyNode := node.ChildByFieldName("body")
+	if bodyNode == nil {
+		if n := int(node.NamedChildCount()); n > 0 {
+			bodyNode = node.NamedChild(uint(n - 1))
+		}
+	}
 
-	// Find the declaration line (first non-empty, non-comment line)
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		// Skip comment lines (common prefixes across languages)
-		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") ||
-			strings.HasPrefix(trimmed, "/*") || strings.HasPrefix(trimmed, "*") ||
-			strings.HasPrefix(trimmed, "\"\"\"") || strings.HasPrefix(trimmed, "'''") {
-			continue
-		}
-		sb.WriteString(line)
+	// Header range: [node.StartByte(), bodyNode.StartByte()) when body is
+	// known; the whole node otherwise.
+	headerEnd := node.EndByte()
+	if bodyNode != nil {
+		headerEnd = bodyNode.StartByte()
+	}
+
+	header := stripHeaderComments(node, source, headerEnd)
+	header = strings.TrimRight(header, " \t\n\r")
+	if header != "" {
+		sb.WriteString(header)
 		sb.WriteString("\n")
-		break
 	}
 
 	// Member listing
@@ -306,16 +318,58 @@ func buildSignatureFromExtracted(node *tree_sitter.Node, source []byte, name str
 		sb.WriteString(" { ... }\n")
 	}
 
-	// Closing delimiter from last line of node
-	if len(lines) > 0 {
-		lastLine := strings.TrimSpace(lines[len(lines)-1])
-		if lastLine == "end" || lastLine == "}" {
-			sb.WriteString(lastLine)
+	// Closing delimiter: derive from the source bytes following the body
+	// node, or from the node's trailing source if the body spans to the
+	// node's end (common when the grammar includes the closing token
+	// inside the body).
+	if bodyNode != nil {
+		after := strings.TrimSpace(string(source[bodyNode.EndByte():node.EndByte()]))
+		if after != "" {
+			sb.WriteString(after)
 			sb.WriteString("\n")
+		} else {
+			trimmed := strings.TrimRight(string(source[node.StartByte():node.EndByte()]), " \t\n\r")
+			switch {
+			case strings.HasSuffix(trimmed, "end"):
+				sb.WriteString("end\n")
+			case strings.HasSuffix(trimmed, "}"):
+				sb.WriteString("}\n")
+			}
 		}
 	}
 
 	return sb.String()
+}
+
+// stripHeaderComments returns the source between node.StartByte() and
+// headerEnd with any `comment` child nodes in that range replaced by a
+// single space (so tokens on either side of the comment don't fuse). This
+// walks named children directly rather than doing line-prefix string
+// matching, so it correctly handles block comments that span multiple
+// lines and Python docstrings that are string literals rather than
+// comments.
+func stripHeaderComments(node *tree_sitter.Node, source []byte, headerEnd uint) string {
+	var buf strings.Builder
+	cursor := node.StartByte()
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(uint(i))
+		if child.StartByte() >= headerEnd {
+			break
+		}
+		if child.Kind() != "comment" {
+			continue
+		}
+		// Append source up to the comment, then skip the comment itself.
+		if child.StartByte() > cursor {
+			buf.Write(source[cursor:child.StartByte()])
+		}
+		buf.WriteByte(' ')
+		cursor = child.EndByte()
+	}
+	if cursor < headerEnd {
+		buf.Write(source[cursor:headerEnd])
+	}
+	return buf.String()
 }
 
 // mergeSmallChunks merges chunks below minChunkTokens with the previous chunk.

@@ -65,22 +65,15 @@ Regression covered by `TestParse_JavaMultiDeclaratorField`.
 - All five call sites (`chunkFile`, `chunkNode`, `findChunkableChildren`) now pass `cfg`.
 - Regression covered by `TestFindDeclarationChild_UnwrapsViaConfig` which parses `@staticmethod def foo(x): ...`, asserts `decorated_definition` does NOT expose a `declaration` field, then verifies `findDeclarationChild` returns the inner `function_definition`. A follow-up assertion deletes `function_definition` from the cached cfg and verifies the helper returns nil — proof that the lookup reads from cfg and not a hardcoded list.
 
-### 6. Signature builder strips comments via string prefix matching
+### 6. Signature builder strips comments via string prefix matching — **RESOLVED**
 
-**Location:** `internal/parser/chunker.go` — `buildSignatureFromExtracted`
+**Status:** Fixed. `buildSignatureFromExtracted` now reconstructs the header from AST geometry instead of line-prefix matching:
 
-**Current implementation:**
-```go
-if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") ||
-    strings.HasPrefix(trimmed, "/*") || strings.HasPrefix(trimmed, "*") ||
-    strings.HasPrefix(trimmed, "\"\"\"") || strings.HasPrefix(trimmed, "'''") {
-    continue
-}
-```
+- Locate the body child via `node.ChildByFieldName("body")` (or the last named child as a fallback for grammars that don't expose a body field). The header range is `[node.StartByte(), bodyNode.StartByte())` — everything from the node's start to the body's start, which includes modifiers, keywords, name, generics, extends/implements clauses, even when they span multiple source lines.
+- `stripHeaderComments` walks the node's named children in the header range and replaces any `comment` children with a single space so tokens on either side don't fuse. This handles C-style block comments, multi-line comments, and Python docstrings (which are expression statements, not comments) correctly because the AST — not line-prefix heuristics — is the source of truth.
+- The closing delimiter is taken from source bytes after the body node (for grammars where the body excludes the closing token, e.g. Ruby `body_statement`). If the body encompasses the closing token (Java `class_body` includes `}`), fall back to checking the node's trailing source for `end` or `}`.
 
-**Problem:** Line-prefix comment detection is brittle. A multi-line string starting with `"""` is a Python docstring, not a comment in the AST sense. A C-style block comment spanning multiple lines won't all start with `*`. Edge cases can leak comment text into signatures.
-
-**Proper fix:** Walk the node's children via tree-sitter, skip `comment` nodes, and reconstruct the declaration from the source bytes between the non-comment tokens.
+Regression covered by `TestSignature_MultiLineDeclarationPreservesFullHeader` which parses a large TypeScript class whose header spans four lines (name with generics, `extends`, `implements`, opening brace) and asserts the signature chunk contains every header line.
 
 ### 7. Depth guard silently falls back to line splitting
 
@@ -180,7 +173,7 @@ if n.Kind() == "type_arguments" {
 - ~~Bug #11: Size-gate contradiction~~ — **RESOLVED**
 
 **Lower impact:**
-- Bug #6: Signature comment stripping (works for common cases).
+- ~~Bug #6: Signature comment stripping~~ — **RESOLVED**
 - Bug #7: Depth guard observability.
 - Bug #9: Recursive call tracking.
 - Bug #10: Generic type arguments.
