@@ -36,13 +36,13 @@ Details:
 - Rust grouped `const_item` / `static_item` (if they can be grouped — tree-sitter-rust usually emits one `const_item` per declaration, so this may be moot).
 - Java `local_variable_declaration` inside method bodies. Not currently reached because `walkForSymbols` does not recurse into `method_declaration`, consistent with Go and TypeScript behavior. Can be added if per-method-scope symbol indexing becomes a requirement.
 
-### 3. Class fields were never extracted as symbols at all (pre-existing, hidden)
+### 3. Class fields were never extracted as symbols at all (pre-existing, hidden) — **RESOLVED by bugs #1 + #2**
 
-**Symptom:** Before ADR-004, class fields in Java, TypeScript, JavaScript, etc. were not in the symbol index at all.
+**Status:** Resolved transitively. Bug #1 fixed `extractName` so `variable_declarator` wins over `type_identifier`. Bug #2 re-registered Java `field_declaration` in `SymbolKindMap` with a specialized multi-declarator extractor. Class fields are now indexed through the recursive `walkForSymbols` path (which can reach them via the ADR-004 rewrite).
 
-**Root cause:** The old `walkForSymbols` gated class body recursion on `ClassBodyTypes`, which only contained method types (`method_declaration`, `constructor_declaration`, etc.) — not field types. So the entire class body walk never visited field nodes.
+The pre-existing root cause — `walkForSymbols` gating class body recursion on a `ClassBodyTypes` whitelist that excluded field types — was already fixed by ADR-004 itself. Bug #3 existed as a standalone entry to track that even after the recursion fix, fields were still disabled due to bug #1. With bugs #1 and #2 both resolved, fields are live in the index.
 
-**Current state:** The new recursive walker can reach fields, but symbol extraction for them is disabled (see bug #1) until `extractName` is fixed.
+Regression covered by `TestParse_JavaMultiDeclaratorField`.
 
 ---
 
