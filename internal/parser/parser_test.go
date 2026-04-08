@@ -1611,3 +1611,855 @@ func TestParse_ERBSupportedLanguage(t *testing.T) {
 		t.Error("expected erb to be a supported language")
 	}
 }
+
+// ── Recursive chunking tests: nesting bugs ──
+
+func TestParse_RubyNestedModuleClass(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`module Authentication
+  class TokenValidator
+    def initialize(secret)
+      @secret = secret
+    end
+
+    def validate(token)
+      decoded = decode(token)
+      decoded && !expired?(decoded)
+    end
+  end
+
+  class TokenGenerator
+    def generate(payload)
+      Base64.encode64(payload.to_json)
+    end
+  end
+end
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "auth.rb",
+		Content:  src,
+		Language: "ruby",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Should find module, both classes, and methods
+	syms := map[string]string{}
+	for _, s := range result.Symbols {
+		syms[s.Name] = s.Kind
+	}
+
+	for _, want := range []struct{ name, kind string }{
+		{"Authentication", "class"},
+		{"TokenValidator", "class"},
+		{"TokenGenerator", "class"},
+		{"initialize", "method"},
+		{"validate", "method"},
+		{"generate", "method"},
+	} {
+		if syms[want.name] != want.kind {
+			t.Errorf("expected symbol %q kind=%q, got %q", want.name, want.kind, syms[want.name])
+		}
+	}
+
+	// Should have chunks for nested classes
+	classChunks := 0
+	for _, c := range result.Chunks {
+		if c.Kind == "class" {
+			classChunks++
+		}
+	}
+	if classChunks < 2 {
+		t.Errorf("expected at least 2 class chunks (nested classes), got %d", classChunks)
+	}
+}
+
+func TestParse_RubySingletonClass(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`class Configuration
+  class << self
+    def instance
+      @instance ||= new
+    end
+
+    def reset!
+      @instance = nil
+    end
+  end
+
+  def initialize
+    @host = "localhost"
+  end
+end
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "config.rb",
+		Content:  src,
+		Language: "ruby",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	methods := map[string]bool{}
+	for _, s := range result.Symbols {
+		if s.Kind == "method" {
+			methods[s.Name] = true
+		}
+	}
+	for _, m := range []string{"instance", "reset!", "initialize"} {
+		if !methods[m] {
+			t.Errorf("expected method symbol %q", m)
+		}
+	}
+}
+
+func TestParse_PythonDecoratedMethodsInClass(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`class CacheManager:
+    def __init__(self, max_size=100):
+        self._cache = {}
+        self._max_size = max_size
+
+    @property
+    def size(self):
+        return len(self._cache)
+
+    @staticmethod
+    def hash_key(key):
+        import hashlib
+        return hashlib.sha256(key.encode()).hexdigest()
+
+    @classmethod
+    def create_with_defaults(cls):
+        return cls(max_size=256)
+
+    def get(self, key):
+        return self._cache.get(self.hash_key(key))
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "cache.py",
+		Content:  src,
+		Language: "python",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	methods := map[string]bool{}
+	for _, s := range result.Symbols {
+		if s.Kind == "function" {
+			methods[s.Name] = true
+		}
+	}
+
+	// All methods including decorated ones should be found
+	for _, m := range []string{"__init__", "size", "hash_key", "create_with_defaults", "get"} {
+		if !methods[m] {
+			t.Errorf("expected function symbol %q (decorated methods inside class)", m)
+		}
+	}
+}
+
+func TestParse_PythonNestedClass(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`class Outer:
+    class Inner:
+        def __init__(self, value):
+            self.value = value
+
+        def process(self):
+            return self.value * 2
+
+    def __init__(self):
+        self.inner = self.Inner(42)
+
+    def run(self):
+        return self.inner.process()
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "nested.py",
+		Content:  src,
+		Language: "python",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	syms := map[string]string{}
+	for _, s := range result.Symbols {
+		syms[s.Name] = s.Kind
+	}
+
+	for _, want := range []struct{ name, kind string }{
+		{"Outer", "class"},
+		{"Inner", "class"},
+		{"__init__", "function"},
+		{"process", "function"},
+		{"run", "function"},
+	} {
+		if syms[want.name] != want.kind {
+			t.Errorf("expected symbol %q kind=%q, got %q", want.name, want.kind, syms[want.name])
+		}
+	}
+}
+
+func TestParse_PythonTypeAlias(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`type Point = tuple[float, float]
+
+def distance(a: Point, b: Point) -> float:
+    return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "types.py",
+		Content:  src,
+		Language: "python",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	foundType := false
+	foundFunc := false
+	for _, c := range result.Chunks {
+		if c.Kind == "type" {
+			foundType = true
+		}
+		if c.Kind == "function" {
+			foundFunc = true
+		}
+	}
+	if !foundType {
+		t.Error("expected type chunk for type alias")
+	}
+	if !foundFunc {
+		t.Error("expected function chunk for distance")
+	}
+}
+
+func TestParse_RustTraitWithMethods(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`pub trait Serializer {
+    fn serialize(&self) -> Vec<u8>;
+    fn content_type(&self) -> &str;
+
+    fn serialize_to_string(&self) -> String {
+        String::from_utf8_lossy(&self.serialize()).to_string()
+    }
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "lib.rs",
+		Content:  src,
+		Language: "rust",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	syms := map[string]string{}
+	for _, s := range result.Symbols {
+		syms[s.Name] = s.Kind
+	}
+
+	if syms["Serializer"] != "interface" {
+		t.Errorf("expected trait symbol 'Serializer' kind=interface, got %q", syms["Serializer"])
+	}
+	for _, m := range []string{"serialize", "content_type", "serialize_to_string"} {
+		if syms[m] != "function" {
+			t.Errorf("expected function symbol %q inside trait, got %q", m, syms[m])
+		}
+	}
+}
+
+func TestParse_RustModuleWithItems(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`mod internal {
+    pub fn validate(input: &str) -> bool {
+        !input.is_empty() && input.len() < 1024
+    }
+
+    pub struct Config {
+        pub host: String,
+        pub port: u16,
+    }
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "lib.rs",
+		Content:  src,
+		Language: "rust",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	syms := map[string]string{}
+	for _, s := range result.Symbols {
+		syms[s.Name] = s.Kind
+	}
+
+	if syms["internal"] != "module" {
+		t.Errorf("expected module symbol 'internal', got kind=%q", syms["internal"])
+	}
+	if syms["validate"] != "function" {
+		t.Errorf("expected function symbol 'validate' inside mod, got kind=%q", syms["validate"])
+	}
+	if syms["Config"] != "type" {
+		t.Errorf("expected type symbol 'Config' inside mod, got kind=%q", syms["Config"])
+	}
+}
+
+func TestParse_RustUnion(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`union FloatOrInt {
+    f: f32,
+    i: u32,
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "lib.rs",
+		Content:  src,
+		Language: "rust",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	foundUnion := false
+	for _, s := range result.Symbols {
+		if s.Name == "FloatOrInt" && s.Kind == "type" {
+			foundUnion = true
+			break
+		}
+	}
+	if !foundUnion {
+		t.Error("expected union symbol 'FloatOrInt' kind=type")
+	}
+}
+
+func TestParse_RustExternBlock(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`extern "C" {
+    fn abs(input: i32) -> i32;
+    fn strlen(s: *const std::os::raw::c_char) -> usize;
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "lib.rs",
+		Content:  src,
+		Language: "rust",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	funcs := map[string]bool{}
+	for _, s := range result.Symbols {
+		if s.Kind == "function" {
+			funcs[s.Name] = true
+		}
+	}
+	for _, f := range []string{"abs", "strlen"} {
+		if !funcs[f] {
+			t.Errorf("expected function symbol %q inside extern block", f)
+		}
+	}
+}
+
+func TestParse_JavaInnerClass(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`public class Outer {
+    private String name;
+
+    public Outer(String name) {
+        this.name = name;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public class Inner {
+        private int value;
+
+        public Inner(int value) {
+            this.value = value;
+        }
+
+        public int getValue() {
+            return value;
+        }
+    }
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "Outer.java",
+		Content:  src,
+		Language: "java",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Use a set of name+kind pairs since constructors share names with classes
+	type symKey struct{ name, kind string }
+	symSet := map[symKey]bool{}
+	for _, s := range result.Symbols {
+		symSet[symKey{s.Name, s.Kind}] = true
+	}
+
+	for _, want := range []symKey{
+		{"Outer", "class"},
+		{"Inner", "class"},
+		{"getName", "method"},
+		{"getValue", "method"},
+	} {
+		if !symSet[want] {
+			t.Errorf("expected symbol %q kind=%q", want.name, want.kind)
+		}
+	}
+}
+
+func TestParse_JavaInterfaceWithDefaults(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`public interface Cacheable {
+    String cacheKey();
+
+    default long ttl() {
+        return 3600;
+    }
+
+    static String buildKey(String id) {
+        return "cache:" + id;
+    }
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "Cacheable.java",
+		Content:  src,
+		Language: "java",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	syms := map[string]string{}
+	for _, s := range result.Symbols {
+		syms[s.Name] = s.Kind
+	}
+
+	if syms["Cacheable"] != "interface" {
+		t.Errorf("expected interface symbol 'Cacheable', got kind=%q", syms["Cacheable"])
+	}
+	for _, m := range []string{"cacheKey", "ttl", "buildKey"} {
+		if syms[m] != "method" {
+			t.Errorf("expected method symbol %q inside interface, got kind=%q", m, syms[m])
+		}
+	}
+}
+
+func TestParse_TypeScriptNamespace(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`namespace Validators {
+  export function isEmail(s: string): boolean {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+  }
+
+  export class RegexValidator {
+    constructor(private pattern: RegExp) {}
+
+    isValid(s: string): boolean {
+      return this.pattern.test(s);
+    }
+  }
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "validators.ts",
+		Content:  src,
+		Language: "typescript",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	syms := map[string]string{}
+	for _, s := range result.Symbols {
+		syms[s.Name] = s.Kind
+	}
+
+	if syms["Validators"] != "namespace" {
+		t.Errorf("expected namespace symbol 'Validators', got kind=%q", syms["Validators"])
+	}
+	if syms["isEmail"] != "function" {
+		t.Errorf("expected function symbol 'isEmail' inside namespace, got kind=%q", syms["isEmail"])
+	}
+	if syms["RegexValidator"] != "class" {
+		t.Errorf("expected class symbol 'RegexValidator' inside namespace, got kind=%q", syms["RegexValidator"])
+	}
+}
+
+func TestParse_TypeScriptGeneratorFunction(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`function* range(start: number, end: number): Generator<number> {
+  for (let i = start; i < end; i++) {
+    yield i;
+  }
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "gen.ts",
+		Content:  src,
+		Language: "typescript",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	foundFunc := false
+	for _, s := range result.Symbols {
+		if s.Name == "range" && s.Kind == "function" {
+			foundFunc = true
+			break
+		}
+	}
+	if !foundFunc {
+		t.Error("expected function symbol 'range' for generator function")
+	}
+}
+
+func TestParse_JavaRecordCompactConstructor(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`package com.example;
+
+public record Point(double x, double y) {
+    public Point {
+        if (Double.isNaN(x) || Double.isNaN(y)) {
+            throw new IllegalArgumentException("Coordinates must not be NaN");
+        }
+    }
+
+    public double distanceTo(Point other) {
+        double dx = this.x - other.x;
+        double dy = this.y - other.y;
+        return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    static {
+        System.out.println("Point record loaded");
+    }
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "Point.java",
+		Content:  src,
+		Language: "java",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	type symKey struct{ name, kind string }
+	symSet := map[symKey]bool{}
+	for _, s := range result.Symbols {
+		symSet[symKey{s.Name, s.Kind}] = true
+	}
+
+	// Record itself is indexed as class
+	if !symSet[symKey{"Point", "class"}] {
+		t.Error("expected record symbol 'Point' kind=class")
+	}
+	// Compact constructor is a "method" symbol named Point (same as enclosing record).
+	// Regular methods inside the record must also be extracted.
+	if !symSet[symKey{"distanceTo", "method"}] {
+		t.Error("expected method symbol 'distanceTo' inside record")
+	}
+	// Compact constructor: tree-sitter exposes compact_constructor_declaration;
+	// verify at least one "method" symbol with name "Point" exists.
+	foundCompact := false
+	for _, s := range result.Symbols {
+		if s.Name == "Point" && s.Kind == "method" {
+			foundCompact = true
+			break
+		}
+	}
+	if !foundCompact {
+		t.Error("expected compact constructor method symbol 'Point'")
+	}
+}
+
+func TestParse_JavaStaticInitializer(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`package com.example;
+
+public class Config {
+    private static final java.util.Map<String, String> DEFAULTS = new java.util.HashMap<>();
+
+    static {
+        DEFAULTS.put("host", "localhost");
+        DEFAULTS.put("port", "8080");
+        DEFAULTS.put("timeout", "30");
+    }
+
+    public static String get(String key) {
+        return DEFAULTS.get(key);
+    }
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "Config.java",
+		Content:  src,
+		Language: "java",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Symbol for enclosing class + the static method must both be found.
+	syms := map[string]string{}
+	for _, s := range result.Symbols {
+		syms[s.Name] = s.Kind
+	}
+	if syms["Config"] != "class" {
+		t.Errorf("expected class symbol 'Config', got kind=%q", syms["Config"])
+	}
+	if syms["get"] != "method" {
+		t.Errorf("expected method symbol 'get', got kind=%q", syms["get"])
+	}
+
+	// A block chunk covering the static initializer body must exist — verify by
+	// locating a chunk whose line range contains the `DEFAULTS.put` lines.
+	foundStaticBlock := false
+	for _, c := range result.Chunks {
+		if c.StartLine <= 7 && c.EndLine >= 9 && c.Kind == "block" {
+			foundStaticBlock = true
+			break
+		}
+	}
+	if !foundStaticBlock {
+		t.Error("expected block chunk covering static initializer body")
+	}
+}
+
+func TestParse_TypeScriptAmbientDeclarations(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`declare function fetch(url: string): Promise<Response>;
+
+declare class EventEmitter {
+  on(event: string, listener: (...args: any[]) => void): this;
+  emit(event: string, ...args: any[]): boolean;
+}
+
+declare namespace NodeJS {
+  interface ProcessEnv {
+    NODE_ENV: string;
+    PORT?: string;
+  }
+}
+
+declare const VERSION: string;
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "ambient.d.ts",
+		Content:  src,
+		Language: "typescript",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	syms := map[string]string{}
+	for _, s := range result.Symbols {
+		syms[s.Name] = s.Kind
+	}
+
+	// declare function → function_signature symbol
+	if syms["fetch"] != "function" {
+		t.Errorf("expected ambient function 'fetch' kind=function, got %q", syms["fetch"])
+	}
+	// declare class → class symbol
+	if syms["EventEmitter"] != "class" {
+		t.Errorf("expected ambient class 'EventEmitter' kind=class, got %q", syms["EventEmitter"])
+	}
+	// declare namespace → namespace symbol
+	if syms["NodeJS"] != "namespace" {
+		t.Errorf("expected ambient namespace 'NodeJS' kind=namespace, got %q", syms["NodeJS"])
+	}
+	// declare const → variable symbol
+	if syms["VERSION"] != "variable" && syms["VERSION"] != "constant" {
+		t.Errorf("expected ambient const 'VERSION' kind=variable|constant, got %q", syms["VERSION"])
+	}
+}
+
+func TestParse_TypeScriptOverloadSignatures(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`function parse(input: string): number;
+function parse(input: number): string;
+function parse(input: string | number): string | number {
+  if (typeof input === "string") {
+    return parseInt(input, 10);
+  }
+  return input.toString();
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "overloads.ts",
+		Content:  src,
+		Language: "typescript",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Both overload signatures AND the implementation should be extracted.
+	// Overload signatures are function_signature (no body); the implementation
+	// is function_declaration. All three resolve to symbol name "parse".
+	parseCount := 0
+	for _, s := range result.Symbols {
+		if s.Name == "parse" && s.Kind == "function" {
+			parseCount++
+		}
+	}
+	if parseCount < 3 {
+		t.Errorf("expected 3 'parse' function symbols (2 overload signatures + 1 implementation), got %d", parseCount)
+	}
+}

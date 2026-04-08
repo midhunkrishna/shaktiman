@@ -21,11 +21,9 @@ type LanguageConfig struct {
 	Grammar        *tree_sitter.Language
 	ChunkableTypes map[string]string // node_type → chunk kind
 	SymbolKindMap  map[string]string // node_type → symbol kind
-	ClassBodyTypes map[string]bool   // method-like types inside class bodies
 	ImportTypes    map[string]bool   // node types treated as imports
 	ExportType     string            // export wrapper type (empty if N/A)
-	ClassBodyType  string            // node type for class body
-	ClassTypes     map[string]bool   // node types treated as classes
+	AmbientType    string            // ambient declaration wrapper type (empty if N/A)
 }
 
 // GetLanguageConfig returns the config for the given language name.
@@ -69,40 +67,41 @@ func typescriptConfig() *LanguageConfig {
 		Name:    "typescript",
 		Grammar: tree_sitter.NewLanguage(tree_sitter_typescript.LanguageTypescript()),
 		ChunkableTypes: map[string]string{
-			"function_declaration":       "function",
-			"class_declaration":          "class",
-			"interface_declaration":      "interface",
-			"type_alias_declaration":     "type",
-			"enum_declaration":           "type",
-			"export_statement":           "", // resolved based on child
-			"lexical_declaration":        "block",
-			"variable_declaration":       "block",
-			"abstract_class_declaration": "class",
+			"function_declaration":           "function",
+			"generator_function_declaration": "function",
+			"function_signature":             "function", // overload signatures, ambient fn declarations
+			"class_declaration":              "class",
+			"abstract_class_declaration":     "class",
+			"interface_declaration":          "interface",
+			"type_alias_declaration":         "type",
+			"enum_declaration":               "type",
+			"internal_module":                "block", // namespace declarations
+			"export_statement":               "",      // resolved based on child
+			"ambient_declaration":            "",      // declare wrapper, resolved based on child
+			"lexical_declaration":            "block",
+			"variable_declaration":           "block",
+			"method_definition":              "method", // class body methods
+			"public_field_definition":        "block",  // class body fields
 		},
 		SymbolKindMap: map[string]string{
-			"function_declaration":       "function",
-			"class_declaration":          "class",
-			"abstract_class_declaration": "class",
-			"method_definition":          "method",
-			"interface_declaration":      "interface",
-			"type_alias_declaration":     "type",
-			"enum_declaration":           "type",
-			"lexical_declaration":        "variable",
-			"variable_declaration":       "variable",
-		},
-		ClassBodyTypes: map[string]bool{
-			"method_definition":       true,
-			"public_field_definition": true,
+			"function_declaration":           "function",
+			"generator_function_declaration": "function",
+			"function_signature":             "function",
+			"class_declaration":              "class",
+			"abstract_class_declaration":     "class",
+			"method_definition":              "method",
+			"interface_declaration":          "interface",
+			"type_alias_declaration":         "type",
+			"enum_declaration":               "type",
+			"internal_module":                "namespace",
+			"lexical_declaration":            "variable",
+			"variable_declaration":           "variable",
 		},
 		ImportTypes: map[string]bool{
 			"import_statement": true,
 		},
-		ExportType:    "export_statement",
-		ClassBodyType: "class_body",
-		ClassTypes: map[string]bool{
-			"class_declaration":          true,
-			"abstract_class_declaration": true,
-		},
+		ExportType:  "export_statement",
+		AmbientType: "ambient_declaration",
 	}
 }
 
@@ -114,24 +113,18 @@ func pythonConfig() *LanguageConfig {
 			"function_definition":   "function",
 			"class_definition":      "class",
 			"decorated_definition":  "", // resolved based on child
+			"type_alias_statement":  "type",
 			"import_statement":      "",
 			"import_from_statement": "",
 		},
 		SymbolKindMap: map[string]string{
-			"function_definition": "function",
-			"class_definition":    "class",
-		},
-		ClassBodyTypes: map[string]bool{
-			"function_definition": true,
+			"function_definition":  "function",
+			"class_definition":     "class",
+			"type_alias_statement": "type",
 		},
 		ImportTypes: map[string]bool{
 			"import_statement":      true,
 			"import_from_statement": true,
-		},
-		ExportType:    "", // Python has no export wrapper
-		ClassBodyType: "block",
-		ClassTypes: map[string]bool{
-			"class_definition": true,
 		},
 	}
 }
@@ -155,13 +148,9 @@ func goConfig() *LanguageConfig {
 			"var_declaration":      "variable",
 			"const_declaration":    "variable",
 		},
-		ClassBodyTypes: map[string]bool{}, // Go has no class bodies
 		ImportTypes: map[string]bool{
 			"import_declaration": true,
 		},
-		ExportType:    "",
-		ClassBodyType: "",
-		ClassTypes:    map[string]bool{},
 	}
 }
 
@@ -170,39 +159,37 @@ func rustConfig() *LanguageConfig {
 		Name:    "rust",
 		Grammar: tree_sitter.NewLanguage(tree_sitter_rust.Language()),
 		ChunkableTypes: map[string]string{
-			"function_item":    "function",
-			"struct_item":      "type",
-			"enum_item":        "type",
-			"trait_item":       "interface",
-			"impl_item":        "block",
-			"type_item":        "type",
-			"mod_item":         "block",
-			"use_declaration":  "",
-			"const_item":       "block",
-			"static_item":      "block",
-			"macro_definition": "function",
+			"function_item":           "function",
+			"function_signature_item": "function", // trait method signatures, extern fn declarations
+			"struct_item":             "type",
+			"enum_item":               "type",
+			"union_item":              "type",
+			"trait_item":              "interface",
+			"impl_item":              "block",
+			"type_item":               "type",
+			"mod_item":                "block",
+			"foreign_mod_item":        "block", // extern "C" { } blocks
+			"use_declaration":         "",
+			"const_item":              "block",
+			"static_item":             "block",
+			"macro_definition":        "function",
 		},
 		SymbolKindMap: map[string]string{
-			"function_item":    "function",
-			"struct_item":      "type",
-			"enum_item":        "type",
-			"trait_item":       "interface",
-			"impl_item":        "type",
-			"type_item":        "type",
-			"const_item":       "variable",
-			"static_item":      "variable",
-			"macro_definition": "function",
-		},
-		ClassBodyTypes: map[string]bool{
-			"function_item": true, // methods inside impl blocks
+			"function_item":           "function",
+			"function_signature_item": "function",
+			"struct_item":             "type",
+			"enum_item":               "type",
+			"union_item":              "type",
+			"trait_item":              "interface",
+			"impl_item":              "type",
+			"type_item":               "type",
+			"mod_item":                "module",
+			"const_item":              "variable",
+			"static_item":             "variable",
+			"macro_definition":        "function",
 		},
 		ImportTypes: map[string]bool{
 			"use_declaration": true,
-		},
-		ExportType:    "", // Rust uses pub visibility, not export wrappers
-		ClassBodyType: "declaration_list",
-		ClassTypes: map[string]bool{
-			"impl_item": true,
 		},
 	}
 }
@@ -212,39 +199,33 @@ func javaConfig() *LanguageConfig {
 		Name:    "java",
 		Grammar: tree_sitter.NewLanguage(tree_sitter_java.Language()),
 		ChunkableTypes: map[string]string{
-			"class_declaration":           "class",
-			"interface_declaration":       "interface",
-			"enum_declaration":            "type",
-			"record_declaration":          "class",
-			"annotation_type_declaration": "type",
-			"method_declaration":          "method",
-			"constructor_declaration":     "method",
-			"import_declaration":          "",
-			"package_declaration":         "",
-			"field_declaration":           "block",
+			"class_declaration":               "class",
+			"interface_declaration":           "interface",
+			"enum_declaration":                "type",
+			"record_declaration":              "class",
+			"annotation_type_declaration":     "type",
+			"method_declaration":              "method",
+			"constructor_declaration":         "method",
+			"compact_constructor_declaration": "method", // record compact constructors
+			"static_initializer":              "block",  // static { } blocks
+			"import_declaration":              "",
+			"package_declaration":             "",
+			"field_declaration":               "block",
 		},
 		SymbolKindMap: map[string]string{
-			"class_declaration":           "class",
-			"interface_declaration":       "interface",
-			"enum_declaration":            "type",
-			"record_declaration":          "class",
-			"annotation_type_declaration": "type",
-			"method_declaration":          "method",
-			"constructor_declaration":     "method",
-			"field_declaration":           "variable",
-		},
-		ClassBodyTypes: map[string]bool{
-			"method_declaration":      true,
-			"constructor_declaration": true,
+			"class_declaration":               "class",
+			"interface_declaration":           "interface",
+			"enum_declaration":                "type",
+			"record_declaration":              "class",
+			"annotation_type_declaration":     "type",
+			"method_declaration":              "method",
+			"constructor_declaration":         "method",
+			"compact_constructor_declaration": "method",
+			// field_declaration omitted: extractName returns type name instead of
+			// variable name; needs multi-declarator handling like TS lexical_declaration.
 		},
 		ImportTypes: map[string]bool{
 			"import_declaration": true,
-		},
-		ExportType:    "",
-		ClassBodyType: "class_body",
-		ClassTypes: map[string]bool{
-			"class_declaration":  true,
-			"record_declaration": true,
 		},
 	}
 }
@@ -261,11 +242,6 @@ func bashConfig() *LanguageConfig {
 		SymbolKindMap: map[string]string{
 			"function_definition": "function",
 		},
-		ClassBodyTypes: map[string]bool{},
-		ImportTypes:    map[string]bool{},
-		ExportType:     "",
-		ClassBodyType:  "",
-		ClassTypes:     map[string]bool{},
 	}
 }
 
@@ -280,6 +256,8 @@ func javascriptConfig() *LanguageConfig {
 			"export_statement":               "",
 			"lexical_declaration":            "block",
 			"variable_declaration":           "block",
+			"method_definition":              "method", // class body methods
+			"field_definition":               "block",  // class body fields
 		},
 		SymbolKindMap: map[string]string{
 			"function_declaration":           "function",
@@ -289,18 +267,10 @@ func javascriptConfig() *LanguageConfig {
 			"lexical_declaration":            "variable",
 			"variable_declaration":           "variable",
 		},
-		ClassBodyTypes: map[string]bool{
-			"method_definition": true,
-			"field_definition":  true,
-		},
 		ImportTypes: map[string]bool{
 			"import_statement": true,
 		},
-		ExportType:    "export_statement",
-		ClassBodyType: "class_body",
-		ClassTypes: map[string]bool{
-			"class_declaration": true,
-		},
+		ExportType: "export_statement",
 	}
 }
 
@@ -313,6 +283,7 @@ func rubyConfig() *LanguageConfig {
 			"singleton_method": "function",
 			"class":            "class",
 			"module":           "class",
+			"singleton_class":  "class", // class << self
 			"lambda":           "function",
 		},
 		SymbolKindMap: map[string]string{
@@ -320,20 +291,10 @@ func rubyConfig() *LanguageConfig {
 			"singleton_method": "method",
 			"class":            "class",
 			"module":           "class",
-		},
-		ClassBodyTypes: map[string]bool{
-			"method":           true,
-			"singleton_method": true,
+			"singleton_class":  "class",
 		},
 		ImportTypes: map[string]bool{
 			// Ruby uses require/require_relative which are method calls, not special nodes.
-			// We don't track them as imports for now.
-		},
-		ExportType:    "", // Ruby has no export wrapper
-		ClassBodyType: "body_statement",
-		ClassTypes: map[string]bool{
-			"class":  true,
-			"module": true,
 		},
 	}
 }
@@ -352,10 +313,5 @@ func erbConfig() *LanguageConfig {
 			// ERB doesn't have traditional symbols like functions/classes
 			// The Ruby code inside directives would need language injection to parse
 		},
-		ClassBodyTypes: map[string]bool{},
-		ImportTypes:    map[string]bool{},
-		ExportType:     "",
-		ClassBodyType:  "",
-		ClassTypes:     map[string]bool{},
 	}
 }

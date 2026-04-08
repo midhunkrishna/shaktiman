@@ -77,30 +77,37 @@ func (p *Parser) walkForSymbols(node *tree_sitter.Node, source []byte, exported 
 		}
 	}
 
-	// Recurse into class bodies for methods
-	if cfg.ClassBodyType != "" && nodeType == cfg.ClassBodyType {
+	// Unwrap ambient declaration wrapper (TypeScript declare)
+	if cfg.AmbientType != "" && nodeType == cfg.AmbientType {
 		for i := 0; i < int(node.NamedChildCount()); i++ {
-			child := node.NamedChild(uint(i))
-			if cfg.ClassBodyTypes[child.Kind()] {
-				p.walkForSymbols(child, source, exported, chunks, symbols, cfg)
-			}
+			p.walkForSymbols(node.NamedChild(uint(i)), source, exported, chunks, symbols, cfg)
 		}
 		return
 	}
 
-	// For class declarations, recurse into their body
-	if cfg.ClassTypes[nodeType] {
-		if cfg.ClassBodyType != "" {
-			body := findChildByType(node, cfg.ClassBodyType)
-			if body != nil {
-				p.walkForSymbols(body, source, exported, chunks, symbols, cfg)
+	// Recurse into containers and structural nodes to find nested symbols.
+	// For symbol nodes: only recurse if the chunk kind indicates a container
+	// (class, interface, namespace) that can hold nested definitions, or if
+	// the kind is "" (wrapper types like export_statement, decorated_definition).
+	// "block" kind nodes (field_declaration, impl_item, mod_item, etc.) are
+	// handled by checking if the node type is a known container.
+	shouldRecurse := !isSymbol // always recurse into non-symbol structural nodes
+	if isSymbol {
+		chunkKind := cfg.ChunkableTypes[nodeType]
+		switch chunkKind {
+		case "class", "interface", "namespace", "":
+			shouldRecurse = true
+		case "block":
+			// Only recurse into "block" kind if it's a known container type,
+			// not a leaf like field_declaration or const_item
+			switch nodeType {
+			case "impl_item", "mod_item", "foreign_mod_item", "internal_module",
+				"static_initializer":
+				shouldRecurse = true
 			}
 		}
-		return
 	}
-
-	// For container nodes, recurse into named children
-	if !isSymbol {
+	if shouldRecurse {
 		for i := 0; i < int(node.NamedChildCount()); i++ {
 			p.walkForSymbols(node.NamedChild(uint(i)), source, exported, chunks, symbols, cfg)
 		}

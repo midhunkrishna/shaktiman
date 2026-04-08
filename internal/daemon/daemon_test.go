@@ -132,6 +132,125 @@ func TestIntegration_IndexAndSearch(t *testing.T) {
 		stats.TotalFiles, stats.TotalChunks, stats.TotalSymbols, len(results))
 }
 
+func TestEnsureParserVersion_PurgesOnMismatch(t *testing.T) {
+	t.Parallel()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	testdataRoot := filepath.Join(cwd, "..", "..", "testdata", "typescript_project")
+	if _, err := os.Stat(testdataRoot); os.IsNotExist(err) {
+		t.Skipf("testdata not found at %s", testdataRoot)
+	}
+
+	tmpDir := t.TempDir()
+	cfg := types.Config{
+		ProjectRoot:       testdataRoot,
+		DBPath:            filepath.Join(tmpDir, "test.db"),
+		EnrichmentWorkers: 2,
+		WriterChannelSize: 100,
+	}
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon: %v", err)
+	}
+	defer d.Stop()
+
+	ctx := context.Background()
+
+	// Initial index — records current parser version.
+	if err := d.IndexProject(ctx, nil); err != nil {
+		t.Fatalf("IndexProject: %v", err)
+	}
+	stats, err := d.Store().GetIndexStats(ctx)
+	if err != nil {
+		t.Fatalf("GetIndexStats: %v", err)
+	}
+	if stats.TotalFiles == 0 {
+		t.Fatal("expected files after initial index")
+	}
+	stored, err := d.Store().GetConfig(ctx, parserVersionConfigKey)
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if stored != parser.ChunkAlgorithmVersion {
+		t.Fatalf("stored version = %q, want %q", stored, parser.ChunkAlgorithmVersion)
+	}
+
+	// Simulate an upgrade: force an older version into the config table.
+	if err := d.Store().SetConfig(ctx, parserVersionConfigKey, "0-legacy"); err != nil {
+		t.Fatalf("SetConfig legacy: %v", err)
+	}
+
+	// ensureParserVersion should purge every file.
+	if err := d.ensureParserVersion(ctx); err != nil {
+		t.Fatalf("ensureParserVersion: %v", err)
+	}
+	stats, err = d.Store().GetIndexStats(ctx)
+	if err != nil {
+		t.Fatalf("GetIndexStats after purge: %v", err)
+	}
+	if stats.TotalFiles != 0 {
+		t.Errorf("expected 0 files after purge, got %d", stats.TotalFiles)
+	}
+	if stats.TotalChunks != 0 {
+		t.Errorf("expected 0 chunks after purge (cascade), got %d", stats.TotalChunks)
+	}
+	if stats.TotalSymbols != 0 {
+		t.Errorf("expected 0 symbols after purge (cascade), got %d", stats.TotalSymbols)
+	}
+}
+
+func TestEnsureParserVersion_NoOpOnMatch(t *testing.T) {
+	t.Parallel()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	testdataRoot := filepath.Join(cwd, "..", "..", "testdata", "typescript_project")
+	if _, err := os.Stat(testdataRoot); os.IsNotExist(err) {
+		t.Skipf("testdata not found at %s", testdataRoot)
+	}
+
+	tmpDir := t.TempDir()
+	cfg := types.Config{
+		ProjectRoot:       testdataRoot,
+		DBPath:            filepath.Join(tmpDir, "test.db"),
+		EnrichmentWorkers: 2,
+		WriterChannelSize: 100,
+	}
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon: %v", err)
+	}
+	defer d.Stop()
+
+	ctx := context.Background()
+
+	if err := d.IndexProject(ctx, nil); err != nil {
+		t.Fatalf("IndexProject: %v", err)
+	}
+	statsBefore, _ := d.Store().GetIndexStats(ctx)
+
+	// Second call with matching version must not touch data.
+	if err := d.ensureParserVersion(ctx); err != nil {
+		t.Fatalf("ensureParserVersion: %v", err)
+	}
+	statsAfter, _ := d.Store().GetIndexStats(ctx)
+	if statsAfter.TotalFiles != statsBefore.TotalFiles {
+		t.Errorf("files changed on no-op: before=%d after=%d",
+			statsBefore.TotalFiles, statsAfter.TotalFiles)
+	}
+	if statsAfter.TotalChunks != statsBefore.TotalChunks {
+		t.Errorf("chunks changed on no-op: before=%d after=%d",
+			statsBefore.TotalChunks, statsAfter.TotalChunks)
+	}
+}
+
 func TestScanRepo(t *testing.T) {
 	t.Parallel()
 

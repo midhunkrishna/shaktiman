@@ -91,6 +91,48 @@ func TestGetFileByPath_NotFound(t *testing.T) {
 	}
 }
 
+func TestConfig_GetSet(t *testing.T) {
+	t.Parallel()
+	store := setupTestStore(t)
+	ctx := context.Background()
+
+	// Absent key returns empty string, no error.
+	v, err := store.GetConfig(ctx, "parser_algorithm_version")
+	if err != nil {
+		t.Fatalf("GetConfig empty: %v", err)
+	}
+	if v != "" {
+		t.Errorf("expected empty value for absent key, got %q", v)
+	}
+
+	// Write and read back.
+	if err := store.SetConfig(ctx, "parser_algorithm_version", "2"); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	v, err = store.GetConfig(ctx, "parser_algorithm_version")
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if v != "2" {
+		t.Errorf("value = %q, want %q", v, "2")
+	}
+
+	// Overwrite.
+	if err := store.SetConfig(ctx, "parser_algorithm_version", "3"); err != nil {
+		t.Fatalf("SetConfig overwrite: %v", err)
+	}
+	v, _ = store.GetConfig(ctx, "parser_algorithm_version")
+	if v != "3" {
+		t.Errorf("value after overwrite = %q, want %q", v, "3")
+	}
+
+	// Unrelated key still absent.
+	v, _ = store.GetConfig(ctx, "some_other_key")
+	if v != "" {
+		t.Errorf("expected empty value for unrelated key, got %q", v)
+	}
+}
+
 func TestInsertAndGetChunks(t *testing.T) {
 	t.Parallel()
 	store := setupTestStore(t)

@@ -1010,3 +1010,32 @@ func (s *Store) RecordToolCalls(ctx context.Context, records []types.ToolCallRec
 		return nil
 	})
 }
+
+// ── Config key-value ──
+
+// GetConfig returns the value for a config key. Returns empty string and nil
+// error if the key is absent.
+func (s *Store) GetConfig(ctx context.Context, key string) (string, error) {
+	var value string
+	err := s.db.QueryRowContext(ctx, "SELECT value FROM config WHERE key = ?", key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get config %q: %w", key, err)
+	}
+	return value, nil
+}
+
+// SetConfig writes or overwrites a config key/value pair.
+func (s *Store) SetConfig(ctx context.Context, key, value string) error {
+	return s.db.WithWriteTx(func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO config (key, value) VALUES (?, ?)
+			ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+		if err != nil {
+			return fmt.Errorf("set config %q: %w", key, err)
+		}
+		return nil
+	})
+}
