@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
+
+	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
 func TestNewParser(t *testing.T) {
@@ -2986,5 +2988,103 @@ def foo(x):
 		t.Errorf("expected nil unwrap after removing function_definition from cfg.ChunkableTypes, "+
 			"got %q — bug #5 regressed: findDeclarationChild is hardcoding the declaration list "+
 			"instead of reading from cfg", inner.Kind())
+	}
+}
+
+// TestSignature_MultiLineDeclarationPreservesFullHeader is the RED test for
+// bug #6 in docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #6: buildSignatureFromExtracted builds the "declaration line" of a
+// container chunk by scanning raw source lines and picking the FIRST
+// non-comment, non-empty line. This has two problems:
+//
+//  1. Multi-line declarations (TypeScript classes with generic parameters
+//     split across lines, an `extends` clause, an `implements` list, or an
+//     opening `{` on its own line) are truncated to just their first line.
+//     The name, generics, and inheritance clauses are lost from the
+//     signature chunk — search hits on those fields get no context.
+//  2. Line-prefix comment matching is brittle: any line starting with `#`,
+//     `//`, `/*`, `*`, `"""`, or `'''` is skipped, so legitimate code that
+//     happens to start with one of those tokens (rare but possible) is
+//     dropped.
+//
+// The proper fix walks the node's tree-sitter children to find the
+// header tokens (up to the body) and the closing delimiter, skipping
+// `comment` siblings. The reconstruction uses source byte ranges between
+// non-comment tokens.
+//
+// This test parses a large TypeScript class whose declaration is split
+// across four lines (name, generics, `extends`, `implements`) so the
+// chunker is forced to decompose and call buildSignatureFromExtracted.
+// The signature chunk's content must contain the full header — not just
+// the first line. Under the bug, the assertion on `implements` fails.
+func TestSignature_MultiLineDeclarationPreservesFullHeader(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	// Build a TypeScript class with a multi-line header and enough method
+	// bodies to exceed maxChunkTokens (1024). Each method is ~30 tokens;
+	// 40 methods ≈ 1200 tokens total.
+	var body strings.Builder
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&body, `  method_%02d(alpha: number, beta: number, gamma: number): number {
+    const result = alpha + beta * gamma;
+    const formatted = `+"`"+`item_${alpha}_${beta}_${gamma}`+"`"+`;
+    return result + formatted.length;
+  }
+
+`, i)
+	}
+	src := []byte(fmt.Sprintf(`export class BigProcessor<TInput extends Record<string, unknown>>
+    extends BaseProcessor<TInput>
+    implements Serializable, Cacheable
+{
+%s}
+`, body.String()))
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "big_processor.ts",
+		Content:  src,
+		Language: "typescript",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Find the signature chunk for BigProcessor — after decomposition,
+	// it is the `class` kind chunk whose content is the summary (smallest
+	// in token count among class chunks).
+	var sig *types.ChunkRecord
+	for i := range result.Chunks {
+		c := result.Chunks[i]
+		if c.SymbolName == "BigProcessor" && c.Kind == "class" {
+			if sig == nil || c.TokenCount < sig.TokenCount {
+				sig = &result.Chunks[i]
+			}
+		}
+	}
+	if sig == nil {
+		t.Fatal("no BigProcessor class chunk found — decomposition did not happen")
+	}
+
+	// The signature must contain every line of the multi-line class header.
+	// Under the bug, only "export class BigProcessor<TInput extends ...>"
+	// is present — the `extends` and `implements` clauses are dropped.
+	for _, want := range []string{
+		"BigProcessor<TInput extends Record<string, unknown>>",
+		"extends BaseProcessor",
+		"implements Serializable, Cacheable",
+	} {
+		if !strings.Contains(sig.Content, want) {
+			t.Errorf("signature chunk missing %q — bug #6: "+
+				"buildSignatureFromExtracted picks only the first non-comment line as "+
+				"the declaration, truncating multi-line class headers; content:\n%s",
+				want, sig.Content)
+		}
 	}
 }
