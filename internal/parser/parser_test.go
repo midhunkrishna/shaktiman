@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 )
 
 func TestNewParser(t *testing.T) {
@@ -2670,5 +2672,88 @@ end
 			t.Errorf("chunk content missing %q — bug #11: method bodies extracted into separate chunks, "+
 				"parent chunk only holds a signature summary", want)
 		}
+	}
+}
+
+// findFirstNamed walks a tree-sitter node breadth-first and returns the
+// first named descendant whose Kind() matches `kind`. Test-only helper.
+func findFirstNamed(root *tree_sitter.Node, kind string) *tree_sitter.Node {
+	queue := []*tree_sitter.Node{root}
+	for len(queue) > 0 {
+		n := queue[0]
+		queue = queue[1:]
+		if n.Kind() == kind {
+			return n
+		}
+		for i := 0; i < int(n.NamedChildCount()); i++ {
+			queue = append(queue, n.NamedChild(uint(i)))
+		}
+	}
+	return nil
+}
+
+// TestExtractName_JavaField is the RED test for bug #1 in
+// docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #1: extractName walks a node's named children looking for an
+// identifier. For a Java field_declaration like
+// `private final ExecutorService executor;`, the AST is:
+//
+//	field_declaration
+//	  modifiers (private, final)
+//	  type_identifier  (ExecutorService)   ← walked first, wins
+//	  variable_declarator
+//	    identifier     (executor)          ← actually wanted
+//
+// Because type_identifier appears before variable_declarator in the named
+// children list, extractName returns "ExecutorService" instead of
+// "executor". The result is that any language relying on extractName to
+// identify a variable-name-after-type-identifier field loses the
+// variable's name — symbols for such fields would be indexed under the
+// type name.
+//
+// Java's SymbolKindMap currently omits field_declaration as a workaround
+// (see languages.go) so the bug is dormant in production, but the underlying
+// extractName bug remains and must be fixed before field symbol
+// extraction can be re-enabled. This test calls extractName directly on
+// a parsed field_declaration node.
+func TestExtractName_JavaField(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	cfg, err := p.getConfig("java")
+	if err != nil {
+		t.Fatalf("getConfig java: %v", err)
+	}
+	if err := p.ts.SetLanguage(cfg.Grammar); err != nil {
+		t.Fatalf("SetLanguage: %v", err)
+	}
+
+	src := []byte(`class Pool {
+    private final ExecutorService executor;
+}
+`)
+
+	tree := p.ts.Parse(src, nil)
+	if tree == nil {
+		t.Fatal("tree-sitter returned nil tree")
+	}
+	defer tree.Close()
+
+	field := findFirstNamed(tree.RootNode(), "field_declaration")
+	if field == nil {
+		t.Fatal("no field_declaration node found in parsed Java tree")
+	}
+
+	name := extractName(field, src)
+	if name != "executor" {
+		t.Errorf("extractName(field_declaration) = %q, want %q — "+
+			"bug #1: type_identifier walked before variable_declarator, so type name wins",
+			name, "executor")
 	}
 }
