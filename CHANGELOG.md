@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   New `projects` table registers each project by its canonicalized root path.
   `project_id` column added to `files` and `embeddings` tables. All queries
   (~26 sites across `metadata.go`, `graph.go`, `diff.go`, `pgvector/store.go`)
-  are scoped by project. Migration `005_add_project_id.sql` handles backward
+  are scoped by project. Migration `006_add_project_id.sql` handles backward
   compatibility: existing single-project databases are automatically claimed
   by the first daemon that starts.
 - **`PgStore.EnsureProject` method** (`internal/storage/postgres/db.go`) —
