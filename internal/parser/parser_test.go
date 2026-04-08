@@ -1,8 +1,10 @@
 package parser
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -3085,6 +3087,100 @@ func TestSignature_MultiLineDeclarationPreservesFullHeader(t *testing.T) {
 				"buildSignatureFromExtracted picks only the first non-comment line as "+
 				"the declaration, truncating multi-line class headers; content:\n%s",
 				want, sig.Content)
+		}
+	}
+}
+
+// TestChunker_DepthGuardEmitsWarning is the RED test for bug #7 in
+// docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #7: when chunkNode's recursion depth exceeds maxChunkDepth (10), the
+// depth guard silently falls back to splitNodeByLines. No log, no metric,
+// no warning. A pathological AST that triggers this condition degrades
+// chunk quality invisibly — the parent container's body is line-split
+// instead of being decomposed into semantic chunks.
+//
+// The fix is to emit a structured slog Warn message when the guard fires,
+// including the file path, the node kind, and the depth. This test captures
+// parser log output via a custom slog handler, parses a pathological Ruby
+// fixture that forces the depth guard to fire, and asserts the log
+// contains the expected structured fields.
+//
+// To reliably trigger the guard we need a node at depth 11 whose tokens
+// exceed maxChunkTokens (so the size gate does not short-circuit). The
+// fixture wraps a single huge_method (>1024 tokens of body) inside 11
+// levels of nested Ruby modules. At depth 11 chunkNode is called on the
+// huge_method: tokens > 1024 skips the size gate, depth 11 > maxChunkDepth
+// hits the guard, splitNodeByLines runs, and the fix should log a warning.
+func TestChunker_DepthGuardEmitsWarning(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	logger := slog.New(handler)
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+	p.logger = logger
+
+	// huge_method body must exceed maxChunkTokens (1024) so the size gate
+	// inside chunkNode does not short-circuit at depth 11. Each line is
+	// ~10 tokens; 150 lines ≈ 1500 tokens.
+	var body strings.Builder
+	for i := 0; i < 150; i++ {
+		fmt.Fprintf(&body, "                        puts \"line %d value %d tag %d\"\n", i, i*2, i*3)
+	}
+	src := []byte(fmt.Sprintf(`module L1
+  module L2
+    module L3
+      module L4
+        module L5
+          module L6
+            module L7
+              module L8
+                module L9
+                  module L10
+                    module L11
+                      def huge_method
+%s                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+end
+`, body.String()))
+
+	_, err = p.Parse(context.Background(), ParseInput{
+		FilePath: "pathological.rb",
+		Content:  src,
+		Language: "ruby",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	logOutput := buf.String()
+	if logOutput == "" {
+		t.Fatal("expected a structured log warning when depth guard fires, got no output — " +
+			"bug #7: depth guard silently falls back to line splitting")
+	}
+	for _, want := range []string{
+		"parser depth guard",
+		"pathological.rb",
+		"node_type",
+		"depth",
+	} {
+		if !strings.Contains(logOutput, want) {
+			t.Errorf("expected depth guard log output to contain %q; got:\n%s", want, logOutput)
 		}
 	}
 }

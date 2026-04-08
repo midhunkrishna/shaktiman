@@ -5,6 +5,7 @@ package parser
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 
@@ -17,6 +18,8 @@ type Parser struct {
 	ts      *tree_sitter.Parser
 	tokens  *tokenCounter
 	configs map[string]*LanguageConfig // cached per language
+	logger  *slog.Logger               // structured logger (defaults to slog.Default())
+	curPath string                     // file path of the current Parse call, used in diagnostic logs
 }
 
 // NewParser creates a fresh Parser supporting all registered languages.
@@ -33,6 +36,7 @@ func NewParser() (*Parser, error) {
 		ts:      ts,
 		tokens:  tc,
 		configs: make(map[string]*LanguageConfig),
+		logger:  slog.Default().With("component", "parser"),
 	}, nil
 }
 
@@ -57,6 +61,7 @@ type ParseResult struct {
 
 // Parse parses a source file and returns chunks, symbols, and edges.
 func (p *Parser) Parse(ctx context.Context, input ParseInput) (*ParseResult, error) {
+	p.curPath = input.FilePath
 	cfg, err := p.getConfig(input.Language)
 	if err != nil {
 		return nil, fmt.Errorf("get language config for %s: %w", input.Language, err)
