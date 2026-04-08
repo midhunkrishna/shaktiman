@@ -75,13 +75,13 @@ Regression covered by `TestParse_JavaMultiDeclaratorField`.
 
 Regression covered by `TestSignature_MultiLineDeclarationPreservesFullHeader` which parses a large TypeScript class whose header spans four lines (name with generics, `extends`, `implements`, opening brace) and asserts the signature chunk contains every header line.
 
-### 7. Depth guard silently falls back to line splitting
+### 7. Depth guard silently falls back to line splitting — **RESOLVED**
 
-**Location:** `internal/parser/chunker.go` — `chunkNode`, `maxChunkDepth`
+**Status:** Fixed. `chunkNode` now emits a structured `slog.Warn` when the depth guard fires, including the file path, node type, current depth, configured `maxChunkDepth`, token count, and resolved symbol name. This makes pathological AST degradation observable in daemon logs rather than silently downgrading chunk quality.
 
-**Problem:** When recursion depth exceeds `maxChunkDepth` (10), the node is fallback-split by lines. No log, no metric, no warning. If a pathological AST triggers this, chunk quality silently degrades with no visibility.
-
-**Proper fix:** Emit a structured log or metric when the depth guard triggers, including file path and node type.
+- `internal/parser/parser.go` — `Parser` gains a `logger *slog.Logger` field (defaulting to `slog.Default().With("component", "parser")`) and a transient `curPath` set at the top of `Parse`. Callers (tests, daemon) can inject a custom logger for structured capture.
+- `internal/parser/chunker.go` — the depth guard in `chunkNode` calls `p.logger.Warn("parser depth guard triggered; falling back to line splitting", ...)` before delegating to `splitNodeByLines`.
+- Regression covered by `TestChunker_DepthGuardEmitsWarning` which captures parser log output via a custom `slog.JSONHandler`, parses a pathological Ruby fixture (11 nested modules wrapping a >1024-token `huge_method`), and asserts the log contains `parser depth guard`, the file path, the `node_type` key, and the `depth` key.
 
 ### 11. Size-gate contradiction: `chunkNode` decomposes small containers eagerly — **RESOLVED**
 
@@ -174,7 +174,7 @@ if n.Kind() == "type_arguments" {
 
 **Lower impact:**
 - ~~Bug #6: Signature comment stripping~~ — **RESOLVED**
-- Bug #7: Depth guard observability.
+- ~~Bug #7: Depth guard observability~~ — **RESOLVED**
 - Bug #9: Recursive call tracking.
 - Bug #10: Generic type arguments.
 - ~~Bug #12: Depth guard off-by-one~~ — **RESOLVED**

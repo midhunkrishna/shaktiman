@@ -164,7 +164,20 @@ func (p *Parser) chunkNode(node *tree_sitter.Node, source []byte, cfg *LanguageC
 	// Use `>` (not `>=`) so `depth == maxChunkDepth` still recurses, matching
 	// ADR-004 §6 pseudocode. With maxChunkDepth = 10 the chunker handles 11
 	// levels of nested chunkable containers before the fallback kicks in.
+	// Bug #7: emit a structured warning so pathological ASTs that trigger
+	// the fallback are observable rather than silently degrading chunk
+	// quality.
 	if depth > maxChunkDepth {
+		if p.logger != nil {
+			p.logger.Warn("parser depth guard triggered; falling back to line splitting",
+				"file", p.curPath,
+				"node_type", nodeType,
+				"depth", depth,
+				"max", maxChunkDepth,
+				"tokens", tokens,
+				"symbol_name", name,
+			)
+		}
 		return p.splitNodeByLines(node, source, name, kind)
 	}
 
