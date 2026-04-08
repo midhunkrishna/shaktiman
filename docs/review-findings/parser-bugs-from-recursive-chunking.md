@@ -138,18 +138,12 @@ Noted during research for ADR-004 but not addressed. These affect the dependency
 - `internal/parser/edges.go` — `if callee != ""` only; self-call suppression removed.
 - Regression covered by `TestEdges_RecursiveFunctionHasSelfEdge` which parses a Go recursive factorial function and asserts a `fact → fact` edge exists.
 
-### 10. Generic type arguments are skipped entirely
+### 10. Generic type arguments are skipped entirely — **RESOLVED**
 
-**Location:** `internal/parser/edges.go:425-427`
+**Status:** Fixed. The `type_arguments` short-circuit in `extractHeritageTypeNames` is removed. The walker now recurses into type_arguments children like any other subtree, so `Map<String, List<User>>` yields edges to Map, String, List, AND User. Rust and Java classes/traits/impls with generic type dependencies now contribute every nested type name to the dependency graph.
 
-**Code:**
-```go
-if n.Kind() == "type_arguments" {
-    return
-}
-```
-
-**Problem:** `List<String>` misses `String`, `Box<MyType>` misses `MyType`, `HashMap<K, V>` misses both. Rust and Java lose significant type dependency information.
+- `internal/parser/edges.go` — `extractHeritageTypeNames` walk uses a switch on `type_identifier`/`identifier` leaf detection and continues recursion into all other node kinds (including `type_arguments`, `generic_type`, etc.).
+- Regression covered by `TestEdges_JavaGenericTypeArgumentsExtracted` which parses `class UserStore extends Cache<String, User> implements Serializable<UserRecord>` and asserts inherits edges to Cache, String, User plus implements edges to Serializable, UserRecord.
 
 ---
 
@@ -169,5 +163,5 @@ if n.Kind() == "type_arguments" {
 - ~~Bug #6: Signature comment stripping~~ — **RESOLVED**
 - ~~Bug #7: Depth guard observability~~ — **RESOLVED**
 - ~~Bug #9: Recursive call tracking~~ — **RESOLVED**
-- Bug #10: Generic type arguments.
+- ~~Bug #10: Generic type arguments~~ — **RESOLVED**
 - ~~Bug #12: Depth guard off-by-one~~ — **RESOLVED**

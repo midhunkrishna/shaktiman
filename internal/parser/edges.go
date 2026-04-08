@@ -469,14 +469,19 @@ func joinReceiverProp(receiver, prop *tree_sitter.Node, source []byte) string {
 func (p *Parser) extractHeritageTypeNames(node *tree_sitter.Node, owner string, kind string, ctx *edgeContext) {
 	var walk func(n *tree_sitter.Node)
 	walk = func(n *tree_sitter.Node) {
-		if n.Kind() == "type_identifier" || n.Kind() == "identifier" {
+		switch n.Kind() {
+		case "type_identifier", "identifier":
 			ctx.addEdge(owner, n.Utf8Text(ctx.source), kind)
+			// Still recurse into siblings — a generic_type node pairs a
+			// type_identifier with a type_arguments sibling, and both
+			// should be walked. Returning here for leaf identifier nodes
+			// is safe because they have no children.
 			return
 		}
-		// Skip generic type arguments
-		if n.Kind() == "type_arguments" {
-			return
-		}
+		// Bug #10: previously `type_arguments` was skipped entirely, so
+		// `Map<String, List<User>>` produced an edge to Map but lost
+		// String, List, and User. Recursing into type_arguments children
+		// extracts every named type inside the generics list.
 		for i := 0; i < int(n.NamedChildCount()); i++ {
 			walk(n.NamedChild(uint(i)))
 		}
