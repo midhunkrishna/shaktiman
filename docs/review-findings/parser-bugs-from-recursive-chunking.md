@@ -18,23 +18,23 @@
 
 Regression covered by `TestExtractName_JavaField` which calls `extractName` directly on a parsed Java `field_declaration` AST node and asserts `"executor"` is returned instead of `"ExecutorService"`. Bug #2 (multi-declarator handling) will build on this — once Java `field_declaration` is re-added to `SymbolKindMap` with a specialized extractor, every variable in `int x = 1, y = 2;` gets its own symbol.
 
-### 2. Multi-declarator declarations lose all but the first name
+### 2. Multi-declarator declarations lose all but the first name — **RESOLVED (Java)**
 
-**Location:** `internal/parser/symbols.go`, default branch of `walkForSymbols`
+**Status:** Fixed for Java `field_declaration`. Added an `extractJavaFieldSymbols` specialized extractor in `internal/parser/symbols.go` that iterates every `variable_declarator` child and emits one symbol per declarator. Wired into `walkForSymbols`'s dispatch switch alongside the existing TypeScript/JavaScript `extractVariableSymbols` and Go `extractGoVarSymbols` handlers.
 
-**Symptom:** Declarations like `int x = 1, y = 2;` (Java) only extract one symbol. The tree has a `field_declaration` / `local_variable_declaration` with multiple `variable_declarator` children, but `extractName` returns the first match and stops.
+Details:
+- `internal/parser/languages.go` — Java config re-registers `field_declaration` in `SymbolKindMap` (unblocked by bug #1 fix).
+- `internal/parser/symbols.go` — `extractJavaFieldSymbols` dispatches per `variable_declarator`, derives visibility from the `modifiers` child (public/private/protected → public/private/internal), and indexes `static final` fields as `"constant"` while regular fields are `"variable"`.
+- Regression covered by `TestParse_JavaMultiDeclaratorField` which asserts all five declarators in
+  ```java
+  public int x = 1, y = 2, z = 3;
+  private static final String name = "counter", label = "cnt";
+  ```
+  are indexed (with `String` NOT showing up as a spurious type-name symbol, guarding against bug #1 regression).
 
-**Specialized handlers exist for:**
-- TypeScript/JavaScript `lexical_declaration` / `variable_declaration` → `extractVariableSymbols`
-- Go `var_declaration` / `const_declaration` → `extractGoVarSymbols`
-- Go `type_declaration` → `extractGoTypeSymbols`
-
-**Missing handlers for:**
-- Java `field_declaration` and `local_variable_declaration`
-- Rust grouped `const_item` / `static_item` (if they can be grouped)
-- Any other language with grouped declarations
-
-**Fix pattern:** Add a language-specific dispatch case in the `switch nodeType` block of `walkForSymbols` that iterates child declarators and extracts each.
+**Still missing handlers for:**
+- Rust grouped `const_item` / `static_item` (if they can be grouped — tree-sitter-rust usually emits one `const_item` per declaration, so this may be moot).
+- Java `local_variable_declaration` inside method bodies. Not currently reached because `walkForSymbols` does not recurse into `method_declaration`, consistent with Go and TypeScript behavior. Can be added if per-method-scope symbol indexing becomes a requirement.
 
 ### 3. Class fields were never extracted as symbols at all (pre-existing, hidden)
 
@@ -181,7 +181,7 @@ if n.Kind() == "type_arguments" {
 ## Priority for Follow-Up
 
 **Highest impact:**
-- Bug #1 + #2: Field and multi-declarator symbol extraction. Without these, class fields are invisible to search and the dependency graph.
+- ~~Bug #1 + #2: Field and multi-declarator symbol extraction~~ — **RESOLVED**
 - Bug #4: `ChunkableTypes` conflation. The current workaround is fragile and will cause subtle bugs when adding new languages or new node types.
 - ~~Bug #13: `namespace` symbol kind rejected by schema CHECK constraint~~ — **RESOLVED**
 

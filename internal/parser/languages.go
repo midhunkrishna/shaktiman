@@ -221,8 +221,13 @@ func javaConfig() *LanguageConfig {
 			"method_declaration":              "method",
 			"constructor_declaration":         "method",
 			"compact_constructor_declaration": "method",
-			// field_declaration omitted: extractName returns type name instead of
-			// variable name; needs multi-declarator handling like TS lexical_declaration.
+			// field_declaration is dispatched to extractJavaVariableSymbols in
+			// symbols.go to handle multi-declarator statements like
+			// `int x = 1, y = 2, z = 3;` where each variable_declarator becomes
+			// its own symbol. Local variable declarations (inside method bodies)
+			// aren't reached by walkForSymbols because it doesn't recurse into
+			// method_declaration, consistent with Go and TS behavior.
+			"field_declaration": "variable",
 		},
 		ImportTypes: map[string]bool{
 			"import_declaration": true,
