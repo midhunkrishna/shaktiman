@@ -386,30 +386,76 @@ func extractCalleeName(node *tree_sitter.Node, source []byte) string {
 	return ""
 }
 
+// resolveCallee returns a qualified name for the callee of a call expression,
+// preserving the receiver for member-style invocations. For `a.foo()` this
+// returns "a.foo"; for `pkg1.Func()` this returns "pkg1.Func"; for nested
+// chains like `a.b.c()` it recursively resolves to "a.b.c". Plain identifier
+// callees return just the identifier.
+//
+// Bug #8 in docs/review-findings/parser-bugs-from-recursive-chunking.md:
+// previously this helper returned only the .property / .field / .attribute
+// leaf, causing `a.foo()` and `b.foo()` to collapse to a single "foo" edge
+// in the call graph.
 func resolveCallee(node *tree_sitter.Node, source []byte) string {
 	switch node.Kind() {
-	case "identifier":
+	case "identifier", "type_identifier", "property_identifier",
+		"field_identifier", "package_identifier", "constant", "word":
 		return node.Utf8Text(source)
 	case "member_expression":
-		// TypeScript: obj.method
+		// TypeScript / JavaScript: obj.method
+		obj := node.ChildByFieldName("object")
 		prop := node.ChildByFieldName("property")
-		if prop != nil {
-			return prop.Utf8Text(source)
-		}
+		return joinReceiverProp(obj, prop, source)
 	case "selector_expression":
 		// Go: pkg.Func or recv.Method
+		operand := node.ChildByFieldName("operand")
 		field := node.ChildByFieldName("field")
-		if field != nil {
-			return field.Utf8Text(source)
-		}
+		return joinReceiverProp(operand, field, source)
 	case "attribute":
 		// Python: obj.method
+		obj := node.ChildByFieldName("object")
 		attr := node.ChildByFieldName("attribute")
-		if attr != nil {
-			return attr.Utf8Text(source)
+		return joinReceiverProp(obj, attr, source)
+	case "field_access":
+		// Java: obj.field (not a call, but member calls on qualified fields)
+		obj := node.ChildByFieldName("object")
+		field := node.ChildByFieldName("field")
+		return joinReceiverProp(obj, field, source)
+	case "scoped_identifier":
+		// Rust: foo::bar
+		path := node.ChildByFieldName("path")
+		name := node.ChildByFieldName("name")
+		if path != nil && name != nil {
+			leftStr := resolveCallee(path, source)
+			rightStr := name.Utf8Text(source)
+			if leftStr != "" && rightStr != "" {
+				return leftStr + "::" + rightStr
+			}
+			if rightStr != "" {
+				return rightStr
+			}
 		}
 	}
 	return ""
+}
+
+// joinReceiverProp concatenates a receiver (object/operand) and a property
+// (method/field) with a dot separator. If the receiver can't be resolved
+// (complex expression, e.g. `(a + b).foo()`), fall back to just the
+// property name so the caller still gets a best-effort target.
+func joinReceiverProp(receiver, prop *tree_sitter.Node, source []byte) string {
+	if prop == nil {
+		return ""
+	}
+	propText := prop.Utf8Text(source)
+	if receiver == nil {
+		return propText
+	}
+	receiverText := resolveCallee(receiver, source)
+	if receiverText == "" {
+		return propText
+	}
+	return receiverText + "." + propText
 }
 
 // ── Inheritance/heritage helpers ──

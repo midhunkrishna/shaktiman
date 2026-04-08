@@ -124,13 +124,12 @@ Regression covered by `TestIndex_TypeScriptNamespaceSymbolPersists` which indexe
 
 Noted during research for ADR-004 but not addressed. These affect the dependency graph and MCP `dependencies` tool accuracy.
 
-### 8. Call expression resolution drops the receiver
+### 8. Call expression resolution drops the receiver — **RESOLVED**
 
-**Location:** `internal/parser/edges.go:389` — `resolveCallee`
+**Status:** Fixed. `resolveCallee` now returns a qualified receiver.property name for member-style invocations. `a.foo()` resolves to `"a.foo"`, `pkg1.Func()` to `"pkg1.Func"`, and nested chains like `a.b.c()` recursively resolve to `"a.b.c"`. Plain identifier callees still return just the identifier.
 
-**Problem:** `obj.method()` becomes an edge to `method`, losing `obj`. `a.foo()` and `b.foo()` are indistinguishable in the call graph. Same for Go selectors (`pkg.Func`) and Python attributes (`obj.method`).
-
-**Impact:** False positive connections in the dependency graph. Method calls on different receivers merge into a single edge target.
+- `internal/parser/edges.go` — `resolveCallee` switch extended to read both the object/operand and property/field children for `member_expression` (TypeScript/JavaScript), `selector_expression` (Go), `attribute` (Python), `field_access` (Java), and `scoped_identifier` (Rust, joined with `::`). A helper `joinReceiverProp` concatenates receiver and property, recursing through the receiver for multi-level chains.
+- Regression covered by `TestEdges_MemberCallPreservesReceiver` which parses a TypeScript function with four member calls on distinct receivers and asserts the call graph contains four distinct edge targets.
 
 ### 9. Recursive calls are silently dropped
 
@@ -168,7 +167,7 @@ if n.Kind() == "type_arguments" {
 - ~~Bug #13: `namespace` symbol kind rejected by schema CHECK constraint~~ — **RESOLVED**
 
 **Medium impact:**
-- Bug #8: Call expression receiver loss. Affects graph accuracy significantly.
+- ~~Bug #8: Call expression receiver loss~~ — **RESOLVED**
 - ~~Bug #5: `findDeclarationChild` whitelist maintenance burden~~ — **RESOLVED**
 - ~~Bug #11: Size-gate contradiction~~ — **RESOLVED**
 
