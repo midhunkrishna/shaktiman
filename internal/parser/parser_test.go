@@ -3305,3 +3305,74 @@ func fact(n int) int {
 			targets)
 	}
 }
+
+// TestEdges_JavaGenericTypeArgumentsExtracted is the RED test for bug #10
+// in docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #10: extractHeritageTypeNames skips `type_arguments` nodes entirely:
+//
+//	if n.Kind() == "type_arguments" {
+//	    return
+//	}
+//
+// The effect is that generic type arguments are invisible to the edge
+// extractor. `Map<String, List<User>>` yields an edge to `Map` but not to
+// `String`, `List`, or `User`. `Box<MyType>` misses `MyType`. Rust and
+// Java lose significant type dependency information.
+//
+// The fix walks into `type_arguments` children like any other subtree
+// and extracts type names from each. This test parses a Java class that
+// extends `Cache<String, User>` and implements `Serializable<UserRecord>`
+// and asserts edges exist to String, User, UserRecord in addition to
+// the outer container types.
+func TestEdges_JavaGenericTypeArgumentsExtracted(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`package com.example;
+
+public class UserStore extends Cache<String, User> implements Serializable<UserRecord> {
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "UserStore.java",
+		Content:  src,
+		Language: "java",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	targetsByKind := map[string]map[string]bool{}
+	for _, e := range result.Edges {
+		if e.SrcSymbolName != "UserStore" {
+			continue
+		}
+		if targetsByKind[e.Kind] == nil {
+			targetsByKind[e.Kind] = map[string]bool{}
+		}
+		targetsByKind[e.Kind][e.DstSymbolName] = true
+	}
+
+	// Bug #10: under the current code, type_arguments walk is short-circuited,
+	// so String, User, UserRecord are all missing from the inherits/implements
+	// edge list. The outer types (Cache, Serializable) are still present.
+	if !targetsByKind["inherits"]["String"] {
+		t.Errorf("expected inherits edge to String (from Cache<String, User>), got inherits targets: %v",
+			targetsByKind["inherits"])
+	}
+	if !targetsByKind["inherits"]["User"] {
+		t.Errorf("expected inherits edge to User (from Cache<String, User>), got inherits targets: %v",
+			targetsByKind["inherits"])
+	}
+	if !targetsByKind["implements"]["UserRecord"] {
+		t.Errorf("expected implements edge to UserRecord (from Serializable<UserRecord>), got implements targets: %v",
+			targetsByKind["implements"])
+	}
+}
