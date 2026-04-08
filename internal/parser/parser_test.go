@@ -3184,3 +3184,61 @@ end
 		}
 	}
 }
+
+// TestEdges_MemberCallPreservesReceiver is the RED test for bug #8 in
+// docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #8: resolveCallee extracts only the .property / .field / .attribute
+// child of member_expression / selector_expression / attribute nodes,
+// losing the receiver entirely. `a.foo()` and `b.foo()` both produce an
+// edge with dst "foo", so the call graph conflates calls on different
+// receivers into a single edge target. `pkg1.Func()` and `pkg2.Func()`
+// indistinguishable. This drops information that downstream tools
+// (dependency graph, MCP dependencies tool) rely on for accuracy.
+//
+// The fix walks the member expression and concatenates receiver and
+// property as "receiver.property" (recursively for chains like a.b.c()).
+// This test parses a TypeScript file with two sibling member calls on
+// different receivers and asserts the call graph edges include the
+// receiver-qualified names.
+func TestEdges_MemberCallPreservesReceiver(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`function caller() {
+  a.foo();
+  b.foo();
+  pkg1.Func();
+  pkg2.Func();
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "calls.ts",
+		Content:  src,
+		Language: "typescript",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	callEdgeTargets := map[string]bool{}
+	for _, e := range result.Edges {
+		if e.Kind == "calls" && e.SrcSymbolName == "caller" {
+			callEdgeTargets[e.DstSymbolName] = true
+		}
+	}
+
+	for _, want := range []string{"a.foo", "b.foo", "pkg1.Func", "pkg2.Func"} {
+		if !callEdgeTargets[want] {
+			t.Errorf("expected call edge with dst %q, got targets: %v — "+
+				"bug #8: resolveCallee drops the receiver for member expressions",
+				want, callEdgeTargets)
+		}
+	}
+}
