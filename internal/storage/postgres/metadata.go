@@ -699,6 +699,33 @@ func scanSymbols(rows pgx.Rows) ([]types.SymbolRecord, error) {
 	return symbols, rows.Err()
 }
 
+// ── Config key-value ──
+
+// GetConfig returns the value for a config key. Returns empty string and nil
+// error if the key is absent.
+func (s *PgStore) GetConfig(ctx context.Context, key string) (string, error) {
+	var value string
+	err := s.queryRow(ctx, "SELECT value FROM config WHERE key = $1", key).Scan(&value)
+	if err == pgx.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get config %q: %w", key, err)
+	}
+	return value, nil
+}
+
+// SetConfig writes or overwrites a config key/value pair.
+func (s *PgStore) SetConfig(ctx context.Context, key, value string) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO config (key, value) VALUES ($1, $2)
+		ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value`, key, value)
+	if err != nil {
+		return fmt.Errorf("set config %q: %w", key, err)
+	}
+	return nil
+}
+
 // ── Metrics ──
 
 // RecordToolCalls batch-inserts MCP tool call metrics.

@@ -54,6 +54,9 @@ func (p *Parser) walkForSymbols(node *tree_sitter.Node, source []byte, exported 
 		case "type_declaration":
 			p.extractGoTypeSymbols(node, source, chunks, symbols, cfg)
 			return
+		case "field_declaration":
+			p.extractJavaFieldSymbols(node, source, chunks, symbols)
+			return
 		default:
 			name := extractName(node, source)
 			if name != "" {
@@ -77,30 +80,24 @@ func (p *Parser) walkForSymbols(node *tree_sitter.Node, source []byte, exported 
 		}
 	}
 
-	// Recurse into class bodies for methods
-	if cfg.ClassBodyType != "" && nodeType == cfg.ClassBodyType {
+	// Unwrap ambient declaration wrapper (TypeScript declare)
+	if cfg.AmbientType != "" && nodeType == cfg.AmbientType {
 		for i := 0; i < int(node.NamedChildCount()); i++ {
-			child := node.NamedChild(uint(i))
-			if cfg.ClassBodyTypes[child.Kind()] {
-				p.walkForSymbols(child, source, exported, chunks, symbols, cfg)
-			}
+			p.walkForSymbols(node.NamedChild(uint(i)), source, exported, chunks, symbols, cfg)
 		}
 		return
 	}
 
-	// For class declarations, recurse into their body
-	if cfg.ClassTypes[nodeType] {
-		if cfg.ClassBodyType != "" {
-			body := findChildByType(node, cfg.ClassBodyType)
-			if body != nil {
-				p.walkForSymbols(body, source, exported, chunks, symbols, cfg)
-			}
-		}
-		return
+	// Recurse into containers and structural nodes to find nested symbols.
+	// For symbol nodes, recursion is driven by NodeMeta.IsContainer — the
+	// single source of truth set in the language config. Non-symbol
+	// structural nodes (body_statement, class_body, declaration_list, etc.)
+	// always recurse so symbol nodes nested inside them are reachable.
+	shouldRecurse := !isSymbol
+	if isSymbol {
+		shouldRecurse = cfg.ChunkableTypes[nodeType].IsContainer
 	}
-
-	// For container nodes, recurse into named children
-	if !isSymbol {
+	if shouldRecurse {
 		for i := 0; i < int(node.NamedChildCount()); i++ {
 			p.walkForSymbols(node.NamedChild(uint(i)), source, exported, chunks, symbols, cfg)
 		}
@@ -170,6 +167,77 @@ func (p *Parser) extractGoVarSymbols(node *tree_sitter.Node, source []byte, chun
 			*symbols = append(*symbols, sym)
 		}
 	}
+}
+
+// extractJavaFieldSymbols handles Java field_declaration nodes, which can
+// declare multiple variables in one statement (`int x = 1, y = 2;`).
+// Tree-sitter exposes each variable as its own variable_declarator child;
+// extractName alone would only return the first declarator's name and lose
+// the rest. This mirrors extractVariableSymbols for TypeScript/JavaScript
+// lexical_declaration. Visibility is inferred from the node's `modifiers`
+// child (public/private/protected) with package-private as the default.
+// `static final` fields are indexed as "constant", regular fields as
+// "variable".
+func (p *Parser) extractJavaFieldSymbols(node *tree_sitter.Node, source []byte, chunks []types.ChunkRecord, symbols *[]types.SymbolRecord) {
+	visibility, isConstant := inspectJavaFieldModifiers(node, source)
+	isExported := visibility == "public"
+
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(uint(i))
+		if child.Kind() != "variable_declarator" {
+			continue
+		}
+		name := extractName(child, source)
+		if name == "" {
+			continue
+		}
+		kind := "variable"
+		if isConstant {
+			kind = "constant"
+		}
+		sym := types.SymbolRecord{
+			Name:       name,
+			Kind:       kind,
+			Line:       int(child.StartPosition().Row) + 1,
+			Visibility: visibility,
+			IsExported: isExported,
+		}
+		sym.ChunkID = findContainingChunk(sym.Line, chunks)
+		*symbols = append(*symbols, sym)
+	}
+}
+
+// inspectJavaFieldModifiers walks a field_declaration's `modifiers` child to
+// determine visibility (public/private/protected/internal — internal means
+// package-private) and whether the field is `static final` (indexed as
+// "constant" rather than "variable").
+func inspectJavaFieldModifiers(node *tree_sitter.Node, source []byte) (visibility string, isConstant bool) {
+	visibility = "internal" // package-private default
+	sawStatic := false
+	sawFinal := false
+
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(uint(i))
+		if child.Kind() != "modifiers" {
+			continue
+		}
+		for j := 0; j < int(child.ChildCount()); j++ {
+			mod := child.Child(uint(j))
+			switch mod.Kind() {
+			case "public":
+				visibility = "public"
+			case "private":
+				visibility = "private"
+			case "protected":
+				visibility = "internal" // treat protected as package-visible for our taxonomy
+			case "static":
+				sawStatic = true
+			case "final":
+				sawFinal = true
+			}
+		}
+	}
+	return visibility, sawStatic && sawFinal
 }
 
 // extractGoTypeSymbols handles Go type declarations with type_spec children.

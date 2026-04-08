@@ -104,10 +104,16 @@ func (p *Parser) walkForEdges(node *tree_sitter.Node, owner string, ctx *edgeCon
 		}
 	}
 
-	// Call expressions
+	// Call expressions — bug #9: the parser records the syntactic edge as
+	// it appears in source, including self-calls. Recursive functions show
+	// up as `fn → fn` edges, which downstream consumers need for
+	// recursion-aware analyses. The previous `callee != newOwner` filter
+	// silently dropped self-calls and same-named calls; semantic
+	// deduplication (e.g., distinguishing overloads) belongs in the graph
+	// layer, not the parser.
 	if nodeType == "call_expression" || nodeType == "call" || nodeType == "method_invocation" || nodeType == "function_call" {
 		callee := extractCalleeName(node, ctx.source)
-		if callee != "" && callee != newOwner {
+		if callee != "" {
 			ctx.addEdge(newOwner, callee, "calls")
 		}
 	}
@@ -386,30 +392,76 @@ func extractCalleeName(node *tree_sitter.Node, source []byte) string {
 	return ""
 }
 
+// resolveCallee returns a qualified name for the callee of a call expression,
+// preserving the receiver for member-style invocations. For `a.foo()` this
+// returns "a.foo"; for `pkg1.Func()` this returns "pkg1.Func"; for nested
+// chains like `a.b.c()` it recursively resolves to "a.b.c". Plain identifier
+// callees return just the identifier.
+//
+// Bug #8 in docs/review-findings/parser-bugs-from-recursive-chunking.md:
+// previously this helper returned only the .property / .field / .attribute
+// leaf, causing `a.foo()` and `b.foo()` to collapse to a single "foo" edge
+// in the call graph.
 func resolveCallee(node *tree_sitter.Node, source []byte) string {
 	switch node.Kind() {
-	case "identifier":
+	case "identifier", "type_identifier", "property_identifier",
+		"field_identifier", "package_identifier", "constant", "word":
 		return node.Utf8Text(source)
 	case "member_expression":
-		// TypeScript: obj.method
+		// TypeScript / JavaScript: obj.method
+		obj := node.ChildByFieldName("object")
 		prop := node.ChildByFieldName("property")
-		if prop != nil {
-			return prop.Utf8Text(source)
-		}
+		return joinReceiverProp(obj, prop, source)
 	case "selector_expression":
 		// Go: pkg.Func or recv.Method
+		operand := node.ChildByFieldName("operand")
 		field := node.ChildByFieldName("field")
-		if field != nil {
-			return field.Utf8Text(source)
-		}
+		return joinReceiverProp(operand, field, source)
 	case "attribute":
 		// Python: obj.method
+		obj := node.ChildByFieldName("object")
 		attr := node.ChildByFieldName("attribute")
-		if attr != nil {
-			return attr.Utf8Text(source)
+		return joinReceiverProp(obj, attr, source)
+	case "field_access":
+		// Java: obj.field (not a call, but member calls on qualified fields)
+		obj := node.ChildByFieldName("object")
+		field := node.ChildByFieldName("field")
+		return joinReceiverProp(obj, field, source)
+	case "scoped_identifier":
+		// Rust: foo::bar
+		path := node.ChildByFieldName("path")
+		name := node.ChildByFieldName("name")
+		if path != nil && name != nil {
+			leftStr := resolveCallee(path, source)
+			rightStr := name.Utf8Text(source)
+			if leftStr != "" && rightStr != "" {
+				return leftStr + "::" + rightStr
+			}
+			if rightStr != "" {
+				return rightStr
+			}
 		}
 	}
 	return ""
+}
+
+// joinReceiverProp concatenates a receiver (object/operand) and a property
+// (method/field) with a dot separator. If the receiver can't be resolved
+// (complex expression, e.g. `(a + b).foo()`), fall back to just the
+// property name so the caller still gets a best-effort target.
+func joinReceiverProp(receiver, prop *tree_sitter.Node, source []byte) string {
+	if prop == nil {
+		return ""
+	}
+	propText := prop.Utf8Text(source)
+	if receiver == nil {
+		return propText
+	}
+	receiverText := resolveCallee(receiver, source)
+	if receiverText == "" {
+		return propText
+	}
+	return receiverText + "." + propText
 }
 
 // ── Inheritance/heritage helpers ──
@@ -417,14 +469,19 @@ func resolveCallee(node *tree_sitter.Node, source []byte) string {
 func (p *Parser) extractHeritageTypeNames(node *tree_sitter.Node, owner string, kind string, ctx *edgeContext) {
 	var walk func(n *tree_sitter.Node)
 	walk = func(n *tree_sitter.Node) {
-		if n.Kind() == "type_identifier" || n.Kind() == "identifier" {
+		switch n.Kind() {
+		case "type_identifier", "identifier":
 			ctx.addEdge(owner, n.Utf8Text(ctx.source), kind)
+			// Still recurse into siblings — a generic_type node pairs a
+			// type_identifier with a type_arguments sibling, and both
+			// should be walked. Returning here for leaf identifier nodes
+			// is safe because they have no children.
 			return
 		}
-		// Skip generic type arguments
-		if n.Kind() == "type_arguments" {
-			return
-		}
+		// Bug #10: previously `type_arguments` was skipped entirely, so
+		// `Map<String, List<User>>` produced an edge to Map but lost
+		// String, List, and User. Recursing into type_arguments children
+		// extracts every named type inside the generics list.
 		for i := 0; i < int(n.NamedChildCount()); i++ {
 			walk(n.NamedChild(uint(i)))
 		}

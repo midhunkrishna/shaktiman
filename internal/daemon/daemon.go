@@ -12,12 +12,19 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/core"
 	"github.com/shaktimanai/shaktiman/internal/mcp"
 	"github.com/shaktimanai/shaktiman/internal/observability"
+	"github.com/shaktimanai/shaktiman/internal/parser"
 	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 	"github.com/shaktimanai/shaktiman/internal/vector"
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )
+
+// parserVersionConfigKey is the config-table key under which the parser
+// chunk algorithm version is persisted. When the running code's
+// parser.ChunkAlgorithmVersion differs from the stored value, the daemon
+// performs a full reindex.
+const parserVersionConfigKey = "parser_algorithm_version"
 
 // Daemon manages the lifecycle of the Shaktiman indexing system.
 type Daemon struct {
@@ -145,6 +152,13 @@ func (d *Daemon) Start(ctx context.Context) error {
 		}
 	}
 
+	// Detect parser algorithm version change and purge stale data so cold
+	// indexing re-parses every file. Done before cold index so the scan+index
+	// path repopulates with the new chunking.
+	if err := d.ensureParserVersion(ctx); err != nil {
+		d.logger.Warn("parser version check failed", "err", err)
+	}
+
 	// Run cold indexing in background, then start watcher
 	go func() {
 		defer observability.Op(d.logger, "cold_index", "root", d.cfg.ProjectRoot)()
@@ -161,6 +175,12 @@ func (d *Daemon) Start(ctx context.Context) error {
 		}); err != nil {
 			d.logger.Error("indexing failed", "err", err)
 			return
+		}
+
+		// Persist the parser algorithm version after a successful cold index
+		// so the next startup sees a matching stored version.
+		if err := d.store.SetConfig(ctx, parserVersionConfigKey, parser.ChunkAlgorithmVersion); err != nil {
+			d.logger.Warn("persist parser version failed", "err", err)
 		}
 
 		// Embed chunks after cold index using pull-based cursor
@@ -548,6 +568,10 @@ func (d *Daemon) IndexProject(ctx context.Context, onProgress func(IndexProgress
 	defer writerCancel()
 	go d.writer.Run(writerCtx)
 
+	if err := d.ensureParserVersion(ctx); err != nil {
+		d.logger.Warn("parser version check failed", "err", err)
+	}
+
 	scanResult, err := ScanRepo(ctx, ScanInput{ProjectRoot: d.cfg.ProjectRoot})
 	if err != nil {
 		return fmt.Errorf("scan repo: %w", err)
@@ -562,7 +586,59 @@ func (d *Daemon) IndexProject(ctx context.Context, onProgress func(IndexProgress
 		return fmt.Errorf("index all: %w", err)
 	}
 
+	if err := d.store.SetConfig(ctx, parserVersionConfigKey, parser.ChunkAlgorithmVersion); err != nil {
+		d.logger.Warn("persist parser version failed", "err", err)
+	}
+
 	writerCancel()
 	<-d.writer.Done()
+	return nil
+}
+
+// ensureParserVersion detects a parser algorithm version change and purges
+// stale indexed state (files + cascaded chunks/symbols/edges) so the
+// subsequent cold-index call re-parses every file with the new algorithm.
+//
+// On a fresh database the stored value is empty and this performs no deletion
+// beyond recording the current version. On upgrade — when
+// parser.ChunkAlgorithmVersion differs from the stored value — every file is
+// deleted. Because chunks, symbols, and edges have ON DELETE CASCADE foreign
+// keys to files, removing files removes all derived data in one step.
+// Embeddings in the vector store are cleaned up separately by the writer's
+// VectorDeleter hook when chunks are deleted; any vectors orphaned here will
+// be reclaimed on next save by the chunk-existence reconciliation logic.
+func (d *Daemon) ensureParserVersion(ctx context.Context) error {
+	stored, err := d.store.GetConfig(ctx, parserVersionConfigKey)
+	if err != nil {
+		return fmt.Errorf("get parser version: %w", err)
+	}
+	if stored == parser.ChunkAlgorithmVersion {
+		return nil
+	}
+
+	// Empty stored value means fresh DB — nothing to purge. Record version and return.
+	if stored == "" {
+		// Defer recording until after a successful cold index. If we recorded
+		// now and the cold index failed, a subsequent retry would skip reindex.
+		d.logger.Info("parser version not yet recorded",
+			"current", parser.ChunkAlgorithmVersion)
+		return nil
+	}
+
+	// Version mismatch on an existing database — purge all files so every
+	// file is re-scanned and re-parsed by the cold-index pass.
+	d.logger.Info("parser algorithm version changed, purging indexed data",
+		"stored", stored, "current", parser.ChunkAlgorithmVersion)
+
+	files, err := d.store.ListFiles(ctx)
+	if err != nil {
+		return fmt.Errorf("list files for reindex: %w", err)
+	}
+	for _, f := range files {
+		if err := d.store.DeleteFile(ctx, f.ID); err != nil {
+			return fmt.Errorf("delete file %d (%s): %w", f.ID, f.Path, err)
+		}
+	}
+	d.logger.Info("parser reindex purge complete", "files_removed", len(files))
 	return nil
 }

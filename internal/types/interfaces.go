@@ -63,6 +63,13 @@ type MetadataStore interface {
 	GetEmbeddedChunkIDsByFile(ctx context.Context, fileID int64) ([]int64, error)
 	// UpdateChunkParents sets parent_chunk_id for the given chunk→parent mappings.
 	UpdateChunkParents(ctx context.Context, updates map[int64]int64) error
+
+	// GetConfig returns the value for a config key. Returns empty string and nil
+	// error if the key is absent. Backed by the shared `config` key-value table.
+	GetConfig(ctx context.Context, key string) (string, error)
+	// SetConfig writes or overwrites a config key/value pair in the shared
+	// `config` table. Used for metadata like the parser algorithm version.
+	SetConfig(ctx context.Context, key, value string) error
 }
 
 // BatchMetadataStore extends MetadataStore with batch query methods.
