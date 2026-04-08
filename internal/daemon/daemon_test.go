@@ -132,6 +132,70 @@ func TestIntegration_IndexAndSearch(t *testing.T) {
 		stats.TotalFiles, stats.TotalChunks, stats.TotalSymbols, len(results))
 }
 
+// TestIndex_TypeScriptNamespaceSymbolPersists is the RED test for bug #13
+// in docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// ADR-004 added `"internal_module": "namespace"` to TypeScript's
+// SymbolKindMap, but the symbols.kind CHECK constraint in both sqlite and
+// postgres migrations doesn't include "namespace". Inserting the symbol
+// fails at the DB layer and the writer logs an error, but cold-index
+// continues. The symbol is silently dropped.
+//
+// This test indexes the typescript_project testdata (which contains
+// namespace.ts with `namespace Validators { ... }`) and asserts that a
+// symbol with name "Validators" and kind "namespace" is persisted. Under
+// the buggy schema the symbol never reaches storage; under the fixed
+// schema it's queryable via GetSymbolByName.
+func TestIndex_TypeScriptNamespaceSymbolPersists(t *testing.T) {
+	t.Parallel()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	testdataRoot := filepath.Join(cwd, "..", "..", "testdata", "typescript_project")
+	if _, err := os.Stat(testdataRoot); os.IsNotExist(err) {
+		t.Skipf("testdata not found at %s", testdataRoot)
+	}
+
+	tmpDir := t.TempDir()
+	cfg := types.Config{
+		ProjectRoot:       testdataRoot,
+		DBPath:            filepath.Join(tmpDir, "test.db"),
+		EnrichmentWorkers: 2,
+		WriterChannelSize: 100,
+	}
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon: %v", err)
+	}
+	defer d.Stop()
+
+	ctx := context.Background()
+
+	if err := d.IndexProject(ctx, nil); err != nil {
+		t.Fatalf("IndexProject: %v", err)
+	}
+
+	syms, err := d.Store().GetSymbolByName(ctx, "Validators")
+	if err != nil {
+		t.Fatalf("GetSymbolByName: %v", err)
+	}
+	foundNamespace := false
+	for _, s := range syms {
+		if s.Kind == "namespace" {
+			foundNamespace = true
+			break
+		}
+	}
+	if !foundNamespace {
+		t.Errorf("expected 'Validators' namespace symbol to be persisted — " +
+			"bug #13: symbols.kind CHECK constraint rejects 'namespace' " +
+			"so TypeScript namespace symbols silently fail to insert")
+	}
+}
+
 func TestEnsureParserVersion_PurgesOnMismatch(t *testing.T) {
 	t.Parallel()
 

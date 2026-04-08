@@ -145,33 +145,14 @@ Option 2 is simpler and preserves current test coverage. Option 1 is more faithf
 
 **Status:** Fixed. The check now reads `if depth > maxChunkDepth` matching ADR-004 §6 pseudocode. With `maxChunkDepth = 10` the chunker handles 11 levels of nested chunkable containers before the fallback kicks in. Covered by `TestParse_DepthGuardBoundary` which uses 11 levels of nested Ruby modules and asserts the innermost method is extracted as a function chunk.
 
-### 13. Schema CHECK constraint rejects `namespace` symbol kind
+### 13. Schema CHECK constraint rejects `namespace` symbol kind — **RESOLVED**
 
-**Location:** `internal/storage/migrations/sqlite/001_base_schema.sql` and `internal/storage/migrations/postgres/001_base_schema.sql` — `symbols.kind` CHECK constraint; `internal/parser/languages.go` typescriptConfig `SymbolKindMap`.
+**Status:** Fixed by adding `'namespace'` to the `symbols.kind` CHECK constraint in both sqlite and postgres schemas.
 
-**Symptom:** Inserting a TypeScript namespace symbol fails at the DB layer:
+- `internal/storage/migrations/sqlite/002_symbols_kind_namespace.sql` — rewrites the `symbols` table with the expanded CHECK (SQLite can't ALTER a CHECK in place).
+- `internal/storage/migrations/postgres/005_symbols_kind_namespace.sql` — `DROP CONSTRAINT` + `ADD CONSTRAINT` with the expanded list.
 
-```
-insert symbol Validators: CHECK constraint failed:
-kind IN ('function', 'class', 'method', 'type', 'interface', 'variable', 'constant')
-```
-
-The cold-index pipeline logs the error but continues, so the namespace symbol is silently dropped from the index even though the parser extracted it correctly. Observed during `TestEnsureParserVersion_PurgesOnMismatch` which indexes `testdata/typescript_project/namespace.ts`.
-
-**Root cause:** ADR-004 added `"internal_module": "namespace"` to TypeScript's `SymbolKindMap` (languages.go:96) without updating the `symbols.kind` CHECK constraint in the schema migrations. The constraint pre-dates ADR-004 and does not include `"namespace"`. Postgres has the same constraint.
-
-**Affected tests:** `TestEnsureParserVersion_PurgesOnMismatch`, `TestEnsureParserVersion_NoOpOnMatch`, any test or real-world run that indexes a file containing a TypeScript namespace. Parser-only tests (`TestParse_TypeScriptNamespace`, `TestParse_TypeScriptAmbientDeclarations`) pass because they assert on `result.Symbols` without going through the storage layer.
-
-**Impact:** TypeScript namespace symbols are invisible to search, symbols-by-name, and the dependency graph for any namespace in a real indexed repo. This is a silent regression: the test fixture exercises the path but the error is only visible in log output.
-
-**Fix options:**
-1. Add `"namespace"` to the CHECK constraint via a new migration. Cleanest fix; matches the parser intent.
-2. Change `"internal_module": "namespace"` to `"internal_module": "type"` in typescriptConfig's `SymbolKindMap`. Simpler but loses the namespace/type distinction in search filters.
-3. Drop the CHECK constraint entirely in favor of an unconstrained TEXT column. More permissive but loses schema-level validation.
-
-Option 1 is recommended. Requires a new goose migration in both `internal/storage/migrations/sqlite/` and `internal/storage/migrations/postgres/` that rewrites the `symbols` table (SQLite) or alters the CHECK constraint (Postgres supports `ALTER TABLE ... DROP CONSTRAINT ... ADD CONSTRAINT ...`).
-
-**Priority:** High — silent data loss for namespace-heavy codebases.
+Regression covered by `TestIndex_TypeScriptNamespaceSymbolPersists` which indexes `testdata/typescript_project/namespace.ts` through the full daemon pipeline and asserts `store.GetSymbolByName(ctx, "Validators")` returns a symbol with `kind == "namespace"`.
 
 ---
 
@@ -220,7 +201,7 @@ if n.Kind() == "type_arguments" {
 **Highest impact:**
 - Bug #1 + #2: Field and multi-declarator symbol extraction. Without these, class fields are invisible to search and the dependency graph.
 - Bug #4: `ChunkableTypes` conflation. The current workaround is fragile and will cause subtle bugs when adding new languages or new node types.
-- Bug #13: `namespace` symbol kind rejected by schema CHECK constraint. TypeScript namespace symbols silently fail to persist. Needs a schema migration.
+- ~~Bug #13: `namespace` symbol kind rejected by schema CHECK constraint~~ — **RESOLVED**
 
 **Medium impact:**
 - Bug #8: Call expression receiver loss. Affects graph accuracy significantly.
