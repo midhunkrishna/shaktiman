@@ -142,6 +142,24 @@ func (p *Parser) chunkNode(node *tree_sitter.Node, source []byte, cfg *LanguageC
 		name = extractGoTypeName(node, source)
 	}
 
+	// Size gate — if the whole node fits, emit it as a single chunk. ADR-004
+	// §"Core Algorithm" and §"Key behaviors" specify that decomposition is
+	// only triggered when `tokens > maxChunkTokens`: "A 20-line module with a
+	// 15-line class doesn't decompose — the whole thing fits in one chunk."
+	// The gate must run before findChunkableChildren so tiny containers stay
+	// whole instead of being replaced with a signature summary + child chunks.
+	if tokens <= maxChunkTokens {
+		return []types.ChunkRecord{{
+			SymbolName: name,
+			Kind:       kind,
+			StartLine:  int(node.StartPosition().Row) + 1,
+			EndLine:    int(node.EndPosition().Row) + 1,
+			Content:    content,
+			TokenCount: tokens,
+			Signature:  extractSignature(nameNode, source),
+		}}
+	}
+
 	// Depth guard — fall back to line splitting for pathologically deep ASTs.
 	// Use `>` (not `>=`) so `depth == maxChunkDepth` still recurses, matching
 	// ADR-004 §6 pseudocode. With maxChunkDepth = 10 the chunker handles 11
@@ -150,7 +168,7 @@ func (p *Parser) chunkNode(node *tree_sitter.Node, source []byte, cfg *LanguageC
 		return p.splitNodeByLines(node, source, name, kind)
 	}
 
-	// Try to decompose: find chunkable children by walking all named children
+	// Node exceeds maxChunkTokens — try to decompose via chunkable descendants.
 	var extracted []types.ChunkRecord
 	p.findChunkableChildren(node, source, cfg, depth, &extracted)
 
@@ -179,19 +197,7 @@ func (p *Parser) chunkNode(node *tree_sitter.Node, source []byte, cfg *LanguageC
 		return append(result, extracted...)
 	}
 
-	// No chunkable children — emit as single chunk or split by lines
-	if tokens <= maxChunkTokens {
-		return []types.ChunkRecord{{
-			SymbolName: name,
-			Kind:       kind,
-			StartLine:  int(node.StartPosition().Row) + 1,
-			EndLine:    int(node.EndPosition().Row) + 1,
-			Content:    content,
-			TokenCount: tokens,
-			Signature:  extractSignature(nameNode, source),
-		}}
-	}
-
+	// No chunkable descendants and node is too large — line-split it.
 	return p.splitNodeByLines(node, source, name, kind)
 }
 

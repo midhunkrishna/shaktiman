@@ -138,38 +138,40 @@ func TestParse_ClassWithMethods(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 
-	// Should have chunks for class and methods
-	if len(result.Chunks) < 2 {
-		t.Fatalf("expected at least 2 chunks (class + methods), got %d", len(result.Chunks))
+	// Small class (~90 tokens) fits under maxChunkTokens so ADR-004
+	// emits it as a single class chunk — method content lives inside
+	// the class chunk's source, not as separate method chunks.
+	if len(result.Chunks) == 0 {
+		t.Fatal("expected at least one chunk for the class")
 	}
 
 	foundClass := false
-	foundMethod := false
 	for _, c := range result.Chunks {
-		if c.SymbolName == "UserService" {
+		if c.SymbolName == "UserService" && c.Kind == "class" {
 			foundClass = true
-		}
-		if c.Kind == "method" {
-			foundMethod = true
+			if !strings.Contains(c.Content, "findById") || !strings.Contains(c.Content, "create") {
+				t.Errorf("class chunk should contain method source, got content length %d", len(c.Content))
+			}
+			break
 		}
 	}
 	if !foundClass {
 		t.Error("expected class chunk 'UserService'")
 	}
-	if !foundMethod {
-		t.Error("expected method chunks")
-	}
 
-	// Should have class symbol
-	foundSym := false
+	// Symbols should still list the class and its methods — symbol
+	// extraction is independent of chunk decomposition.
+	syms := map[string]string{}
 	for _, s := range result.Symbols {
-		if s.Name == "UserService" && s.Kind == "class" {
-			foundSym = true
-			break
-		}
+		syms[s.Name] = s.Kind
 	}
-	if !foundSym {
-		t.Error("expected class symbol 'UserService'")
+	if syms["UserService"] != "class" {
+		t.Errorf("expected class symbol 'UserService', got kind=%q", syms["UserService"])
+	}
+	for _, m := range []string{"findById", "create"} {
+		if syms[m] != "method" {
+			t.Errorf("expected method symbol %q, got kind=%q", m, syms[m])
+		}
 	}
 }
 
@@ -1673,16 +1675,10 @@ end
 		}
 	}
 
-	// Should have chunks for nested classes
-	classChunks := 0
-	for _, c := range result.Chunks {
-		if c.Kind == "class" {
-			classChunks++
-		}
-	}
-	if classChunks < 2 {
-		t.Errorf("expected at least 2 class chunks (nested classes), got %d", classChunks)
-	}
+	// Chunk count is not asserted: ADR-004 emits this small fixture as a
+	// single Authentication module chunk. Symbol extraction (above) is the
+	// real coverage for nested container recursion — walkForSymbols
+	// descends regardless of chunk size.
 }
 
 func TestParse_RubySingletonClass(t *testing.T) {
@@ -2352,17 +2348,19 @@ public class Config {
 		t.Errorf("expected method symbol 'get', got kind=%q", syms["get"])
 	}
 
-	// A block chunk covering the static initializer body must exist — verify by
-	// locating a chunk whose line range contains the `DEFAULTS.put` lines.
-	foundStaticBlock := false
+	// The static initializer body must survive chunking — under ADR-004 this
+	// small Config class fits in a single class chunk, so the initializer
+	// source lives inside that chunk's content. Verify the body is preserved.
+	foundInitBody := false
 	for _, c := range result.Chunks {
-		if c.StartLine <= 7 && c.EndLine >= 9 && c.Kind == "block" {
-			foundStaticBlock = true
+		if strings.Contains(c.Content, `DEFAULTS.put("host"`) &&
+			strings.Contains(c.Content, `DEFAULTS.put("timeout"`) {
+			foundInitBody = true
 			break
 		}
 	}
-	if !foundStaticBlock {
-		t.Error("expected block chunk covering static initializer body")
+	if !foundInitBody {
+		t.Error("expected a chunk containing the static initializer body (DEFAULTS.put lines)")
 	}
 }
 
@@ -2488,11 +2486,28 @@ func TestParse_DepthGuardBoundary(t *testing.T) {
 	}
 	defer p.Close()
 
-	// Method body must produce > minChunkTokens (20) so the resulting
-	// function chunk is not swallowed by mergeSmallChunks into a parent
-	// signature chunk — otherwise both the buggy and fixed versions
-	// produce a single merged chunk and the test can't distinguish them.
-	src := []byte(`module L1
+	// Build 11 levels of nested Ruby modules. The innermost module L11
+	// contains a large FILLER_DATA array that alone exceeds maxChunkTokens
+	// (1024). Since the filler is inside L11, every outer level (L1..L11)
+	// inherits its token count, so the size gate at chunker.go
+	// (`tokens <= maxChunkTokens → emit as single chunk`) does NOT fire at
+	// any level, forcing real recursion through all 11 depths to reach
+	// deeply_nested_method. Without this bulk the bug #11 fix would collapse
+	// the whole tree into a single L1 chunk and there would be no depth-11
+	// recursion to guard.
+	//
+	// Token math: each FILLER_DATA line like "entry_000_alpha_beta_..." is
+	// ~15 tokens under tiktoken cl100k_base. 120 lines ≈ 1800 tokens, safely
+	// above 1024 at every nesting level.
+	var fill strings.Builder
+	for i := 0; i < 120; i++ {
+		fmt.Fprintf(&fill, "                        \"entry_%03d_alpha_beta_gamma_delta_epsilon\",\n", i)
+	}
+
+	// deeply_nested_method's body must exceed minChunkTokens (20) so the
+	// emitted function chunk survives mergeSmallChunks — otherwise it is
+	// folded into the parent signature chunk and the test can't observe it.
+	src := []byte(fmt.Sprintf(`module L1
   module L2
     module L3
       module L4
@@ -2503,6 +2518,9 @@ func TestParse_DepthGuardBoundary(t *testing.T) {
                 module L9
                   module L10
                     module L11
+                      FILLER_DATA = [
+%s                      ]
+
                       def deeply_nested_method
                         accumulator = 0
                         values = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
@@ -2522,7 +2540,7 @@ func TestParse_DepthGuardBoundary(t *testing.T) {
     end
   end
 end
-`)
+`, fill.String()))
 
 	result, err := p.Parse(context.Background(), ParseInput{
 		FilePath: "deep.rb",
@@ -2534,11 +2552,11 @@ end
 	}
 
 	// The method at AST depth 11 must be extracted as its own function
-	// chunk. Under the buggy depth guard, L11 at depth 10 is line-split
-	// and the method is swallowed into the L11 body. Under the fixed
-	// `depth > maxChunkDepth`, L11 recurses and the method is emitted
-	// as a function chunk. The method body is sized to exceed
-	// minChunkTokens so the chunk survives mergeSmallChunks.
+	// chunk. Under the buggy depth guard (bug #12), L11 at depth 10 is
+	// line-split and the method is swallowed into the L11 body. Under the
+	// fixed `depth > maxChunkDepth`, L11 recurses and the method is emitted
+	// as a function chunk. Each outer level exceeds maxChunkTokens due to
+	// FILLER_DATA, so the bug #11 size gate does not short-circuit recursion.
 	foundMethod := false
 	for _, c := range result.Chunks {
 		if c.SymbolName == "deeply_nested_method" && c.Kind == "function" {
@@ -2548,7 +2566,7 @@ end
 	}
 	if !foundMethod {
 		t.Errorf("expected 'deeply_nested_method' function chunk at AST depth 11 — " +
-			"bug #12: depth guard at chunker.go:139 uses >= instead of > and caps at depth 9")
+			"bug #12 regression: depth guard at chunker.go:149 must use > not >=")
 	}
 }
 

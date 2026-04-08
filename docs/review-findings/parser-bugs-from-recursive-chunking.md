@@ -107,37 +107,25 @@ if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") ||
 
 **Proper fix:** Emit a structured log or metric when the depth guard triggers, including file path and node type.
 
-### 11. Size-gate contradiction: `chunkNode` decomposes small containers eagerly
+### 11. Size-gate contradiction: `chunkNode` decomposes small containers eagerly — **RESOLVED**
 
-**Location:** `internal/parser/chunker.go:144-170` — `chunkNode`
+**Status:** Fixed by adding an early-return size gate at the top of `chunkNode`:
 
-**Symptom:** Small containers (e.g., a 20-line Ruby module containing a 15-line class) are decomposed into a signature chunk + child chunks even though the entire node fits in one chunk. The parent chunk holds only the signature summary, not the raw source.
-
-**Root cause:** `chunkNode` calls `findChunkableChildren` unconditionally **before** checking `tokens <= maxChunkTokens`. The token check only runs in the no-extracted-children fallback branch at `chunker.go:173-183`. Any container with a chunkable descendant is decomposed regardless of size.
-
-**Conflict with ADR-004:** ADR-004 §"Core Algorithm" pseudocode reads:
-
-```
-if tokens <= maxChunkTokens:
-    emit node as chunk
-    return
-// Node is too big — try to decompose
+```go
+if tokens <= maxChunkTokens {
+    return []types.ChunkRecord{{ ... single chunk for this node ... }}
+}
 ```
 
-and §"Key behaviors" states: *"Recursion is size-gated. A 20-line module with a 15-line class doesn't decompose — the whole thing fits in one chunk."*
+This runs before `findChunkableChildren` so small containers stay whole instead of being replaced with a signature summary + child chunks. Matches ADR-004 §"Core Algorithm" and §"Key behaviors" (*"A 20-line module with a 15-line class doesn't decompose"*).
 
-The implemented behavior is the opposite: decomposition is triggered by the presence of chunkable children, not by size.
-
-**Impact:**
-- More chunks than necessary on small files.
-- Signature chunks replace full content for tiny classes, so search hits return the terse `class X { ... }` summary instead of the actual code when the class is under 1024 tokens.
-- Test suite currently locks in the eager behavior — `TestParse_RubyNestedModuleClass`, `TestParse_JavaInnerClass`, etc. assert 2+ class chunks on small fixtures. Fixing to match the ADR would break these tests.
-
-**Resolution options:**
-1. Add an early-return `if tokens <= maxChunkTokens { emit single chunk; return }` at the top of `chunkNode`, matching the ADR. Update the tests to use larger fixtures that genuinely exceed the token threshold.
-2. Update ADR-004 to document eager decomposition as the intended behavior and delete the size-gate claim. Tests stay as-is.
-
-Option 2 is simpler and preserves current test coverage. Option 1 is more faithful to the ADR intent (fewer chunks for small files, less signature noise).
+- `internal/parser/chunker.go` — size gate added immediately after name extraction, before the depth guard.
+- `internal/parser/parser_test.go`:
+  - Regression covered by new `TestChunk_SmallContainerEmittedAsSingleChunk`, which asserts a ~60-token Ruby class with three methods emits as exactly one `class` chunk containing full method source.
+  - `TestParse_ClassWithMethods` — chunk-based method assertions converted to symbol assertions; the small TS class now emits one chunk.
+  - `TestParse_RubyNestedModuleClass` — dropped the `classChunks >= 2` assertion; symbol assertions remain the real coverage for nested container recursion.
+  - `TestParse_JavaStaticInitializer` — reworded to assert the static initializer body survives inside the parent class chunk (instead of requiring a separate `block` chunk).
+  - `TestParse_DepthGuardBoundary` — enlarged the fixture with a 120-line `FILLER_DATA` array inside `L11` so every nesting level inherits > 1024 tokens, preserving the bug #12 depth-recursion regression test under the new size gate.
 
 ### 12. Depth guard off-by-one — **RESOLVED**
 
@@ -206,7 +194,7 @@ if n.Kind() == "type_arguments" {
 **Medium impact:**
 - Bug #8: Call expression receiver loss. Affects graph accuracy significantly.
 - Bug #5: `findDeclarationChild` whitelist maintenance burden.
-- Bug #11: Size-gate contradiction. Pick option 1 or 2 before next ADR edit so the doc and code agree.
+- ~~Bug #11: Size-gate contradiction~~ — **RESOLVED**
 
 **Lower impact:**
 - Bug #6: Signature comment stripping (works for common cases).
