@@ -139,22 +139,11 @@ The implemented behavior is the opposite: decomposition is triggered by the pres
 
 Option 2 is simpler and preserves current test coverage. Option 1 is more faithful to the ADR intent (fewer chunks for small files, less signature noise).
 
-### 12. Depth guard off-by-one
+### 12. Depth guard off-by-one — **RESOLVED**
 
-**Location:** `internal/parser/chunker.go:139`
+**Location:** `internal/parser/chunker.go` — `chunkNode` depth guard.
 
-**Code:**
-```go
-if depth >= maxChunkDepth {
-    return p.splitNodeByLines(node, source, name, kind)
-}
-```
-
-**Conflict with ADR-004:** ADR-004 §6 pseudocode reads `if depth > maxChunkDepth`. The implemented `>=` caps recursion at depth 9; the ADR intends depth 10.
-
-**Impact:** Trivial — one level of recursion difference on pathological ASTs. No user-visible effect in normal codebases.
-
-**Fix:** Either change `>=` to `>` in `chunker.go:139`, or bump `maxChunkDepth` to 11, or update the ADR to match the implementation. Pick whichever is easiest to defend.
+**Status:** Fixed. The check now reads `if depth > maxChunkDepth` matching ADR-004 §6 pseudocode. With `maxChunkDepth = 10` the chunker handles 11 levels of nested chunkable containers before the fallback kicks in. Covered by `TestParse_DepthGuardBoundary` which uses 11 levels of nested Ruby modules and asserts the innermost method is extracted as a function chunk.
 
 ### 13. Schema CHECK constraint rejects `namespace` symbol kind
 
@@ -243,4 +232,4 @@ if n.Kind() == "type_arguments" {
 - Bug #7: Depth guard observability.
 - Bug #9: Recursive call tracking.
 - Bug #10: Generic type arguments.
-- Bug #12: Depth guard off-by-one. One-character fix.
+- ~~Bug #12: Depth guard off-by-one~~ — **RESOLVED**

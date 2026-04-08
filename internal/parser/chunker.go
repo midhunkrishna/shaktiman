@@ -142,8 +142,11 @@ func (p *Parser) chunkNode(node *tree_sitter.Node, source []byte, cfg *LanguageC
 		name = extractGoTypeName(node, source)
 	}
 
-	// Depth guard — fall back to line splitting
-	if depth >= maxChunkDepth {
+	// Depth guard — fall back to line splitting for pathologically deep ASTs.
+	// Use `>` (not `>=`) so `depth == maxChunkDepth` still recurses, matching
+	// ADR-004 §6 pseudocode. With maxChunkDepth = 10 the chunker handles 11
+	// levels of nested chunkable containers before the fallback kicks in.
+	if depth > maxChunkDepth {
 		return p.splitNodeByLines(node, source, name, kind)
 	}
 

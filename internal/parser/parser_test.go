@@ -2463,3 +2463,89 @@ function parse(input: string | number): string | number {
 		t.Errorf("expected 3 'parse' function symbols (2 overload signatures + 1 implementation), got %d", parseCount)
 	}
 }
+
+// TestParse_DepthGuardBoundary is the RED test for bug #12 in
+// docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Current buggy code at chunker.go:139 uses `depth >= maxChunkDepth` which
+// caps recursion at depth 9 — at depth 10 the chunker falls back to
+// splitNodeByLines and never extracts the children. ADR-004 §6 specifies
+// `depth > maxChunkDepth`, meaning depth 10 should still recurse and only
+// depth 11+ should hit the guard.
+//
+// This test constructs 11 levels of nested Ruby modules with a method at
+// the bottom. Under the buggy `>=` the innermost module at depth 10 gets
+// line-split and the method is never emitted as its own chunk. Under the
+// fixed `>` the method is extracted as a function chunk.
+func TestParse_DepthGuardBoundary(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	// Method body must produce > minChunkTokens (20) so the resulting
+	// function chunk is not swallowed by mergeSmallChunks into a parent
+	// signature chunk — otherwise both the buggy and fixed versions
+	// produce a single merged chunk and the test can't distinguish them.
+	src := []byte(`module L1
+  module L2
+    module L3
+      module L4
+        module L5
+          module L6
+            module L7
+              module L8
+                module L9
+                  module L10
+                    module L11
+                      def deeply_nested_method
+                        accumulator = 0
+                        values = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+                        values.each do |v|
+                          accumulator += v * v
+                        end
+                        accumulator * 2
+                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+end
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "deep.rb",
+		Content:  src,
+		Language: "ruby",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// The method at AST depth 11 must be extracted as its own function
+	// chunk. Under the buggy depth guard, L11 at depth 10 is line-split
+	// and the method is swallowed into the L11 body. Under the fixed
+	// `depth > maxChunkDepth`, L11 recurses and the method is emitted
+	// as a function chunk. The method body is sized to exceed
+	// minChunkTokens so the chunk survives mergeSmallChunks.
+	foundMethod := false
+	for _, c := range result.Chunks {
+		if c.SymbolName == "deeply_nested_method" && c.Kind == "function" {
+			foundMethod = true
+			break
+		}
+	}
+	if !foundMethod {
+		t.Errorf("expected 'deeply_nested_method' function chunk at AST depth 11 — " +
+			"bug #12: depth guard at chunker.go:139 uses >= instead of > and caps at depth 9")
+	}
+}
