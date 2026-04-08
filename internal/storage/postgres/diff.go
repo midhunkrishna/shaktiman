@@ -55,15 +55,19 @@ func (s *PgStore) GetRecentDiffs(ctx context.Context, input types.RecentDiffsInp
 	var args []any
 
 	if input.FileID != 0 {
+		// fileID is already project-scoped (obtained from a project-filtered query).
 		query = `SELECT id, file_id, timestamp, change_type, lines_added, lines_removed,
 		         hash_before, hash_after
 		         FROM diff_log WHERE file_id = $1 AND timestamp >= $2 ORDER BY timestamp DESC`
 		args = append(args, input.FileID, input.Since)
 	} else {
-		query = `SELECT id, file_id, timestamp, change_type, lines_added, lines_removed,
-		         hash_before, hash_after
-		         FROM diff_log WHERE timestamp >= $1 ORDER BY timestamp DESC`
-		args = append(args, input.Since)
+		// No fileID — scope to current project via files table.
+		query = `SELECT dl.id, dl.file_id, dl.timestamp, dl.change_type, dl.lines_added, dl.lines_removed,
+		         dl.hash_before, dl.hash_after
+		         FROM diff_log dl
+		         JOIN files f ON dl.file_id = f.id
+		         WHERE f.project_id = $1 AND dl.timestamp >= $2 ORDER BY dl.timestamp DESC`
+		args = append(args, s.projectID, input.Since)
 	}
 
 	if input.Limit > 0 {

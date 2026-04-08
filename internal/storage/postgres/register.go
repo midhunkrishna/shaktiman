@@ -26,6 +26,19 @@ func init() {
 			return nil, nil, nil, err
 		}
 
+		// Register project after migrations (projects table must exist).
+		// When no ProjectRoot is configured, fall back to the seeded default
+		// project (id=1) created by migration 006_add_project_id.sql so the
+		// store remains usable in single-project / backward-compat setups.
+		if cfg.ProjectRoot != "" {
+			if err := store.EnsureProject(ctx, cfg.ProjectRoot); err != nil {
+				store.Close()
+				return nil, nil, nil, err
+			}
+		} else {
+			store.projectID = 1
+		}
+
 		closer := func() error { return store.Close() }
 		// Postgres needs no StoreLifecycle (generated tsvector columns, no FTS triggers)
 		return store, nil, closer, nil

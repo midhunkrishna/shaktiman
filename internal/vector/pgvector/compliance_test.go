@@ -35,14 +35,14 @@ func setupSchema(t *testing.T, pool *pgxpool.Pool, dims int) {
 	ctx := context.Background()
 	for _, table := range []string{"embeddings", "diff_symbols", "diff_log", "edges", "pending_edges",
 		"symbols", "chunks", "files", "access_log", "working_set",
-		"tool_calls", "schema_version", "config", "goose_db_version"} {
+		"tool_calls", "schema_version", "config", "goose_db_version", "projects"} {
 		pool.Exec(ctx, "DROP TABLE IF EXISTS "+table+" CASCADE")
 	}
 	if err := postgres.RunMigrations(ctx, pool, dims); err != nil {
 		t.Fatalf("Migrate base schema: %v", err)
 	}
-	pool.Exec(ctx, `INSERT INTO files (id, path, content_hash, mtime, language, indexed_at)
-		VALUES (1, 'test.go', 'abc', 0, 'go', NOW()) ON CONFLICT DO NOTHING`)
+	pool.Exec(ctx, `INSERT INTO files (id, path, content_hash, mtime, language, indexed_at, project_id)
+		VALUES (1, 'test.go', 'abc', 0, 'go', NOW(), 1) ON CONFLICT DO NOTHING`)
 	for _, id := range []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 42, 999} {
 		pool.Exec(ctx, `INSERT INTO chunks (id, file_id, chunk_index, kind, start_line, end_line, content, token_count)
 			VALUES ($1, 1, 0, 'function', 1, 10, 'test', 10) ON CONFLICT DO NOTHING`, id)
@@ -61,7 +61,7 @@ func TestPgVectorCompliance(t *testing.T) {
 		t.Helper()
 		setupSchema(t, pool, dims)
 
-		store, err := NewPgVectorStore(pool, dims)
+		store, err := NewPgVectorStore(pool, dims, 1)
 		if err != nil {
 			t.Fatalf("NewPgVectorStore: %v", err)
 		}
@@ -132,14 +132,14 @@ func TestNewPgVectorStore_DimsMismatch(t *testing.T) {
 	setupSchema(t, pool, 4)
 
 	// Table was created with dims=4 by setupSchema
-	store, err := NewPgVectorStore(pool, 4)
+	store, err := NewPgVectorStore(pool, 4, 1)
 	if err != nil {
 		t.Fatalf("NewPgVectorStore: %v", err)
 	}
 	store.Close()
 
 	// Try to open with dims=8 — should fail
-	_, err = NewPgVectorStore(pool, 8)
+	_, err = NewPgVectorStore(pool, 8, 1)
 	if err == nil {
 		t.Fatal("expected error for dims mismatch")
 	}
@@ -152,7 +152,7 @@ func TestUpsertBatch_WithZeroVectorsSkipped(t *testing.T) {
 	ctx := context.Background()
 	setupSchema(t, pool, 4)
 
-	store, err := NewPgVectorStore(pool, 4)
+	store, err := NewPgVectorStore(pool, 4, 1)
 	if err != nil {
 		t.Fatalf("NewPgVectorStore: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestSearch_WithTimeout(t *testing.T) {
 	ctx := context.Background()
 	setupSchema(t, pool, 4)
 
-	store, err := NewPgVectorStore(pool, 4)
+	store, err := NewPgVectorStore(pool, 4, 1)
 	if err != nil {
 		t.Fatalf("NewPgVectorStore: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestDelete_Chunking(t *testing.T) {
 	ctx := context.Background()
 	setupSchema(t, pool, 2)
 
-	store, err := NewPgVectorStore(pool, 2)
+	store, err := NewPgVectorStore(pool, 2, 1)
 	if err != nil {
 		t.Fatalf("NewPgVectorStore: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestHealthy_WithPool(t *testing.T) {
 	ctx := context.Background()
 	setupSchema(t, pool, 4)
 
-	store, err := NewPgVectorStore(pool, 4)
+	store, err := NewPgVectorStore(pool, 4, 1)
 	if err != nil {
 		t.Fatalf("NewPgVectorStore: %v", err)
 	}

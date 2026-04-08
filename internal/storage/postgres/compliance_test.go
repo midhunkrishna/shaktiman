@@ -30,13 +30,18 @@ func newTestStore(t *testing.T) *PgStore {
 	pool := store.Pool()
 	tables := []string{"embeddings", "diff_symbols", "diff_log", "edges", "pending_edges",
 		"symbols", "chunks", "files", "access_log", "working_set",
-		"tool_calls", "schema_version", "config", "goose_db_version"}
+		"tool_calls", "schema_version", "config", "goose_db_version", "projects"}
 	for _, table := range tables {
 		pool.Exec(ctx, "DROP TABLE IF EXISTS "+table+" CASCADE")
 	}
 
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatalf("Migrate: %v", err)
+	}
+
+	// Register a test project for multi-project isolation.
+	if err := store.EnsureProject(ctx, "/tmp/test-project"); err != nil {
+		t.Fatalf("EnsureProject: %v", err)
 	}
 
 	t.Cleanup(func() { store.Close() })
@@ -879,7 +884,7 @@ func TestPostgres_RegistrationFactory(t *testing.T) {
 	tempStore, _ := NewPgStore(ctx, connStr, 2, 1, "public")
 	tables := []string{"embeddings", "diff_symbols", "diff_log", "edges", "pending_edges",
 		"symbols", "chunks", "files", "access_log", "working_set",
-		"tool_calls", "schema_version", "config", "goose_db_version"}
+		"tool_calls", "schema_version", "config", "goose_db_version", "projects"}
 	for _, table := range tables {
 		tempStore.Pool().Exec(ctx, "DROP TABLE IF EXISTS "+table+" CASCADE")
 	}

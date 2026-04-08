@@ -7,8 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Multi-project isolation for PostgreSQL backend** — when multiple projects
+  share the same Postgres database, each project's data is now fully isolated.
+  New `projects` table registers each project by its canonicalized root path.
+  `project_id` column added to `files` and `embeddings` tables. All queries
+  (~26 sites across `metadata.go`, `graph.go`, `diff.go`, `pgvector/store.go`)
+  are scoped by project. Migration `006_add_project_id.sql` handles backward
+  compatibility: existing single-project databases are automatically claimed
+  by the first daemon that starts.
+- **`PgStore.EnsureProject` method** (`internal/storage/postgres/db.go`) —
+  registers a project at startup using race-safe upsert-or-get pattern
+  (`INSERT ON CONFLICT DO NOTHING` + fallback `SELECT`). Path is
+  canonicalized via `filepath.Abs` + `filepath.EvalSymlinks` to prevent
+  duplicates from symlinks or relative paths.
+- **`PgStore.ProjectID` getter** (`internal/storage/postgres/db.go`) — exposes
+  the project ID for pgvector pool sharing.
+- **pgvector project scoping** (`internal/vector/pgvector/store.go`) —
+  `Search`, `Upsert`, `UpsertBatch`, and `Count` are scoped by `project_id`.
+  Search over-fetches by 3x to compensate for HNSW post-filtering, then trims
+  to the requested `topK`.
+- **Project isolation integration tests** — 13 Postgres tests
+  (`internal/storage/postgres/project_test.go`) and 2 pgvector tests
+  (`internal/vector/pgvector/project_test.go`) covering file isolation,
+  symbol isolation, FTS isolation, stats isolation, diff isolation, edge
+  resolution isolation, embed page isolation, batch hash isolation,
+  concurrent startup, path canonicalization, and backward compatibility.
+- **Qdrant multi-project warning** (`internal/daemon/daemon.go`) — startup
+  warning when Qdrant + Postgres backends are used together, since Qdrant
+  does not yet support project isolation.
+
 ### Changed
 
+- **`lookupSymbolIDPg` project-scoped** (`internal/storage/postgres/graph.go`)
+  — language-fallback and bare-name-fallback branches now filter by
+  `project_id`, preventing cross-project symbol resolution in `InsertEdges`
+  and `ResolvePendingEdges`.
+- **`GetRecentDiffs` project-scoped** (`internal/storage/postgres/diff.go`) —
+  the no-`FileID` branch now joins through `files` to filter by `project_id`.
+- **`VectorStoreConfig` carries `ProjectID`** (`internal/vector/registry.go`)
+  — extracted from the metadata store via `ProjectID()` interface assertion
+  and passed to pgvector at construction.
+- **`MetadataStoreConfig` carries `ProjectRoot`**
+  (`internal/storage/registry.go`) — threaded from application config through
+  to the Postgres factory for project registration after migrations.
 - **Backend isolation** — storage and vector implementations moved into
   sub-packages (`internal/storage/sqlite/`, `internal/vector/bruteforce/`,
   `internal/vector/hnsw/`). Backends register via `init()` and are selected

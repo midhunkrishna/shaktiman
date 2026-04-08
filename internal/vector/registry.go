@@ -20,6 +20,9 @@ type VectorStoreConfig struct {
 	// pgvector-specific (pool shared with MetadataStore)
 	PgPool interface{} // *pgxpool.Pool, set by daemon when pgvector shares pool
 
+	// ProjectID for multi-project isolation (pgvector).
+	ProjectID int64
+
 	// Store is the MetadataStore, passed so backends like pgvector can
 	// extract a shared resource (e.g. connection pool) via type assertion.
 	// The daemon passes this; backends that don't need it ignore it.
@@ -38,11 +41,15 @@ func VectorStoreConfigFrom(cfg types.Config, store interface{}) VectorStoreConfi
 		Store:            store,
 	}
 
-	// pgvector extracts the pool from the store — let it self-serve.
+	// pgvector extracts the pool and project ID from the store.
 	if cfg.VectorBackend == "pgvector" {
 		type rawPooler interface{ RawPool() any }
 		if p, ok := store.(rawPooler); ok {
 			vsc.PgPool = p.RawPool()
+		}
+		type projectIDer interface{ ProjectID() int64 }
+		if p, ok := store.(projectIDer); ok {
+			vsc.ProjectID = p.ProjectID()
 		}
 	}
 

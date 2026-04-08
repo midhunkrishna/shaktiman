@@ -25,7 +25,7 @@ func (s *PgStore) InsertEdges(ctx context.Context, txh types.TxHandle, fileID in
 
 		dstID := symbolIDs[e.DstSymbolName]
 		if dstID == 0 {
-			dstID = lookupSymbolIDPg(ctx, tx, e.DstSymbolName, fileID, language)
+			dstID = lookupSymbolIDPg(ctx, tx, e.DstSymbolName, fileID, language, s.projectID)
 		}
 
 		if dstID != 0 {
@@ -81,7 +81,7 @@ func (s *PgStore) ResolvePendingEdges(ctx context.Context, txh types.TxHandle, n
 	}
 
 	for _, p := range toResolve {
-		dstID := lookupSymbolIDPg(ctx, tx, p.dstName, 0, p.language)
+		dstID := lookupSymbolIDPg(ctx, tx, p.dstName, 0, p.language, s.projectID)
 		if dstID == 0 {
 			continue
 		}
@@ -99,6 +99,9 @@ func (s *PgStore) DeleteEdgesByFile(ctx context.Context, txh types.TxHandle, fil
 	return err
 }
 
+// PendingEdgeCallers returns src_symbol_ids for pending edges matching dstName.
+// No project_id filter needed: pending edges are created by InsertEdges which only
+// inserts src_symbol_ids from the current project (FK chain: pending_edges → symbols → files).
 func (s *PgStore) PendingEdgeCallers(ctx context.Context, dstName string) ([]int64, error) {
 	rows, err := s.query(ctx,
 		"SELECT DISTINCT src_symbol_id FROM pending_edges WHERE dst_symbol_name = $1", dstName)
@@ -136,6 +139,9 @@ func (s *PgStore) PendingEdgeCallersWithKind(ctx context.Context, dstName string
 
 // ── Neighbors (recursive CTE) ──
 
+// neighborsPg performs BFS traversal on the edges table.
+// No project_id filter needed: cross-project edges cannot exist because InsertEdges
+// and ResolvePendingEdges scope symbol lookup by project_id.
 func neighborsPg(ctx context.Context, s *PgStore, symbolID int64, maxDepth int, direction string) ([]int64, error) {
 	if maxDepth < 1 {
 		maxDepth = 1
@@ -205,9 +211,11 @@ func neighborsCTEPg(ctx context.Context, s *PgStore, symbolID int64, maxDepth in
 }
 
 // lookupSymbolIDPg looks up a symbol by name within a transaction.
-func lookupSymbolIDPg(ctx context.Context, tx pgx.Tx, name string, fileID int64, language string) int64 {
+// projectID scopes the lookup to the current project, preventing cross-project resolution.
+func lookupSymbolIDPg(ctx context.Context, tx pgx.Tx, name string, fileID int64, language string, projectID int64) int64 {
 	var id int64
 
+	// Prefer same-file match (fileID is already project-scoped).
 	if fileID > 0 {
 		err := tx.QueryRow(ctx,
 			"SELECT id FROM symbols WHERE name = $1 AND file_id = $2 LIMIT 1",
@@ -217,18 +225,23 @@ func lookupSymbolIDPg(ctx context.Context, tx pgx.Tx, name string, fileID int64,
 		}
 	}
 
+	// Fall back to same-language match within the project.
 	if language != "" {
 		err := tx.QueryRow(ctx,
 			`SELECT s.id FROM symbols s JOIN files f ON s.file_id = f.id
-			 WHERE s.name = $1 AND f.language = $2 LIMIT 1`,
-			name, language).Scan(&id)
+			 WHERE s.name = $1 AND f.language = $2 AND f.project_id = $3 LIMIT 1`,
+			name, language, projectID).Scan(&id)
 		if err == nil {
 			return id
 		}
 		return 0
 	}
 
-	err := tx.QueryRow(ctx, "SELECT id FROM symbols WHERE name = $1 LIMIT 1", name).Scan(&id)
+	// Bare name fallback, scoped to project.
+	err := tx.QueryRow(ctx,
+		`SELECT s.id FROM symbols s JOIN files f ON s.file_id = f.id
+		 WHERE s.name = $1 AND f.project_id = $2 LIMIT 1`,
+		name, projectID).Scan(&id)
 	if err != nil {
 		return 0
 	}
