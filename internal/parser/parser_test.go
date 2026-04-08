@@ -2,6 +2,8 @@ package parser
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -2547,5 +2549,108 @@ end
 	if !foundMethod {
 		t.Errorf("expected 'deeply_nested_method' function chunk at AST depth 11 — " +
 			"bug #12: depth guard at chunker.go:139 uses >= instead of > and caps at depth 9")
+	}
+}
+
+// TestChunk_SmallContainerEmittedAsSingleChunk is the RED test for bug #11
+// in docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #11: chunkNode calls findChunkableChildren unconditionally BEFORE
+// checking tokens <= maxChunkTokens. Any container with chunkable
+// descendants is decomposed into a signature chunk + child chunks,
+// regardless of size. ADR-004 §"Core Algorithm" and §"Key behaviors"
+// specify the opposite: "A 20-line module with a 15-line class doesn't
+// decompose — the whole thing fits in one chunk."
+//
+// This test uses a small Ruby class (~60 tokens) with multiple methods
+// and asserts that:
+//  1. Exactly one chunk is produced (the whole class).
+//  2. The chunk kind is "class", not a signature summary.
+//  3. The chunk content contains the FULL source of every method body —
+//     not a "{ ... }" summary.
+//
+// Under the buggy eager decomposition the test fails: the parser emits
+// a class signature chunk plus one method chunk per definition, losing
+// the full method source from the class chunk.
+func TestChunk_SmallContainerEmittedAsSingleChunk(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	// Small Ruby class — well under maxChunkTokens (1024). Each method
+	// body is sized to exceed minChunkTokens (20) so extracted child
+	// chunks survive mergeSmallChunks — otherwise the post-processing
+	// pass merges tiny fragments and masks the eager-decomposition bug.
+	src := []byte(`class Greeter
+  def initialize(name, greeting, punctuation)
+    @name = name
+    @greeting = greeting
+    @punctuation = punctuation
+    @greeted_at = Time.now
+  end
+
+  def hello
+    prefix = @greeting.upcase
+    body = @name.capitalize
+    suffix = @punctuation
+    "#{prefix}, #{body}#{suffix}"
+  end
+
+  def goodbye
+    prefix = "goodbye"
+    body = @name.capitalize
+    suffix = @punctuation
+    "#{prefix}, #{body}#{suffix}"
+  end
+end
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "greeter.rb",
+		Content:  src,
+		Language: "ruby",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Exactly one chunk: the whole class emitted as-is.
+	if len(result.Chunks) != 1 {
+		var kinds []string
+		for _, c := range result.Chunks {
+			kinds = append(kinds, fmt.Sprintf("%s(%q)", c.Kind, c.SymbolName))
+		}
+		t.Fatalf("expected 1 chunk for small class (~60 tokens, well under maxChunkTokens=1024), "+
+			"got %d: %v — bug #11: chunkNode decomposes containers eagerly regardless of size",
+			len(result.Chunks), kinds)
+	}
+
+	chunk := result.Chunks[0]
+	if chunk.Kind != "class" {
+		t.Errorf("expected chunk kind=class, got %q", chunk.Kind)
+	}
+	if chunk.SymbolName != "Greeter" {
+		t.Errorf("expected chunk SymbolName=Greeter, got %q", chunk.SymbolName)
+	}
+
+	// Content must contain the FULL class source, not a signature summary.
+	// Under the bug, methods are replaced with "initialize { ... }" placeholders
+	// and the actual method bodies are moved to separate chunks.
+	for _, want := range []string{
+		"def initialize",
+		"@greeted_at = Time.now",
+		"def hello",
+		"prefix = @greeting.upcase",
+		"def goodbye",
+		`prefix = "goodbye"`,
+	} {
+		if !strings.Contains(chunk.Content, want) {
+			t.Errorf("chunk content missing %q — bug #11: method bodies extracted into separate chunks, "+
+				"parent chunk only holds a signature summary", want)
+		}
 	}
 }
