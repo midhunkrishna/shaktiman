@@ -3242,3 +3242,66 @@ func TestEdges_MemberCallPreservesReceiver(t *testing.T) {
 		}
 	}
 }
+
+// TestEdges_RecursiveFunctionHasSelfEdge is the RED test for bug #9 in
+// docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #9: extractEdges has a filter `if callee != "" && callee != newOwner`
+// that drops self-calls from the call graph. Recursive functions show no
+// self-edge, so dependency-graph consumers can't see recursion. The filter
+// also drops legitimate calls when a function happens to call a different
+// function with the same short name (overloading / method overriding).
+//
+// The fix removes the filter: the parser records the syntactic edge as
+// it appears in source, and the graph layer is responsible for semantic
+// deduplication.
+//
+// Test: a Go recursive factorial function must have a self-edge
+// `fact → fact` in the call graph.
+func TestEdges_RecursiveFunctionHasSelfEdge(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`package main
+
+func fact(n int) int {
+	if n == 0 {
+		return 1
+	}
+	return n * fact(n-1)
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "fact.go",
+		Content:  src,
+		Language: "go",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	foundSelfEdge := false
+	for _, e := range result.Edges {
+		if e.Kind == "calls" && e.SrcSymbolName == "fact" && e.DstSymbolName == "fact" {
+			foundSelfEdge = true
+			break
+		}
+	}
+	if !foundSelfEdge {
+		targets := []string{}
+		for _, e := range result.Edges {
+			if e.Kind == "calls" && e.SrcSymbolName == "fact" {
+				targets = append(targets, e.DstSymbolName)
+			}
+		}
+		t.Errorf("expected self-edge fact→fact in the call graph, got call targets from fact: %v — "+
+			"bug #9: `callee != newOwner` filter drops recursive self-calls",
+			targets)
+	}
+}
