@@ -2757,3 +2757,69 @@ func TestExtractName_JavaField(t *testing.T) {
 			name, "executor")
 	}
 }
+
+// TestParse_JavaMultiDeclaratorField is the RED test for bug #2 in
+// docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #2: Java field_declaration and local_variable_declaration nodes
+// can declare multiple variables in one statement (`public int x = 1,
+// y = 2, z = 3;`). Tree-sitter exposes this as a field_declaration with
+// multiple variable_declarator children. walkForSymbols today either
+// (a) has no case for field_declaration at all (because Java's
+// SymbolKindMap omits it as a workaround for bug #1 — now fixed) or
+// (b) would call extractName which returns only the first declarator's
+// name. Either way, y and z are invisible to search and the symbol
+// index.
+//
+// This test parses a Java class containing a multi-declarator field
+// and asserts that all three variables — x, y, z — are indexed as
+// symbols with kind "variable". Under the current code only x (or
+// the type name) is extracted.
+func TestParse_JavaMultiDeclaratorField(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`package com.example;
+
+public class Counters {
+    public int x = 1, y = 2, z = 3;
+    private static final String name = "counter", label = "cnt";
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "Counters.java",
+		Content:  src,
+		Language: "java",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	foundByName := map[string]string{}
+	for _, s := range result.Symbols {
+		if s.Kind == "variable" || s.Kind == "constant" {
+			foundByName[s.Name] = s.Kind
+		}
+	}
+
+	// All five declarators across the two field_declaration statements
+	// must be present. Today the parser extracts none (field_declaration
+	// is omitted from SymbolKindMap) or at most the first of each.
+	for _, want := range []string{"x", "y", "z", "name", "label"} {
+		if _, ok := foundByName[want]; !ok {
+			t.Errorf("expected field symbol %q — bug #2: multi-declarator field loses all but the first variable",
+				want)
+		}
+	}
+
+	// No spurious type-name symbol should appear (regression guard against bug #1).
+	if _, ok := foundByName["String"]; ok {
+		t.Error("unexpected symbol 'String' — extractName regressed to returning type name")
+	}
+}
