@@ -1,7 +1,8 @@
 # Parser Bugs Uncovered During Recursive Chunking Implementation
 
 **Date:** 2026-04-08
-**Context:** Bugs found while implementing ADR-004 (recursive AST-driven chunking). Some are pre-existing and were hidden by the old whitelist-driven traversal; others are conceptual issues exposed by the new recursive approach. None are language-specific — they affect the parser architecture as a whole.
+**Status:** **ALL 13 BUGS RESOLVED.** `parser.ChunkAlgorithmVersion` bumped from `"2"` → `"3"` so deployed installs auto-reindex on daemon restart (the `ensureParserVersion` hook purges stale chunks/symbols/edges on mismatch).
+**Context:** Bugs found while implementing ADR-004 (recursive AST-driven chunking). Some were pre-existing and hidden by the old whitelist-driven traversal; others were conceptual issues exposed by the new recursive approach. None are language-specific — they affect the parser architecture as a whole.
 
 ---
 

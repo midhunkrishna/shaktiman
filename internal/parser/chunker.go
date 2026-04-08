@@ -22,7 +22,22 @@ const maxChunkDepth = 10
 // in a way that would make previously indexed chunks incompatible or
 // misleading for search/ranking. The daemon stores this value in the
 // config table on first run and triggers a full reindex on mismatch.
-const ChunkAlgorithmVersion = "2"
+//
+// v3 — bug fix pass from docs/review-findings/parser-bugs-from-recursive-chunking.md:
+//   - Bug #11: chunkNode size gate — small containers emit as a single chunk,
+//     so chunk boundaries shift for every file under ~1024 tokens.
+//   - Bug #1 + #2: Java field_declaration symbols are now indexed (new
+//     variable/constant symbols that didn't exist before).
+//   - Bug #4: NodeMeta refactor — no behavioral change for existing containers,
+//     but adding a new container kind no longer requires editing walkForSymbols.
+//   - Bug #6: signature headers now include full multi-line declarations
+//     (name, generics, extends/implements) so signature chunk content differs.
+//   - Bug #8: call-graph edge targets include receivers (e.g., `a.foo` instead
+//     of `foo`), changing edge dst names everywhere member calls appear.
+//   - Bug #9: recursive self-calls now present in the call graph.
+//   - Bug #10: heritage edges include generic type arguments (String inside
+//     `Map<String, User>`).
+const ChunkAlgorithmVersion = "3"
 
 // chunkFile splits a parsed tree into semantic chunks using language-specific config.
 func (p *Parser) chunkFile(root *tree_sitter.Node, source []byte, cfg *LanguageConfig) []types.ChunkRecord {
