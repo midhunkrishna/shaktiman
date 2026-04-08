@@ -73,14 +73,14 @@ func (p *Parser) chunkFile(root *tree_sitter.Node, source []byte, cfg *LanguageC
 		// Unwrap export wrapper (TypeScript/JavaScript)
 		target := child
 		if cfg.ExportType != "" && nodeType == cfg.ExportType {
-			if inner := findDeclarationChild(child); inner != nil {
+			if inner := findDeclarationChild(child, cfg); inner != nil {
 				target = inner
 			}
 		}
 
 		// Unwrap ambient wrapper (TypeScript declare)
 		if cfg.AmbientType != "" && target.Kind() == cfg.AmbientType {
-			if inner := findDeclarationChild(target); inner != nil {
+			if inner := findDeclarationChild(target, cfg); inner != nil {
 				target = inner
 			}
 		}
@@ -125,7 +125,7 @@ func (p *Parser) chunkNode(node *tree_sitter.Node, source []byte, cfg *LanguageC
 	// by looking at the inner definition child.
 	nameNode := node
 	if kind == "" {
-		if inner := findDeclarationChild(node); inner != nil {
+		if inner := findDeclarationChild(node, cfg); inner != nil {
 			if innerKind := cfg.ChunkableTypes[inner.Kind()].Kind; innerKind != "" {
 				kind = innerKind
 			}
@@ -218,7 +218,7 @@ func (p *Parser) findChunkableChildren(node *tree_sitter.Node, source []byte, cf
 
 		// Unwrap export wrapper
 		if cfg.ExportType != "" && childType == cfg.ExportType {
-			if inner := findDeclarationChild(child); inner != nil {
+			if inner := findDeclarationChild(child, cfg); inner != nil {
 				child = inner
 				childType = child.Kind()
 			}
@@ -226,7 +226,7 @@ func (p *Parser) findChunkableChildren(node *tree_sitter.Node, source []byte, cf
 
 		// Unwrap ambient wrapper
 		if cfg.AmbientType != "" && childType == cfg.AmbientType {
-			if inner := findDeclarationChild(child); inner != nil {
+			if inner := findDeclarationChild(child, cfg); inner != nil {
 				child = inner
 				childType = child.Kind()
 			}
@@ -545,36 +545,43 @@ func findChildByType(node *tree_sitter.Node, nodeType string) *tree_sitter.Node 
 	return nil
 }
 
-// findDeclarationChild finds the declaration within an export_statement or ambient_declaration.
-func findDeclarationChild(node *tree_sitter.Node) *tree_sitter.Node {
-	declTypes := map[string]bool{
-		"function_declaration":           true,
-		"class_declaration":              true,
-		"abstract_class_declaration":     true,
-		"interface_declaration":          true,
-		"type_alias_declaration":         true,
-		"enum_declaration":               true,
-		"lexical_declaration":            true,
-		"variable_declaration":           true,
-		"generator_function_declaration": true,
-		"function_signature":             true,
-		"internal_module":                true,
-		"module":                         true,
-		// Python
-		"function_definition":  true,
-		"class_definition":     true,
-		"decorated_definition": true,
-	}
-
+// findDeclarationChild finds the declaration wrapped by an export_statement,
+// ambient_declaration, or decorated_definition node. It uses
+// `cfg.ChunkableTypes` as the single source of truth: any child whose kind
+// is a registered chunkable (except the wrapper kinds themselves) qualifies
+// as the unwrapped declaration.
+//
+// Wrappers are skipped to prevent infinite unwrap cycles when one wrapper
+// type nests another (e.g., TypeScript `export declare ...` parses as
+// export_statement > ambient_declaration > declaration).
+//
+// Bug #5 in docs/review-findings/parser-bugs-from-recursive-chunking.md:
+// previously this helper carried a hardcoded whitelist that had to be kept
+// in sync with every language's ChunkableTypes map.
+func findDeclarationChild(node *tree_sitter.Node, cfg *LanguageConfig) *tree_sitter.Node {
 	if decl := node.ChildByFieldName("declaration"); decl != nil {
 		return decl
 	}
 
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		child := node.NamedChild(uint(i))
-		if declTypes[child.Kind()] {
-			return child
+		childKind := child.Kind()
+		meta, ok := cfg.ChunkableTypes[childKind]
+		if !ok {
+			continue
 		}
+		// Skip wrapper kinds so export_statement > ambient_declaration >
+		// class_declaration unwraps to the class, not the ambient wrapper.
+		if childKind == cfg.ExportType || childKind == cfg.AmbientType {
+			continue
+		}
+		// Skip empty-kind wrappers (like Python decorated_definition) to
+		// avoid returning another wrapper. The caller will recurse into the
+		// inner declaration if needed.
+		if meta.Kind == "" {
+			continue
+		}
+		return child
 	}
 	return nil
 }

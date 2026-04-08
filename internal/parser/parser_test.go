@@ -2909,3 +2909,82 @@ func TestSymbols_ContainerRecursionDrivenByIsContainerFlag(t *testing.T) {
 			methodCount)
 	}
 }
+
+// TestFindDeclarationChild_UnwrapsViaConfig is the regression test for bug #5
+// in docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #5: findDeclarationChild previously carried a hardcoded declTypes map
+// that listed every node kind it would recognize as the unwrapped payload of
+// an export_statement, ambient_declaration, or decorated_definition. Adding
+// a new chunkable type to a language config required remembering to also
+// add it to this map, or silently losing the wrapper unwrap.
+//
+// The fix is to key findDeclarationChild off cfg.ChunkableTypes: any
+// non-wrapper entry is a valid unwrap target. The helper first consults
+// tree-sitter's `declaration` field (which export_statement exposes
+// directly) and only falls back to the ChunkableTypes scan when the field
+// is absent. Python's decorated_definition has no `declaration` field, so
+// it hits the scan path — this test uses it to exercise config-driven
+// unwrapping directly.
+func TestFindDeclarationChild_UnwrapsViaConfig(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	cfg, err := p.getConfig("python")
+	if err != nil {
+		t.Fatalf("getConfig python: %v", err)
+	}
+	if err := p.ts.SetLanguage(cfg.Grammar); err != nil {
+		t.Fatalf("SetLanguage: %v", err)
+	}
+
+	src := []byte(`@staticmethod
+def foo(x):
+    return x + 1
+`)
+
+	tree := p.ts.Parse(src, nil)
+	if tree == nil {
+		t.Fatal("tree-sitter returned nil tree")
+	}
+	defer tree.Close()
+
+	wrapper := findFirstNamed(tree.RootNode(), "decorated_definition")
+	if wrapper == nil {
+		t.Fatal("no decorated_definition in parsed Python tree")
+	}
+
+	// Sanity: decorated_definition does NOT expose a `declaration` field,
+	// so findDeclarationChild must consult cfg.ChunkableTypes to locate
+	// the inner function_definition.
+	if decl := wrapper.ChildByFieldName("declaration"); decl != nil {
+		t.Fatal("test precondition broken: decorated_definition now exposes a declaration field; " +
+			"this test assumed it doesn't and would short-circuit the config scan")
+	}
+
+	inner := findDeclarationChild(wrapper, cfg)
+	if inner == nil {
+		t.Fatal("findDeclarationChild returned nil for decorated_definition wrapping a function")
+	}
+	if inner.Kind() != "function_definition" {
+		t.Errorf("expected unwrapped function_definition, got %q", inner.Kind())
+	}
+
+	// Removing function_definition from the cached config MUST cause the
+	// unwrap to fail, demonstrating that the helper is reading from the
+	// config and not a hardcoded list. A regression that goes back to the
+	// hardcoded declTypes map would return the function_definition here
+	// even after we remove it from ChunkableTypes, and this assertion
+	// would fail.
+	delete(cfg.ChunkableTypes, "function_definition")
+	if inner := findDeclarationChild(wrapper, cfg); inner != nil {
+		t.Errorf("expected nil unwrap after removing function_definition from cfg.ChunkableTypes, "+
+			"got %q — bug #5 regressed: findDeclarationChild is hardcoding the declaration list "+
+			"instead of reading from cfg", inner.Kind())
+	}
+}

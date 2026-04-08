@@ -57,15 +57,13 @@ Regression covered by `TestParse_JavaMultiDeclaratorField`.
 - `internal/parser/symbols.go` — the hardcoded whitelist and kind-string switch are replaced with `shouldRecurse = cfg.ChunkableTypes[nodeType].IsContainer`. Adding a new container kind to a language config no longer requires touching the walker.
 - Regression covered by `TestSymbols_ContainerRecursionDrivenByIsContainerFlag` which mutates Java's cached config at runtime, renames `class_declaration`'s chunk kind to `"custom_container"` while keeping `IsContainer: true`, and asserts that method symbols inside the class body are still extracted.
 
-### 5. `decorated_definition` wrapper kind resolution depends on `findDeclarationChild`
+### 5. `decorated_definition` wrapper kind resolution depends on `findDeclarationChild` — **RESOLVED**
 
-**Location:** `internal/parser/chunker.go` — `chunkNode` and `findDeclarationChild`
+**Status:** Fixed. `findDeclarationChild` now takes a `*LanguageConfig` parameter and uses `cfg.ChunkableTypes` as the single source of truth for unwrap targets. The hardcoded `declTypes` map is gone.
 
-**Problem:** When a wrapper node (like Python's `decorated_definition` or TypeScript's `export_statement` / `ambient_declaration`) has `kind == ""` in `ChunkableTypes`, we resolve the kind by looking at the inner child via `findDeclarationChild`.
-
-`findDeclarationChild` has its own hardcoded whitelist of declaration types. Adding a new chunkable type requires remembering to add it to this helper or the wrapper unwrapping silently fails.
-
-**Proper fix:** Derive `findDeclarationChild`'s whitelist from the union of all languages' `ChunkableTypes`, or invert the logic — the wrapper node type advertises which child kinds it wraps.
+- `internal/parser/chunker.go` — `findDeclarationChild(node, cfg)` first checks tree-sitter's `declaration` field (used by `export_statement`), then scans named children for any kind registered in `cfg.ChunkableTypes`, skipping wrapper kinds (`cfg.ExportType`, `cfg.AmbientType`, and empty-kind entries like Python `decorated_definition`) so nested wrappers unwrap correctly.
+- All five call sites (`chunkFile`, `chunkNode`, `findChunkableChildren`) now pass `cfg`.
+- Regression covered by `TestFindDeclarationChild_UnwrapsViaConfig` which parses `@staticmethod def foo(x): ...`, asserts `decorated_definition` does NOT expose a `declaration` field, then verifies `findDeclarationChild` returns the inner `function_definition`. A follow-up assertion deletes `function_definition` from the cached cfg and verifies the helper returns nil — proof that the lookup reads from cfg and not a hardcoded list.
 
 ### 6. Signature builder strips comments via string prefix matching
 
@@ -178,7 +176,7 @@ if n.Kind() == "type_arguments" {
 
 **Medium impact:**
 - Bug #8: Call expression receiver loss. Affects graph accuracy significantly.
-- Bug #5: `findDeclarationChild` whitelist maintenance burden.
+- ~~Bug #5: `findDeclarationChild` whitelist maintenance burden~~ — **RESOLVED**
 - ~~Bug #11: Size-gate contradiction~~ — **RESOLVED**
 
 **Lower impact:**
