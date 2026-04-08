@@ -2823,3 +2823,88 @@ public class Counters {
 		t.Error("unexpected symbol 'String' — extractName regressed to returning type name")
 	}
 }
+
+// TestSymbols_ContainerRecursionDrivenByIsContainerFlag is the RED test for
+// bug #4 in docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #4: `ChunkableTypes map[string]string` conflates two concerns — the
+// chunk kind and whether the node is a container that should be recursed
+// into. `walkForSymbols` has a hardcoded switch on the kind string plus a
+// nested whitelist of "block"-kind container types:
+//
+//	switch chunkKind {
+//	case "class", "interface", "namespace", "":
+//	    shouldRecurse = true
+//	case "block":
+//	    switch nodeType {
+//	    case "impl_item", "mod_item", "foreign_mod_item", "internal_module",
+//	        "static_initializer":
+//	        shouldRecurse = true
+//	    }
+//	}
+//
+// Any time a language adds a new container kind — or uses a kind string the
+// switch does not know about — the switch must be updated in lockstep. The
+// duplication is fragile and invisible until a test fails far from the root
+// cause.
+//
+// The fix is to promote `ChunkableTypes` to `map[string]NodeMeta` where
+// NodeMeta carries both Kind and IsContainer. walkForSymbols keys recursion
+// off IsContainer, not a kind string whitelist.
+//
+// This test exercises the bug directly: it mutates Java's cached config at
+// runtime to rename class_declaration's chunk kind from "class" to a novel
+// value ("custom_container"). Under the current kind-string switch, the
+// novel kind does not match any `case` clause, so walkForSymbols refuses to
+// recurse into the class body and the method symbols are lost. After the
+// NodeMeta refactor, the walker reads IsContainer=true regardless of the
+// kind string and the methods are still extracted.
+func TestSymbols_ContainerRecursionDrivenByIsContainerFlag(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	// Prime cfg via getConfig so it's cached on this Parser only.
+	cfg, err := p.getConfig("java")
+	if err != nil {
+		t.Fatalf("getConfig java: %v", err)
+	}
+
+	// Rename class_declaration's chunk kind to a value the current
+	// walkForSymbols switch does not recognize. This does NOT change that
+	// class_declaration is still chunkable, and it does not touch
+	// SymbolKindMap — class_declaration is still a symbol node.
+	cfg.ChunkableTypes["class_declaration"] = "custom_container"
+
+	src := []byte(`public class Outer {
+    public void first() {}
+    public void second() {}
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "Outer.java",
+		Content:  src,
+		Language: "java",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	methodCount := 0
+	for _, s := range result.Symbols {
+		if s.Kind == "method" {
+			methodCount++
+		}
+	}
+	if methodCount < 2 {
+		t.Errorf("expected at least 2 method symbols inside the class (first, second), got %d — "+
+			"bug #4: walkForSymbols recursion is driven by a hardcoded kind-string switch "+
+			"that must know about every chunk kind, instead of a NodeMeta.IsContainer flag",
+			methodCount)
+	}
+}
