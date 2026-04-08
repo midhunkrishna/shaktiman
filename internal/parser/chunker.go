@@ -440,7 +440,9 @@ func buildHeaderChunk(parts []headerFragment, tc *tokenCounter) types.ChunkRecor
 
 // extractName finds the identifier name of a declaration node.
 func extractName(node *tree_sitter.Node, source []byte) string {
-	// Try common field names
+	// Try common field names — most tree-sitter grammars expose the declared
+	// name as a `name` field on the declaration node itself (Python
+	// function_definition, Java class_declaration, Rust struct_item, etc.).
 	for _, field := range []string{"name", "property", "function"} {
 		if child := node.ChildByFieldName(field); child != nil {
 			t := child.Kind()
@@ -452,18 +454,54 @@ func extractName(node *tree_sitter.Node, source []byte) string {
 		}
 	}
 
-	// Walk named children for an identifier
+	// Prefer nested declarators over sibling type identifiers. Java's
+	// field_declaration / local_variable_declaration has the shape
+	//   field_declaration
+	//     type_identifier       (ExecutorService)
+	//     variable_declarator
+	//       name: identifier    (executor)
+	// Walking named children in order would return the type_identifier first
+	// because it appears before the declarator. Looking for a
+	// variable_declarator child explicitly (and then delegating to
+	// extractName on it, which hits the `name` field above) returns the
+	// actual variable name. Bug #1 in
+	// docs/review-findings/parser-bugs-from-recursive-chunking.md.
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(uint(i))
+		if child.Kind() == "variable_declarator" {
+			if name := extractName(child, source); name != "" {
+				return name
+			}
+		}
+	}
+
+	// Walk named children for an identifier. type_identifier is excluded
+	// from the top-level walk because in the contexts we reach here (field
+	// declarations, wrappers without a `name` field) type_identifier is
+	// almost always a type annotation, not the declared name. Legitimate
+	// type-name contexts (Go type_spec, Rust struct_item) are served by
+	// ChildByFieldName("name") above.
 	for i := 0; i < int(node.NamedChildCount()); i++ {
 		child := node.NamedChild(uint(i))
 		t := child.Kind()
-		if t == "identifier" || t == "type_identifier" || t == "field_identifier" || t == "constant" {
+		if t == "identifier" || t == "field_identifier" || t == "constant" {
 			return child.Utf8Text(source)
 		}
-		if t != "comment" && t != "decorator" {
+		if t != "comment" && t != "decorator" && t != "type_identifier" {
 			name := extractName(child, source)
 			if name != "" {
 				return name
 			}
+		}
+	}
+
+	// Final fallback: accept a sibling type_identifier when no other name was
+	// found. This preserves existing behavior for corner cases we haven't
+	// catalogued.
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(uint(i))
+		if child.Kind() == "type_identifier" {
+			return child.Utf8Text(source)
 		}
 	}
 	return ""

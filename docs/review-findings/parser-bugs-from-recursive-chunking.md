@@ -7,22 +7,16 @@
 
 ## Symbol Extraction Bugs
 
-### 1. `extractName` returns type name instead of variable name for field-like declarations
+### 1. `extractName` returns type name instead of variable name for field-like declarations — **RESOLVED**
 
-**Location:** `internal/parser/chunker.go:403` (`extractName`)
+**Status:** Fixed in `internal/parser/chunker.go` — `extractName` now:
 
-**Symptom:** For a Java field `private final ExecutorService executor;`, `extractName` returns `"ExecutorService"` instead of `"executor"`.
+1. Keeps the existing `ChildByFieldName("name"|"property"|"function")` fast path that already covers Python function_definition, Java class_declaration, Rust struct_item, Go type_spec, etc.
+2. Explicitly looks for a nested `variable_declarator` child **before** falling back to the generic walk. Java's `field_declaration` / `local_variable_declaration` nest the variable name inside `variable_declarator`, so this delegates to extractName on the declarator which then hits the `name` field path.
+3. In the top-level walk, excludes `type_identifier` children because they are almost always type annotations in the contexts that reach the walk. Legitimate type-name contexts (e.g. Go `type_spec`) already succeed via `ChildByFieldName("name")` above.
+4. Preserves a final-fallback loop that still accepts a sibling `type_identifier` for uncatalogued corner cases, so the change is strictly additive for existing well-formed paths.
 
-**Root cause:** `extractName` walks named children looking for the first `identifier` / `type_identifier` / `constant` match. Type identifiers often appear before the variable name in child order, so the type wins.
-
-**Affected patterns:**
-- Java `field_declaration` (confirmed)
-- Likely Rust `const_item` / `static_item` if the type comes before the name
-- Likely TypeScript `public_field_definition` with type annotations
-
-**Status:** Worked around in ADR-004 by removing `field_declaration` from Java's `SymbolKindMap`. The bug exists in the code but is no longer triggered. A proper fix requires preferring explicit `name` fields or excluding `type_identifier` children from the walk.
-
-**Hidden before recursive chunking:** This code path was dead — `walkForSymbols` never reached `field_declaration` because `ClassBodyTypes` didn't include it.
+Regression covered by `TestExtractName_JavaField` which calls `extractName` directly on a parsed Java `field_declaration` AST node and asserts `"executor"` is returned instead of `"ExecutorService"`. Bug #2 (multi-declarator handling) will build on this — once Java `field_declaration` is re-added to `SymbolKindMap` with a specialized extractor, every variable in `int x = 1, y = 2;` gets its own symbol.
 
 ### 2. Multi-declarator declarations lose all but the first name
 
