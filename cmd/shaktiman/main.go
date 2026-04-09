@@ -49,6 +49,7 @@ func main() {
 	rootCmd.AddCommand(diffCmd())
 	rootCmd.AddCommand(enrichmentStatusCmd())
 	rootCmd.AddCommand(summaryCmd())
+	rootCmd.AddCommand(reEmbedCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -234,6 +235,46 @@ func isTTY() bool {
 		return false
 	}
 	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+func reEmbedCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "re-embed <project-root>",
+		Short: "Discard existing embeddings and regenerate with current config",
+		Long: `Deletes embeddings.bin and resets all embedded flags in the database.
+After running this, execute 'shaktiman index --embed <project-root>' to regenerate
+all embeddings using the prefixes configured in shaktiman.toml.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			projectRoot := args[0]
+			cfg := types.DefaultConfig(projectRoot)
+			cfg, err := types.LoadConfigFromFile(cfg)
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+			ctx := context.Background()
+
+			store, closer, err := openStore(cfg)
+			if err != nil {
+				return fmt.Errorf("open store: %w", err)
+			}
+			defer closer()
+
+			// Delete embeddings.bin
+			if err := os.Remove(cfg.EmbeddingsPath); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("delete embeddings: %w", err)
+			}
+			fmt.Printf("Deleted: %s\n", cfg.EmbeddingsPath)
+
+			// Reset all embedded flags so index --embed regenerates everything
+			if err := store.ResetAllEmbeddedFlags(ctx); err != nil {
+				return fmt.Errorf("reset embedded flags: %w", err)
+			}
+			fmt.Println("Reset embedded flags.")
+			fmt.Printf("Run: shaktiman index --embed %s\n", projectRoot)
+			return nil
+		},
+	}
 }
 
 func statusCmd() *cobra.Command {

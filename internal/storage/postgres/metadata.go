@@ -269,6 +269,18 @@ func (s *PgStore) GetSymbolByName(ctx context.Context, name string) ([]types.Sym
 	return scanSymbols(rows)
 }
 
+func (s *PgStore) GetSymbolByNameCI(ctx context.Context, name string) ([]types.SymbolRecord, error) {
+	rows, err := s.query(ctx, `
+		SELECT id, chunk_id, file_id, name, qualified_name, kind,
+		       line, signature, visibility, is_exported
+		FROM symbols WHERE name ILIKE $1`, name)
+	if err != nil {
+		return nil, fmt.Errorf("get symbols named (ci) %s: %w", name, err)
+	}
+	defer rows.Close()
+	return scanSymbols(rows)
+}
+
 func (s *PgStore) GetSymbolByID(ctx context.Context, id int64) (*types.SymbolRecord, error) {
 	var sym types.SymbolRecord
 	err := s.queryRow(ctx, `

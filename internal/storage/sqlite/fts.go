@@ -123,7 +123,15 @@ func sanitizeFTSQuery(query string) string {
 		}, w)
 		clean = strings.TrimSpace(clean)
 		if clean != "" {
-			terms = append(terms, `"`+clean+`"`)
+			// Trailing * enables FTS5 prefix search: "term"* matches "termFoo", "termBar", etc.
+			if strings.HasSuffix(clean, "*") {
+				base := strings.TrimRight(clean, "*")
+				if base != "" {
+					terms = append(terms, `"`+base+`"*`)
+				}
+			} else {
+				terms = append(terms, `"`+clean+`"`)
+			}
 		}
 	}
 	if len(terms) == 0 {

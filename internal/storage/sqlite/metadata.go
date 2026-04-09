@@ -334,7 +334,7 @@ func (s *Store) GetSymbolsByFile(ctx context.Context, fileID int64) ([]types.Sym
 	return scanSymbols(rows)
 }
 
-// GetSymbolByName returns symbols matching the given name.
+// GetSymbolByName returns symbols matching the given name (case-sensitive).
 func (s *Store) GetSymbolByName(ctx context.Context, name string) ([]types.SymbolRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, chunk_id, file_id, name, qualified_name, kind,
@@ -342,6 +342,20 @@ func (s *Store) GetSymbolByName(ctx context.Context, name string) ([]types.Symbo
 		FROM symbols WHERE name = ?`, name)
 	if err != nil {
 		return nil, fmt.Errorf("get symbols named %s: %w", name, err)
+	}
+	defer rows.Close()
+	return scanSymbols(rows)
+}
+
+// GetSymbolByNameCI returns symbols matching the given name case-insensitively.
+// Used as a fallback when an exact case-sensitive match yields no results.
+func (s *Store) GetSymbolByNameCI(ctx context.Context, name string) ([]types.SymbolRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, chunk_id, file_id, name, qualified_name, kind,
+		       line, signature, visibility, is_exported
+		FROM symbols WHERE name = ? COLLATE NOCASE`, name)
+	if err != nil {
+		return nil, fmt.Errorf("get symbols named (ci) %s: %w", name, err)
 	}
 	defer rows.Close()
 	return scanSymbols(rows)

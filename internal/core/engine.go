@@ -18,8 +18,9 @@ type QueryEngine struct {
 	vectorStore  types.VectorStore // nil if embeddings disabled
 	embedder     types.Embedder    // nil if embeddings disabled
 	embedCache   *vector.EmbedCache
-	embedReady   func() bool       // checks if embedding service is available
-	sessionStore *SessionStore     // nil if session scoring disabled
+	embedReady   func() bool   // checks if embedding service is available
+	sessionStore *SessionStore // nil if session scoring disabled
+	queryPrefix  string        // prepended to query text before embedding (e.g. "search_query: ")
 }
 
 // NewQueryEngine creates an engine backed by the given store.
@@ -43,6 +44,12 @@ func (e *QueryEngine) SetVectorStore(vs types.VectorStore, embedder types.Embedd
 // SetSessionStore attaches a session store for session-aware ranking.
 func (e *QueryEngine) SetSessionStore(ss *SessionStore) {
 	e.sessionStore = ss
+}
+
+// SetQueryPrefix configures the prefix prepended to query text before embedding.
+// For nomic-embed-text, use "search_query: ".
+func (e *QueryEngine) SetQueryPrefix(prefix string) {
+	e.queryPrefix = prefix
 }
 
 // SearchInput configures a search operation.
@@ -143,6 +150,17 @@ func (e *QueryEngine) determineLevel(ctx context.Context) FallbackLevel {
 func (e *QueryEngine) searchSemantic(ctx context.Context, input SearchInput, level FallbackLevel) ([]types.ScoredResult, error) {
 	filter := TestFilter{ExcludeTests: input.ExcludeTests, TestOnly: input.TestOnly}
 
+	// Symbol exact lookup for identifier-style queries (camelCase, snake_case, etc.).
+	// Returns score=1.0 matches that are prepended before hybrid results.
+	var exactMatches []types.ScoredResult
+	if isIdentifierQuery(input.Query) {
+		var symErr error
+		exactMatches, symErr = SymbolExactSearch(ctx, e.store, input.Query, filter)
+		if symErr != nil {
+			e.logger.Warn("symbol exact search failed, continuing", "err", symErr)
+		}
+	}
+
 	// Get keyword candidates
 	kwResults, err := KeywordSearch(ctx, e.store, input.Query, input.MaxResults*2, filter)
 	if err != nil {
@@ -182,6 +200,20 @@ func (e *QueryEngine) searchSemantic(ctx context.Context, input SearchInput, lev
 		SessionScorer:  e.sessionScorer(),
 	})
 
+	// Prepend exact symbol matches at the front; append hybrid results deduplicating by chunk ID.
+	if len(exactMatches) > 0 {
+		seen := make(map[int64]bool, len(exactMatches))
+		for _, r := range exactMatches {
+			seen[r.ChunkID] = true
+		}
+		for _, r := range ranked {
+			if !seen[r.ChunkID] {
+				exactMatches = append(exactMatches, r)
+			}
+		}
+		ranked = exactMatches
+	}
+
 	if len(ranked) > input.MaxResults {
 		ranked = ranked[:input.MaxResults]
 	}
@@ -195,12 +227,23 @@ func (e *QueryEngine) searchSemantic(ctx context.Context, input SearchInput, lev
 // searchKeyword runs keyword-only search with structural + change signals.
 func (e *QueryEngine) searchKeyword(ctx context.Context, input SearchInput) ([]types.ScoredResult, error) {
 	filter := TestFilter{ExcludeTests: input.ExcludeTests, TestOnly: input.TestOnly}
+
+	// Symbol exact lookup for identifier-style queries.
+	var exactMatches []types.ScoredResult
+	if isIdentifierQuery(input.Query) {
+		var symErr error
+		exactMatches, symErr = SymbolExactSearch(ctx, e.store, input.Query, filter)
+		if symErr != nil {
+			e.logger.Warn("symbol exact search failed, continuing", "err", symErr)
+		}
+	}
+
 	results, err := KeywordSearch(ctx, e.store, input.Query, input.MaxResults, filter)
 	if err != nil {
 		return nil, fmt.Errorf("keyword search: %w", err)
 	}
 
-	if len(results) == 0 {
+	if len(results) == 0 && len(exactMatches) == 0 {
 		pkg, err := FilesystemFallback(ctx, e.projectRoot, input.Query, 4096)
 		if err != nil {
 			return nil, fmt.Errorf("filesystem fallback: %w", err)
@@ -215,6 +258,21 @@ func (e *QueryEngine) searchKeyword(ctx context.Context, input SearchInput) ([]t
 		SemanticReady: false,
 		SessionScorer: e.sessionScorer(),
 	})
+
+	// Prepend exact symbol matches at the front; append keyword results deduplicating by chunk ID.
+	if len(exactMatches) > 0 {
+		seen := make(map[int64]bool, len(exactMatches))
+		for _, r := range exactMatches {
+			seen[r.ChunkID] = true
+		}
+		for _, r := range results {
+			if !seen[r.ChunkID] {
+				exactMatches = append(exactMatches, r)
+			}
+		}
+		results = exactMatches
+	}
+
 	if input.MinScore > 0 {
 		results = filterByScore(results, input.MinScore)
 	}
@@ -275,15 +333,18 @@ func (e *QueryEngine) contextKeyword(ctx context.Context, input ContextInput) (*
 }
 
 // embedQuery produces or retrieves a cached embedding for the query text.
+// The queryPrefix is prepended before embedding and used as the cache key,
+// so a prefix change (e.g. switching models) does not return stale cached vectors.
 func (e *QueryEngine) embedQuery(ctx context.Context, query string) ([]float32, error) {
-	if vec, ok := e.embedCache.Get(query); ok {
+	prefixed := e.queryPrefix + query
+	if vec, ok := e.embedCache.Get(prefixed); ok {
 		return vec, nil
 	}
-	vec, err := e.embedder.Embed(ctx, query)
+	vec, err := e.embedder.Embed(ctx, prefixed)
 	if err != nil {
 		return nil, err
 	}
-	e.embedCache.Put(query, vec)
+	e.embedCache.Put(prefixed, vec)
 	return vec, nil
 }
 

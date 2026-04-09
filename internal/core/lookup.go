@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"time"
+	"unicode"
 
 	"github.com/shaktimanai/shaktiman/internal/format"
 	"github.com/shaktimanai/shaktiman/internal/types"
@@ -252,6 +253,137 @@ type EnrichmentStatusInput struct {
 	VectorStore types.VectorStore // nil ok
 	PendingFn   func() int       // nil → 0
 	CircuitFn   func() string    // nil → "n/a"
+}
+
+// isIdentifierQuery returns true when query looks like a single code identifier:
+// no whitespace, contains only letters/digits/underscores, has at least one letter.
+// Matches camelCase, PascalCase, snake_case, SCREAMING_SNAKE_CASE.
+func isIdentifierQuery(query string) bool {
+	if len(query) < 2 {
+		return false
+	}
+	hasLetter := false
+	for _, r := range query {
+		if unicode.IsLetter(r) {
+			hasLetter = true
+		} else if !unicode.IsDigit(r) && r != '_' {
+			return false
+		}
+	}
+	return hasLetter
+}
+
+// SymbolExactSearch looks up chunks by exact symbol name.
+// Returns nil (not an error) when no symbols match, so callers fall through gracefully.
+// Tries case-sensitive match first, then case-insensitive fallback.
+// Score is always 1.0 — exact symbol matches are maximum relevance.
+func SymbolExactSearch(ctx context.Context, store types.MetadataStore, query string, filter TestFilter) ([]types.ScoredResult, error) {
+	// Case-sensitive first (cheaper, more precise)
+	syms, err := store.GetSymbolByName(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	// Case-insensitive fallback
+	if len(syms) == 0 {
+		syms, err = store.GetSymbolByNameCI(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(syms) == 0 {
+		return nil, nil
+	}
+
+	// Collect unique chunk IDs respecting test filter
+	type symEntry struct {
+		sym  types.SymbolRecord
+		path string
+	}
+	seen := make(map[int64]bool, len(syms))
+	var entries []symEntry
+
+	for _, sym := range syms {
+		if sym.ChunkID == 0 || seen[sym.ChunkID] {
+			continue
+		}
+		isTest, err := store.GetFileIsTestByID(ctx, sym.FileID)
+		if err != nil {
+			continue
+		}
+		if filter.ExcludeTests && isTest {
+			continue
+		}
+		if filter.TestOnly && !isTest {
+			continue
+		}
+		path, err := store.GetFilePathByID(ctx, sym.FileID)
+		if err != nil {
+			continue
+		}
+		seen[sym.ChunkID] = true
+		entries = append(entries, symEntry{sym: sym, path: path})
+	}
+
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	// Batch hydration path (1 query instead of N)
+	chunkIDs := make([]int64, len(entries))
+	for i, e := range entries {
+		chunkIDs[i] = e.sym.ChunkID
+	}
+
+	if bs, ok := store.(types.BatchMetadataStore); ok {
+		hydrated, err := bs.BatchHydrateChunks(ctx, chunkIDs)
+		if err == nil {
+			hydratedMap := make(map[int64]types.HydratedChunk, len(hydrated))
+			for _, h := range hydrated {
+				hydratedMap[h.ChunkID] = h
+			}
+			results := make([]types.ScoredResult, 0, len(entries))
+			for _, e := range entries {
+				h, ok := hydratedMap[e.sym.ChunkID]
+				if !ok {
+					continue
+				}
+				results = append(results, types.ScoredResult{
+					ChunkID:    h.ChunkID,
+					Score:      1.0,
+					Path:       h.Path,
+					SymbolName: e.sym.Name,
+					Kind:       h.Kind,
+					StartLine:  h.StartLine,
+					EndLine:    h.EndLine,
+					Content:    h.Content,
+					TokenCount: h.TokenCount,
+				})
+			}
+			return results, nil
+		}
+		// fall through to per-item on batch error
+	}
+
+	// Per-item fallback
+	results := make([]types.ScoredResult, 0, len(entries))
+	for _, e := range entries {
+		chunk, err := store.GetChunkByID(ctx, e.sym.ChunkID)
+		if err != nil || chunk == nil {
+			continue
+		}
+		results = append(results, types.ScoredResult{
+			ChunkID:    chunk.ID,
+			Score:      1.0,
+			Path:       e.path,
+			SymbolName: e.sym.Name,
+			Kind:       chunk.Kind,
+			StartLine:  chunk.StartLine,
+			EndLine:    chunk.EndLine,
+			Content:    chunk.Content,
+			TokenCount: chunk.TokenCount,
+		})
+	}
+	return results, nil
 }
 
 // GetEnrichmentStatus returns enrichment and embedding progress.

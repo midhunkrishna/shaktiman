@@ -61,6 +61,10 @@ type Config struct {
 	// Embedding timeout
 	EmbedTimeout time.Duration // HTTP timeout per embedding request (default: 120s)
 
+	// Embedding task prefixes (model-specific, e.g. nomic-embed-text)
+	EmbedQueryPrefix    string // prepended to query text before embedding (e.g. "search_query: ")
+	EmbedDocumentPrefix string // prepended to chunk content before embedding (e.g. "search_document: ")
+
 	// Test file detection patterns (glob patterns and directory prefixes)
 	TestPatterns []string // e.g. ["*_test.go", "testdata/", "*.test.ts"]
 }
@@ -100,7 +104,9 @@ func DefaultConfig(projectRoot string) Config {
 
 		QdrantCollection: "shaktiman",
 
-		EmbedTimeout: 120 * time.Second,
+		EmbedTimeout:        120 * time.Second,
+		EmbedQueryPrefix:    "search_query: ",
+		EmbedDocumentPrefix: "search_document: ",
 	}
 }
 
@@ -154,11 +160,13 @@ type tomlQdrant struct {
 }
 
 type tomlEmbedding struct {
-	OllamaURL *string `toml:"ollama_url"`
-	Model     *string `toml:"model"`
-	Dims      *int    `toml:"dims"`
-	BatchSize *int    `toml:"batch_size"`
-	Timeout   *string `toml:"timeout"`
+	OllamaURL      *string `toml:"ollama_url"`
+	Model          *string `toml:"model"`
+	Dims           *int    `toml:"dims"`
+	BatchSize      *int    `toml:"batch_size"`
+	Timeout        *string `toml:"timeout"`
+	QueryPrefix    *string `toml:"query_prefix"`
+	DocumentPrefix *string `toml:"document_prefix"`
 }
 
 // LoadConfigFromFile reads shaktiman.toml and merges values into cfg.
@@ -286,6 +294,12 @@ func LoadConfigFromFile(cfg Config) (Config, error) {
 		}
 		cfg.EmbedTimeout = d
 	}
+	if v := tc.Embedding.QueryPrefix; v != nil {
+		cfg.EmbedQueryPrefix = *v
+	}
+	if v := tc.Embedding.DocumentPrefix; v != nil {
+		cfg.EmbedDocumentPrefix = *v
+	}
 
 	// Environment variable overrides for secrets (highest priority after CLI flags)
 	if v := os.Getenv("SHAKTIMAN_POSTGRES_URL"); v != "" {
@@ -348,6 +362,8 @@ const sampleConfig = `# Shaktiman configuration
 # dims = 768                             # Vector dimensionality
 # batch_size = 128                       # Texts per batch request
 # timeout = "120s"                       # HTTP timeout per request
+# query_prefix = "search_query: "        # Task prefix for query embedding (nomic-embed-text)
+# document_prefix = "search_document: "  # Task prefix for document embedding (nomic-embed-text)
 
 [test]
 # patterns = ["*_test.go", "testdata/"]  # Glob patterns identifying test files

@@ -35,8 +35,10 @@ type MetadataStore interface {
 	InsertSymbols(ctx context.Context, fileID int64, symbols []SymbolRecord) ([]int64, error)
 	// GetSymbolsByFile returns all symbols for a file.
 	GetSymbolsByFile(ctx context.Context, fileID int64) ([]SymbolRecord, error)
-	// GetSymbolByName returns symbols matching the given name.
+	// GetSymbolByName returns symbols matching the given name (case-sensitive).
 	GetSymbolByName(ctx context.Context, name string) ([]SymbolRecord, error)
+	// GetSymbolByNameCI returns symbols matching the given name case-insensitively.
+	GetSymbolByNameCI(ctx context.Context, name string) ([]SymbolRecord, error)
 	// GetSymbolByID returns a single symbol by its ID.
 	GetSymbolByID(ctx context.Context, id int64) (*SymbolRecord, error)
 	// DeleteSymbolsByFile removes all symbols for a file.
