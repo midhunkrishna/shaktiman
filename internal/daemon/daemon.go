@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -436,6 +437,50 @@ func (d *Daemon) Stop() error {
 	}
 
 	d.logger.Info("shutdown complete", "duration_ms", time.Since(start).Milliseconds())
+	return nil
+}
+
+// Purge clears all indexed data from server-based backends (Postgres, pgvector,
+// Qdrant). File-based backends are handled by PurgeFiles after Stop().
+func (d *Daemon) Purge(ctx context.Context) error {
+	if p, ok := d.store.(types.StorePurger); ok {
+		if err := p.PurgeAll(ctx); err != nil {
+			return fmt.Errorf("purge metadata store: %w", err)
+		}
+	}
+	if d.vectorStore != nil {
+		if p, ok := d.vectorStore.(types.VectorPurger); ok {
+			if err := p.PurgeAll(ctx); err != nil {
+				return fmt.Errorf("purge vector store: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// PurgeFiles removes SQLite database files and vector persistence files.
+// Call after Stop() to ensure all file handles are closed.
+func PurgeFiles(cfg types.Config) error {
+	if cfg.DatabaseBackend == "" || cfg.DatabaseBackend == "sqlite" {
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			p := cfg.DBPath + suffix
+			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove %s: %w", p, err)
+			}
+		}
+	}
+	// Remove all possible vector persistence files.
+	base := cfg.EmbeddingsPath
+	ext := filepath.Ext(base)
+	hnswPath := base + ".hnsw"
+	if ext != "" {
+		hnswPath = base[:len(base)-len(ext)] + ".hnsw"
+	}
+	for _, p := range []string{base, hnswPath} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", p, err)
+		}
+	}
 	return nil
 }
 

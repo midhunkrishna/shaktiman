@@ -162,6 +162,12 @@ func (c *Client) GetCollection(ctx context.Context, name string) (*CollectionInf
 	return &info, nil
 }
 
+// DeleteCollection deletes a collection by name.
+func (c *Client) DeleteCollection(ctx context.Context, name string) error {
+	_, err := c.doRequest(ctx, http.MethodDelete, "/collections/"+name, nil)
+	return err
+}
+
 // UpsertPoints inserts or updates points in a collection.
 func (c *Client) UpsertPoints(ctx context.Context, collection string, points []Point) error {
 	body := struct {

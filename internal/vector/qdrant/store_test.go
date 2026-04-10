@@ -152,6 +152,11 @@ func (fq *fakeQdrant) handler(t *testing.T) http.Handler {
 			}
 			writeOK(w, points)
 
+		case r.Method == "DELETE" && len(path) > len("/collections/") && !contains(path, "/points"):
+			name := path[len("/collections/"):]
+			delete(fq.collections, name)
+			writeOK(w, true)
+
 		default:
 			t.Logf("unhandled: %s %s", r.Method, path)
 			http.NotFound(w, r)
@@ -594,5 +599,46 @@ func TestQdrantStore_Search_ScoreOrder(t *testing.T) {
 			t.Errorf("results not sorted: [%d].Score=%f > [%d].Score=%f",
 				i, results[i].Score, i-1, results[i-1].Score)
 		}
+	}
+}
+
+func TestQdrantStore_PurgeAll(t *testing.T) {
+	store, srv := newTestStore(t, 4)
+	defer srv.Close()
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Seed data
+	store.Upsert(ctx, 1, []float32{1, 0, 0, 0})
+	store.Upsert(ctx, 2, []float32{0, 1, 0, 0})
+	store.Upsert(ctx, 3, []float32{0, 0, 1, 0})
+
+	count, _ := store.Count(ctx)
+	if count != 3 {
+		t.Fatalf("pre-purge count = %d, want 3", count)
+	}
+
+	// Purge
+	if err := store.PurgeAll(ctx); err != nil {
+		t.Fatalf("PurgeAll: %v", err)
+	}
+
+	// Collection should exist but be empty
+	count, err := store.Count(ctx)
+	if err != nil {
+		t.Fatalf("Count after purge: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("post-purge count = %d, want 0", count)
+	}
+
+	// Should still be usable (collection was recreated)
+	if err := store.Upsert(ctx, 10, []float32{1, 0, 0, 0}); err != nil {
+		t.Fatalf("Upsert after purge: %v", err)
+	}
+	count, _ = store.Count(ctx)
+	if count != 1 {
+		t.Errorf("count after re-upsert = %d, want 1", count)
 	}
 }

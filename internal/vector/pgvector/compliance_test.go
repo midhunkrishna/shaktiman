@@ -274,3 +274,47 @@ func TestHealthy_WithPool(t *testing.T) {
 		t.Error("expected Healthy = true")
 	}
 }
+
+func TestPgVectorStore_PurgeAll(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	setupSchema(t, pool)
+
+	store, err := NewPgVectorStore(pool, 4)
+	if err != nil {
+		t.Fatalf("NewPgVectorStore: %v", err)
+	}
+	defer store.Close()
+	t.Cleanup(func() { pool.Exec(ctx, "DROP TABLE IF EXISTS embeddings") })
+
+	// Seed vectors
+	store.Upsert(ctx, 1, []float32{1, 0, 0, 0})
+	store.Upsert(ctx, 2, []float32{0, 1, 0, 0})
+	store.Upsert(ctx, 3, []float32{0, 0, 1, 0})
+
+	count, _ := store.Count(ctx)
+	if count != 3 {
+		t.Fatalf("pre-purge count = %d, want 3", count)
+	}
+
+	if err := store.PurgeAll(ctx); err != nil {
+		t.Fatalf("PurgeAll: %v", err)
+	}
+
+	count, err = store.Count(ctx)
+	if err != nil {
+		t.Fatalf("Count after purge: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("post-purge count = %d, want 0", count)
+	}
+
+	// Store should still be usable
+	if err := store.Upsert(ctx, 10, []float32{1, 0, 0, 0}); err != nil {
+		t.Fatalf("Upsert after purge: %v", err)
+	}
+	count, _ = store.Count(ctx)
+	if count != 1 {
+		t.Errorf("count after re-upsert = %d, want 1", count)
+	}
+}

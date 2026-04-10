@@ -911,3 +911,65 @@ func TestPostgres_RegistrationFactory(t *testing.T) {
 		t.Fatalf("UpsertFile via registry: %v", err)
 	}
 }
+
+func TestPgStore_PurgeAll(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	// Seed data
+	fileID, err := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "purge.go", ContentHash: "h1", Mtime: 1.0,
+		Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+	store.UpsertChunk(ctx, types.ChunkRecord{
+		FileID: fileID, ChunkIndex: 0, Kind: "function",
+		StartLine: 1, EndLine: 10, Content: "func Foo() {}", TokenCount: 5,
+	})
+
+	stats, err := store.GetIndexStats(ctx)
+	if err != nil {
+		t.Fatalf("GetIndexStats: %v", err)
+	}
+	if stats.TotalFiles == 0 || stats.TotalChunks == 0 {
+		t.Fatal("expected seeded data before purge")
+	}
+
+	// Purge
+	if err := store.PurgeAll(ctx); err != nil {
+		t.Fatalf("PurgeAll: %v", err)
+	}
+
+	// All data tables should be empty
+	stats, err = store.GetIndexStats(ctx)
+	if err != nil {
+		t.Fatalf("GetIndexStats after purge: %v", err)
+	}
+	if stats.TotalFiles != 0 {
+		t.Errorf("TotalFiles = %d after purge, want 0", stats.TotalFiles)
+	}
+	if stats.TotalChunks != 0 {
+		t.Errorf("TotalChunks = %d after purge, want 0", stats.TotalChunks)
+	}
+
+	// goose_db_version should survive
+	var count int
+	err = store.Pool().QueryRow(ctx, "SELECT COUNT(*) FROM goose_db_version").Scan(&count)
+	if err != nil {
+		t.Fatalf("goose_db_version query: %v", err)
+	}
+	if count == 0 {
+		t.Error("goose_db_version should not be empty after purge")
+	}
+
+	// Store should still be usable
+	_, err = store.UpsertFile(ctx, &types.FileRecord{
+		Path: "after.go", ContentHash: "h2", Mtime: 2.0,
+		Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile after purge: %v", err)
+	}
+}

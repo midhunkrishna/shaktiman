@@ -188,6 +188,12 @@ func (s *PgVectorStore) Delete(ctx context.Context, chunkIDs []int64) error {
 	return nil
 }
 
+// PurgeAll deletes all vectors from the embeddings table.
+func (s *PgVectorStore) PurgeAll(ctx context.Context) error {
+	_, err := s.pool.Exec(ctx, "TRUNCATE TABLE embeddings")
+	return err
+}
+
 // Has returns true if a vector exists for the given chunk ID.
 func (s *PgVectorStore) Has(ctx context.Context, chunkID int64) (bool, error) {
 	var exists bool

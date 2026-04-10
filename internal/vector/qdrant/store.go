@@ -126,6 +126,14 @@ func (s *QdrantStore) Delete(ctx context.Context, chunkIDs []int64) error {
 	return nil
 }
 
+// PurgeAll deletes the collection and recreates it empty.
+func (s *QdrantStore) PurgeAll(ctx context.Context) error {
+	if err := s.client.DeleteCollection(ctx, s.collection); err != nil {
+		return fmt.Errorf("delete collection: %w", err)
+	}
+	return s.client.CreateCollection(ctx, s.collection, s.dims)
+}
+
 // Has returns true if a vector exists for the given chunk ID.
 func (s *QdrantStore) Has(ctx context.Context, chunkID int64) (bool, error) {
 	points, err := s.client.GetPoints(ctx, s.collection, []int64{chunkID})

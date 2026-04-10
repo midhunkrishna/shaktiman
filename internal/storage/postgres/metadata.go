@@ -473,6 +473,17 @@ func (s *PgStore) ResetEmbeddedFlags(ctx context.Context, chunkIDs []int64) erro
 	})
 }
 
+// PurgeAll deletes all indexed data while preserving schema and migrations.
+// TRUNCATE files CASCADE cascades to: chunks, symbols, edges, pending_edges,
+// diff_log, diff_symbols, and embeddings (pgvector FK). Standalone tables
+// (access_log, working_set, tool_calls) are truncated explicitly.
+// Preserved: goose_db_version, schema_version, config.
+func (s *PgStore) PurgeAll(ctx context.Context) error {
+	_, err := s.pool.Exec(ctx,
+		"TRUNCATE TABLE files, access_log, working_set, tool_calls CASCADE")
+	return err
+}
+
 func (s *PgStore) EmbeddingReadiness(ctx context.Context, vectorCount int) (float64, error) {
 	var totalChunks int
 	if err := s.queryRow(ctx, "SELECT COUNT(*) FROM chunks").Scan(&totalChunks); err != nil {
