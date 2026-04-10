@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -3145,4 +3146,210 @@ func TestEmbedProject_HNSWBackend(t *testing.T) {
 	}
 
 	d2.Stop()
+}
+
+// testSocketPath returns a short socket path suitable for macOS (104-byte limit).
+func testSocketPath(t *testing.T) string {
+	t.Helper()
+	f, err := os.CreateTemp("", "shaktiman-test-*.sock")
+	if err != nil {
+		t.Fatalf("create temp: %v", err)
+	}
+	path := f.Name()
+	f.Close()
+	os.Remove(path) // net.Listen needs the path to not exist
+	t.Cleanup(func() { os.Remove(path) })
+	return path
+}
+
+func TestDaemon_SocketListener_AcceptsConnections(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	os.MkdirAll(projectDir, 0o755)
+	os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644)
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	cfg := types.Config{
+		ProjectRoot:       projectDir,
+		DBPath:            dbPath,
+		EnrichmentWorkers: 1,
+		WriterChannelSize: 10,
+	}
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Create Unix socket listener with short path (macOS 104-byte limit).
+	sockPath := testSocketPath(t)
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	defer ln.Close()
+	d.SocketListener = ln
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d.serveFunc = func(s *mcpserver.MCPServer) error {
+		<-ctx.Done()
+		return nil
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- d.Start(ctx) }()
+
+	// Give socket server time to start.
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify we can connect to the socket.
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		cancel()
+		t.Fatalf("Dial unix: %v", err)
+	}
+	conn.Close()
+
+	cancel()
+	<-done
+	d.Stop()
+}
+
+func TestDaemon_SocketListener_MCPInitialize(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	os.MkdirAll(projectDir, 0o755)
+	os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644)
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	cfg := types.Config{
+		ProjectRoot:       projectDir,
+		DBPath:            dbPath,
+		EnrichmentWorkers: 1,
+		WriterChannelSize: 10,
+	}
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	sockPath := testSocketPath(t)
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	defer ln.Close()
+	d.SocketListener = ln
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d.serveFunc = func(s *mcpserver.MCPServer) error {
+		<-ctx.Done()
+		return nil
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- d.Start(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	// Send MCP initialize request via HTTP over Unix socket.
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", sockPath)
+			},
+		},
+	}
+
+	initReq := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"clientInfo":{"name":"test","version":"1.0"},"protocolVersion":"2024-11-05"}}`
+	resp, err := client.Post("http://unix/mcp", "application/json", strings.NewReader(initReq))
+	if err != nil {
+		cancel()
+		t.Fatalf("POST initialize: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		cancel()
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Parse response to verify it's valid JSON-RPC.
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		cancel()
+		t.Fatalf("decode response: %v", err)
+	}
+
+	// Verify it has a "result" key (successful MCP initialize response).
+	if _, ok := result["result"]; !ok {
+		cancel()
+		t.Fatalf("expected 'result' in response, got: %v", result)
+	}
+
+	cancel()
+	<-done
+	d.Stop()
+}
+
+func TestDaemon_Stop_ClosesSocket(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	os.MkdirAll(projectDir, 0o755)
+	os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644)
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	cfg := types.Config{
+		ProjectRoot:       projectDir,
+		DBPath:            dbPath,
+		EnrichmentWorkers: 1,
+		WriterChannelSize: 10,
+	}
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	sockPath := testSocketPath(t)
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	d.SocketListener = ln
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d.serveFunc = func(s *mcpserver.MCPServer) error {
+		<-ctx.Done()
+		return nil
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- d.Start(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify socket is active.
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		cancel()
+		t.Fatalf("Dial before stop: %v", err)
+	}
+	conn.Close()
+
+	// Stop the daemon.
+	cancel()
+	<-done
+	d.Stop()
+
+	// After stop, new connections should be refused.
+	_, err = net.DialTimeout("unix", sockPath, 500*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected connection refused after Stop, but dial succeeded")
+	}
 }

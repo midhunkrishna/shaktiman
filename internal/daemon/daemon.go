@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -41,6 +43,11 @@ type Daemon struct {
 	embeddingActive  atomic.Bool
 	embedMu          sync.Mutex
 	serveFunc        func(*mcpserver.MCPServer) error // injectable for testing; defaults to mcpserver.ServeStdio
+
+	// SocketListener, when set, enables a StreamableHTTPServer on this listener
+	// for proxy clients. Set before calling Start(). The listener is closed on Stop().
+	SocketListener net.Listener
+	socketServer   *http.Server // internal; for shutdown
 
 	// Configurable intervals for periodicEmbeddingSave (tests use short values).
 	saveActiveInterval time.Duration
@@ -221,6 +228,22 @@ func (d *Daemon) Start(ctx context.Context) error {
 		Recorder:    recorder,
 		Config:      d.cfg,
 	})
+
+	// Start socket server for proxy clients (if listener provided).
+	// Both transports share the same MCPServer instance.
+	if d.SocketListener != nil {
+		httpHandler := mcpserver.NewStreamableHTTPServer(s)
+		mux := http.NewServeMux()
+		mux.Handle("/mcp", httpHandler)
+		d.socketServer = &http.Server{Handler: mux}
+		go func() {
+			d.logger.Info("MCP socket server starting", "addr", d.SocketListener.Addr().String())
+			if err := d.socketServer.Serve(d.SocketListener); err != nil && err != http.ErrServerClosed {
+				d.logger.Error("socket server error", "err", err)
+			}
+		}()
+	}
+
 	d.logger.Info("MCP server starting on stdio", "session_id", d.sessionID)
 
 	if err := d.serveFunc(s); err != nil {
@@ -417,6 +440,15 @@ func (d *Daemon) periodicEmbeddingSave(ctx context.Context) {
 func (d *Daemon) Stop() error {
 	start := time.Now()
 	d.logger.Info("shutting down")
+
+	// Shut down socket server first so proxies see connection-refused quickly.
+	if d.socketServer != nil {
+		socketCtx, socketCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := d.socketServer.Shutdown(socketCtx); err != nil {
+			d.logger.Warn("socket server shutdown error", "err", err)
+		}
+		socketCancel()
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
