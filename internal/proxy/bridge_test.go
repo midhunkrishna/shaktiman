@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -393,5 +394,112 @@ func TestBridge_MultipleRequests(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
 	if len(lines) != 3 {
 		t.Fatalf("expected 3 output lines, got %d: %v", len(lines), lines)
+	}
+}
+
+// errorReader returns an error after the first read.
+type errorReader struct {
+	data []byte
+	read bool
+}
+
+func (r *errorReader) Read(p []byte) (int, error) {
+	if !r.read {
+		r.read = true
+		n := copy(p, r.data)
+		return n, nil
+	}
+	return 0, fmt.Errorf("simulated read error")
+}
+
+func TestBridge_ScannerError(t *testing.T) {
+	t.Parallel()
+
+	sockPath := testSocketPath(t)
+	ln, srv := startTestHTTPServer(t, sockPath)
+	defer ln.Close()
+	defer srv.Close()
+
+	// Reader that returns one valid line then an error.
+	stdin := &errorReader{data: []byte(`{"jsonrpc":"2.0","id":1,"method":"test"}` + "\n")}
+	var stdout bytes.Buffer
+
+	b := &Bridge{
+		SocketPath: sockPath,
+		Stdin:      stdin,
+		Stdout:     &stdout,
+		Logger:     slog.Default(),
+	}
+
+	err := b.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected error from scanner")
+	}
+	if !strings.Contains(err.Error(), "stdin scan") {
+		t.Fatalf("expected stdin scan error, got: %v", err)
+	}
+}
+
+// errorWriter returns an error on Write.
+type errorWriter struct{}
+
+func (w *errorWriter) Write(p []byte) (int, error) {
+	return 0, fmt.Errorf("simulated write error")
+}
+
+func TestBridge_StdoutWriteError(t *testing.T) {
+	t.Parallel()
+
+	sockPath := testSocketPath(t)
+	ln, srv := startTestHTTPServer(t, sockPath)
+	defer ln.Close()
+	defer srv.Close()
+
+	input := `{"jsonrpc":"2.0","id":1,"method":"test"}` + "\n"
+	stdin := strings.NewReader(input)
+
+	b := &Bridge{
+		SocketPath: sockPath,
+		Stdin:      stdin,
+		Stdout:     &errorWriter{},
+		Logger:     slog.Default(),
+	}
+
+	err := b.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected error from stdout write")
+	}
+	if !strings.Contains(err.Error(), "write stdout") {
+		t.Fatalf("expected write stdout error, got: %v", err)
+	}
+}
+
+func TestBridge_EmptyLines(t *testing.T) {
+	t.Parallel()
+
+	sockPath := testSocketPath(t)
+	ln, srv := startTestHTTPServer(t, sockPath)
+	defer ln.Close()
+	defer srv.Close()
+
+	// Input with empty lines interspersed.
+	input := "\n\n" + `{"jsonrpc":"2.0","id":1,"method":"test"}` + "\n\n"
+	stdin := strings.NewReader(input)
+	var stdout bytes.Buffer
+
+	b := &Bridge{
+		SocketPath: sockPath,
+		Stdin:      stdin,
+		Stdout:     &stdout,
+		Logger:     slog.Default(),
+	}
+
+	if err := b.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 output line (empty lines skipped), got %d", len(lines))
 	}
 }

@@ -2,6 +2,7 @@ package lockfile
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -258,4 +259,96 @@ func TestCanonicalRoot(t *testing.T) {
 	if root != resolved {
 		t.Fatalf("CanonicalRoot = %q, want %q", root, resolved)
 	}
+}
+
+func TestCanonicalize(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	result, err := Canonicalize(dir)
+	if err != nil {
+		t.Fatalf("Canonicalize: %v", err)
+	}
+	if !filepath.IsAbs(result) {
+		t.Fatalf("not absolute: %s", result)
+	}
+
+	// Symlink produces same canonical path.
+	symlinkDir := t.TempDir()
+	symlinkPath := filepath.Join(symlinkDir, "link")
+	os.Symlink(dir, symlinkPath)
+
+	result2, err := Canonicalize(symlinkPath)
+	if err != nil {
+		t.Fatalf("Canonicalize symlink: %v", err)
+	}
+	if result != result2 {
+		t.Fatalf("symlink not resolved: %q != %q", result, result2)
+	}
+}
+
+func TestCanonicalize_NonexistentDir(t *testing.T) {
+	t.Parallel()
+	result, err := Canonicalize("/nonexistent/path/that/does/not/exist")
+	if err != nil {
+		t.Fatalf("Canonicalize: %v", err)
+	}
+	// Falls back to abs path.
+	if !filepath.IsAbs(result) {
+		t.Fatalf("not absolute: %s", result)
+	}
+}
+
+func TestLock_Listen(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	lock, err := Acquire(dir)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer lock.Release()
+
+	ln, err := lock.Listen()
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer ln.Close()
+	defer os.Remove(lock.SocketPath())
+
+	// Verify socket accepts connections.
+	conn, err := net.Dial("unix", lock.SocketPath())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	conn.Close()
+}
+
+func TestLock_Listen_CleansStale(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	lock, err := Acquire(dir)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer lock.Release()
+
+	// Create a stale socket file.
+	sockPath := lock.SocketPath()
+	os.WriteFile(sockPath, []byte("stale"), 0o644)
+	defer os.Remove(sockPath)
+
+	// Listen should remove the stale file and succeed.
+	ln, err := lock.Listen()
+	if err != nil {
+		t.Fatalf("Listen with stale socket: %v", err)
+	}
+	defer ln.Close()
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("Dial after stale cleanup: %v", err)
+	}
+	conn.Close()
 }

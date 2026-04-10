@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -38,11 +37,8 @@ func main() {
 
 	// Canonicalize project root to prevent two daemons on the same directory
 	// via different paths (e.g. relative vs absolute, or via symlink).
-	if abs, err := filepath.Abs(projectRoot); err == nil {
-		projectRoot = abs
-	}
-	if resolved, err := filepath.EvalSymlinks(projectRoot); err == nil {
-		projectRoot = resolved
+	if canonical, err := lockfile.Canonicalize(projectRoot); err == nil {
+		projectRoot = canonical
 	}
 
 	// Configure structured logging to a file (stdout is reserved for MCP protocol).
@@ -109,14 +105,12 @@ func main() {
 	defer lock.Release()
 
 	// Create Unix domain socket for proxy clients.
-	sockPath := lock.SocketPath()
-	os.Remove(sockPath) // remove stale socket from previous unclean exit (safe: we hold flock)
-	socketListener, err := net.Listen("unix", sockPath)
+	socketListener, err := lock.Listen()
 	if err != nil {
-		slog.Error("failed to create socket listener", "path", sockPath, "err", err)
+		slog.Error("failed to create socket listener", "err", err)
 		os.Exit(1)
 	}
-	defer os.Remove(sockPath)
+	defer os.Remove(lock.SocketPath())
 	defer socketListener.Close()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -165,7 +159,7 @@ func runAsProxy(projectRoot string) {
 
 	slog.Info("entering proxy mode", "project_root", projectRoot, "socket", sockPath)
 
-	if err := waitForSocket(sockPath, 5*time.Second); err != nil {
+	if err := proxy.WaitForSocket(sockPath, 5*time.Second); err != nil {
 		fmt.Fprintf(os.Stderr, "error: leader daemon socket not available: %v\n", err)
 		fmt.Fprintf(os.Stderr, "hint: the leader daemon may still be starting up\n")
 		os.Exit(1)
@@ -200,30 +194,3 @@ func runAsProxy(projectRoot string) {
 	}
 }
 
-// waitForSocket waits for a Unix domain socket to become connectable,
-// using exponential backoff.
-func waitForSocket(path string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	backoffs := []time.Duration{
-		100 * time.Millisecond,
-		200 * time.Millisecond,
-		500 * time.Millisecond,
-		1 * time.Second,
-		2 * time.Second,
-	}
-	for i := 0; ; i++ {
-		conn, err := net.DialTimeout("unix", path, 500*time.Millisecond)
-		if err == nil {
-			conn.Close()
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("socket %s not available after %v", path, timeout)
-		}
-		idx := i
-		if idx >= len(backoffs) {
-			idx = len(backoffs) - 1
-		}
-		time.Sleep(backoffs[idx])
-	}
-}

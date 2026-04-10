@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 
@@ -27,7 +28,7 @@ type Lock struct {
 // Returns (lock, nil) on success (caller is leader).
 // Returns (nil, ErrAlreadyLocked) when another process holds the lock.
 func Acquire(projectRoot string) (*Lock, error) {
-	canonical, err := canonicalize(projectRoot)
+	canonical, err := Canonicalize(projectRoot)
 	if err != nil {
 		return nil, fmt.Errorf("canonicalize project root: %w", err)
 	}
@@ -73,10 +74,23 @@ func (l *Lock) SocketPath() string {
 	return socketPathFromRoot(l.canonicalRoot)
 }
 
+// Listen removes any stale socket and creates a Unix domain socket listener
+// at the lock's socket path. The caller must close the returned listener.
+// Safe to call only while the lock is held (guarantees any existing socket is stale).
+func (l *Lock) Listen() (net.Listener, error) {
+	sockPath := l.SocketPath()
+	os.Remove(sockPath) // remove stale socket from previous unclean exit
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		return nil, fmt.Errorf("listen on %s: %w", sockPath, err)
+	}
+	return ln, nil
+}
+
 // SocketPathFor computes the socket path for a given projectRoot without
 // acquiring a lock. Used by the proxy to find the leader's socket.
 func SocketPathFor(projectRoot string) (string, error) {
-	canonical, err := canonicalize(projectRoot)
+	canonical, err := Canonicalize(projectRoot)
 	if err != nil {
 		return "", fmt.Errorf("canonicalize project root: %w", err)
 	}
@@ -88,7 +102,9 @@ func socketPathFromRoot(canonicalRoot string) string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("shaktiman-%x.sock", h[:8]))
 }
 
-func canonicalize(projectRoot string) (string, error) {
+// Canonicalize resolves a project root to its absolute, symlink-resolved path.
+// Falls back to the absolute path if symlink resolution fails (e.g., dir doesn't exist yet).
+func Canonicalize(projectRoot string) (string, error) {
 	absPath, err := filepath.Abs(projectRoot)
 	if err != nil {
 		return "", err
