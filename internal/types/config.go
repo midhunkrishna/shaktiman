@@ -310,6 +310,14 @@ func ValidateBackendConfig(cfg Config) error {
 	if cfg.VectorBackend == "qdrant" && cfg.QdrantURL == "" {
 		return fmt.Errorf("config: vector.backend 'qdrant' requires qdrant.url")
 	}
+	// Postgres requires an externalised vector backend (pgvector or qdrant).
+	// File-backed vector stores (brute_force, hnsw) race on embeddings.bin
+	// when multiple daemons share the same Postgres database (ADR-003 A12).
+	if cfg.DatabaseBackend == "postgres" &&
+		(cfg.VectorBackend == "brute_force" || cfg.VectorBackend == "hnsw") {
+		return fmt.Errorf("config: database.backend 'postgres' requires vector.backend 'pgvector' or 'qdrant' "+
+			"(brute_force and hnsw use a local file that races across daemons)")
+	}
 	return nil
 }
 

@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] — 2026-04-09
+
+### Added
+
+- **Multi-instance concurrency via single-daemon + socket proxy** (ADR-002
+  Amendment 4) — when multiple Claude Code sessions open on the same project,
+  the first `shaktimand` becomes the leader (owns DB, vectors, watcher) and
+  subsequent instances become stateless proxies bridging their Claude Code
+  client's stdio to the leader via a Unix domain socket. Zero stale reads,
+  zero double-enrichment, zero races.
+  - New `internal/lockfile/` package: `flock`-based singleton enforcement on
+    `.shaktiman/daemon.pid` with path canonicalization via
+    `filepath.EvalSymlinks`.
+  - New `internal/proxy/` package: ~80 LOC stdio-to-HTTP bridge that forwards
+    JSON-RPC requests to the leader's `StreamableHTTPServer` endpoint. Captures
+    `Mcp-Session-Id` from first response for session continuity.
+  - Leader serves MCP on both `StdioServer` (own client) and
+    `StreamableHTTPServer` on `/tmp/shaktiman-<hash>.sock` (proxy clients),
+    sharing the same `MCPServer` instance.
+  - Proxy promotion: when leader exits, proxies detect connection-refused,
+    attempt `flock`, and the winner re-execs as the new leader. Losers
+    reconnect as proxies.
+  - CLI `shaktiman index` checks flock before indexing; refuses if daemon is
+    running.
+- **ADR-003 A12: Postgres requires pgvector or qdrant** — `ValidateBackendConfig`
+  now rejects `postgres + brute_force` and `postgres + hnsw` at startup.
+  File-backed vector stores (`embeddings.bin`) race across daemons sharing the
+  same Postgres database.
+
+### Changed
+
+- `cmd/shaktimand/main.go` canonicalizes `projectRoot` via `filepath.Abs` +
+  `filepath.EvalSymlinks` at startup, preventing two daemons from the same
+  directory via different paths.
+
 ## [0.9.2] — 2026-04-08
 
 ### Added

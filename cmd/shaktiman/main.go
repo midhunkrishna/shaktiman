@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/shaktimanai/shaktiman/internal/daemon"
+	"github.com/shaktimanai/shaktiman/internal/lockfile"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
@@ -124,6 +126,17 @@ func indexCmd() *cobra.Command {
 			if err := types.ValidateBackendConfig(cfg); err != nil {
 				return err
 			}
+
+			// Refuse to index if a daemon is already running (would race on writes).
+			lock, lockErr := lockfile.Acquire(projectRoot)
+			if lockErr != nil {
+				if errors.Is(lockErr, lockfile.ErrAlreadyLocked) {
+					return fmt.Errorf("a shaktimand daemon is running for this project; " +
+						"it handles indexing automatically")
+				}
+				return fmt.Errorf("check daemon lock: %w", lockErr)
+			}
+			defer lock.Release()
 
 			// Signal handling for graceful shutdown
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
