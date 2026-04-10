@@ -47,36 +47,26 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: cannot create log directory %s: %v\n", logDir, err)
 		os.Exit(1)
 	}
-
-	// Rotate previous log into session-logs/<timestamp>.log
 	logPath := filepath.Join(logDir, "shaktimand.log")
-	if info, err := os.Stat(logPath); err == nil && info.Size() > 0 {
-		sessionDir := filepath.Join(logDir, "session-logs")
-		if mkErr := os.MkdirAll(sessionDir, 0o755); mkErr == nil {
-			ts := info.ModTime().Format("2006-01-02T15-04-05")
-			_ = os.Rename(logPath, filepath.Join(sessionDir, ts+".log"))
-		}
-	}
 
-	logFile, err := os.Create(logPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: cannot open log file: %v\n", err)
+	// Acquire singleton lock for this project. Ensures exactly one leader daemon.
+	// If another daemon holds the lock, enter proxy mode instead.
+	lock, lockErr := lockfile.Acquire(projectRoot)
+	if lockErr != nil {
+		if errors.Is(lockErr, lockfile.ErrAlreadyLocked) {
+			// Proxy: append to shared log — never rotate or truncate, as
+			// the leader's file descriptor would become detached.
+			setupLogging(logPath, false)
+			runAsProxy(projectRoot)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "error: acquire daemon lock: %v\n", lockErr)
 		os.Exit(1)
 	}
-	defer logFile.Close()
+	defer lock.Release()
 
-	logLevel := slog.LevelInfo
-	if lvl := os.Getenv("SHAKTIMAN_LOG_LEVEL"); lvl != "" {
-		var l slog.Level
-		if err := l.UnmarshalText([]byte(lvl)); err == nil {
-			logLevel = l
-		}
-	}
-
-	logger := slog.New(slog.NewJSONHandler(logFile, &slog.HandlerOptions{
-		Level: logLevel,
-	}))
-	slog.SetDefault(logger)
+	// Leader: rotate previous log, then create a fresh one.
+	setupLogging(logPath, true)
 
 	cfg := types.DefaultConfig(projectRoot)
 
@@ -90,19 +80,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-
-	// Acquire singleton lock for this project. Ensures exactly one leader daemon.
-	// If another daemon holds the lock, enter proxy mode instead.
-	lock, lockErr := lockfile.Acquire(projectRoot)
-	if lockErr != nil {
-		if errors.Is(lockErr, lockfile.ErrAlreadyLocked) {
-			runAsProxy(projectRoot)
-			return
-		}
-		fmt.Fprintf(os.Stderr, "error: acquire daemon lock: %v\n", lockErr)
-		os.Exit(1)
-	}
-	defer lock.Release()
 
 	// Create Unix domain socket for proxy clients.
 	socketListener, err := lock.Listen()
@@ -146,6 +123,47 @@ func main() {
 	if err := d.Stop(); err != nil {
 		slog.Error("shutdown error", "err", err)
 	}
+}
+
+// setupLogging configures slog to write to logPath. When rotate is true
+// (leader mode), the existing log is moved to session-logs/ and a fresh file
+// is created. When rotate is false (proxy mode), the file is opened in append
+// mode so the leader's file descriptor is not invalidated.
+func setupLogging(logPath string, rotate bool) {
+	if rotate {
+		if info, err := os.Stat(logPath); err == nil && info.Size() > 0 {
+			sessionDir := filepath.Join(filepath.Dir(logPath), "session-logs")
+			if mkErr := os.MkdirAll(sessionDir, 0o755); mkErr == nil {
+				ts := info.ModTime().Format("2006-01-02T15-04-05")
+				_ = os.Rename(logPath, filepath.Join(sessionDir, ts+".log"))
+			}
+		}
+	}
+
+	var logFile *os.File
+	var err error
+	if rotate {
+		logFile, err = os.Create(logPath)
+	} else {
+		logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: cannot open log file: %v\n", err)
+		os.Exit(1)
+	}
+
+	logLevel := slog.LevelInfo
+	if lvl := os.Getenv("SHAKTIMAN_LOG_LEVEL"); lvl != "" {
+		var l slog.Level
+		if err := l.UnmarshalText([]byte(lvl)); err == nil {
+			logLevel = l
+		}
+	}
+
+	logger := slog.New(slog.NewJSONHandler(logFile, &slog.HandlerOptions{
+		Level: logLevel,
+	}))
+	slog.SetDefault(logger)
 }
 
 // runAsProxy enters proxy mode: bridges this process's stdin/stdout to the
