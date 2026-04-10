@@ -32,7 +32,7 @@ func openStore(cfg types.Config) (types.WriterStore, func() error, error) {
 // Read-only: loads existing embeddings from disk, does not start embed worker.
 // Falls back to keyword-only if embeddings are unavailable.
 func openEngine(cfg types.Config, store types.WriterStore, root string) (*core.QueryEngine, types.VectorStore) {
-	engine := core.NewQueryEngine(store, root)
+	engine := core.NewQueryEngine(store, root, cfg.EmbedQueryPrefix)
 
 	if !cfg.EmbedEnabled {
 		return engine, nil

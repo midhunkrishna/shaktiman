@@ -14,7 +14,7 @@ import (
 func setupTestEngine(t *testing.T) (*QueryEngine, types.WriterStore) {
 	t.Helper()
 	store := testutil.NewTestWriterStore(t)
-	engine := NewQueryEngine(store, t.TempDir())
+	engine := NewQueryEngine(store, t.TempDir(), "")
 	return engine, store
 }
 
@@ -105,7 +105,7 @@ func TestSearch_FilesystemFallback(t *testing.T) {
 	// Create engine with empty store — should use filesystem fallback
 	store := testutil.NewTestWriterStore(t)
 	// Use testdata directory as project root for filesystem fallback
-	engine := NewQueryEngine(store, "../../testdata/typescript_project")
+	engine := NewQueryEngine(store, "../../testdata/typescript_project", "")
 
 	results, err := engine.Search(context.Background(), SearchInput{
 		Query:      "login",
@@ -674,7 +674,7 @@ func BenchmarkContextAssembly(b *testing.B) {
 func setupBenchEngine(b *testing.B) (*QueryEngine, types.WriterStore) {
 	b.Helper()
 	store := newBenchStore(b)
-	engine := NewQueryEngine(store, b.TempDir())
+	engine := NewQueryEngine(store, b.TempDir(), "")
 	return engine, store
 }
 
@@ -903,7 +903,7 @@ func TestSearch_KeywordEmpty_FallsBackToFilesystem(t *testing.T) {
 	os.WriteFile(filepath.Join(tmpDir, "hello.go"),
 		[]byte("package main\nfunc Hello() {}"), 0644)
 
-	engine := NewQueryEngine(store, tmpDir)
+	engine := NewQueryEngine(store, tmpDir, "")
 
 	// Query for something that won't match any FTS content.
 	results, err := engine.Search(ctx, SearchInput{
@@ -940,7 +940,7 @@ func TestContext_KeywordEmpty_FallsBackToFilesystem(t *testing.T) {
 	os.WriteFile(filepath.Join(tmpDir, "ctx.go"),
 		[]byte("package main\nfunc Context() {}"), 0644)
 
-	engine := NewQueryEngine(store, tmpDir)
+	engine := NewQueryEngine(store, tmpDir, "")
 
 	pkg, err := engine.Context(ctx, ContextInput{
 		Query:        "zzz_nonexistent_query_xyx",
@@ -981,7 +981,7 @@ func TestContext_SemanticEmpty_FallsBackToFilesystem(t *testing.T) {
 	vs.Upsert(ctx, 1, []float32{0.1, 0.1, 0.1, 0.1})
 
 	embedder := newMockEmbedder(dim)
-	engine := NewQueryEngine(store, tmpDir)
+	engine := NewQueryEngine(store, tmpDir, "")
 	engine.SetVectorStore(vs, embedder, func() bool { return true })
 
 	pkg, err := engine.Context(ctx, ContextInput{

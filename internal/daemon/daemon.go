@@ -62,7 +62,7 @@ func New(cfg types.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("create metadata store: %w", err)
 	}
 
-	engine := core.NewQueryEngine(store, cfg.ProjectRoot)
+	engine := core.NewQueryEngine(store, cfg.ProjectRoot, cfg.EmbedQueryPrefix)
 	writer := NewWriterManager(store, cfg.WriterChannelSize, cfg.TestPatterns)
 
 	// Session-aware ranking
@@ -126,9 +126,10 @@ func (d *Daemon) initEmbedding() {
 	})
 
 	worker := vector.NewEmbedWorker(vector.EmbedWorkerInput{
-		Store:     vs,
-		Embedder:  client,
-		BatchSize: d.cfg.EmbedBatchSize,
+		Store:          vs,
+		Embedder:       client,
+		BatchSize:      d.cfg.EmbedBatchSize,
+		DocumentPrefix: d.cfg.EmbedDocumentPrefix,
 		OnBatchDone: func(chunkIDs []int64) {
 			if err := d.store.MarkChunksEmbedded(context.Background(), chunkIDs); err != nil {
 				d.logger.Warn("mark chunks embedded failed", "err", err)
