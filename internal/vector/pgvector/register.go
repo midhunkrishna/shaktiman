@@ -18,6 +18,6 @@ func init() {
 			return nil, fmt.Errorf("pgvector backend requires a Postgres connection pool "+
 				"(set database.backend = \"postgres\" in shaktiman.toml); got PgPool=%T", cfg.PgPool)
 		}
-		return NewPgVectorStore(pool, cfg.Dims)
+		return NewPgVectorStore(pool, cfg.Dims, cfg.ProjectID)
 	})
 }

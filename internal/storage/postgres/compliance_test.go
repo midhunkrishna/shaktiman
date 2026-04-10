@@ -28,15 +28,20 @@ func newTestStore(t *testing.T) *PgStore {
 
 	// Clean all tables before each test
 	pool := store.Pool()
-	tables := []string{"diff_symbols", "diff_log", "edges", "pending_edges",
+	tables := []string{"embeddings", "diff_symbols", "diff_log", "edges", "pending_edges",
 		"symbols", "chunks", "files", "access_log", "working_set",
-		"tool_calls", "schema_version", "config"}
+		"tool_calls", "schema_version", "config", "goose_db_version", "projects"}
 	for _, table := range tables {
 		pool.Exec(ctx, "DROP TABLE IF EXISTS "+table+" CASCADE")
 	}
 
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatalf("Migrate: %v", err)
+	}
+
+	// Register a test project for multi-project isolation.
+	if err := store.EnsureProject(ctx, "/tmp/test-project"); err != nil {
+		t.Fatalf("EnsureProject: %v", err)
 	}
 
 	t.Cleanup(func() { store.Close() })
@@ -877,9 +882,9 @@ func TestPostgres_RegistrationFactory(t *testing.T) {
 	// Clean DB
 	ctx := context.Background()
 	tempStore, _ := NewPgStore(ctx, connStr, 2, 1, "public")
-	tables := []string{"diff_symbols", "diff_log", "edges", "pending_edges",
+	tables := []string{"embeddings", "diff_symbols", "diff_log", "edges", "pending_edges",
 		"symbols", "chunks", "files", "access_log", "working_set",
-		"tool_calls", "schema_version", "config"}
+		"tool_calls", "schema_version", "config", "goose_db_version", "projects"}
 	for _, table := range tables {
 		tempStore.Pool().Exec(ctx, "DROP TABLE IF EXISTS "+table+" CASCADE")
 	}
@@ -929,6 +934,9 @@ func TestPgStore_PurgeAll(t *testing.T) {
 		StartLine: 1, EndLine: 10, Content: "func Foo() {}", TokenCount: 5,
 	})
 
+	// Set parser version to verify it gets cleared
+	store.SetConfig(ctx, "parser_algorithm_version", "v1-test")
+
 	stats, err := store.GetIndexStats(ctx)
 	if err != nil {
 		t.Fatalf("GetIndexStats: %v", err)
@@ -964,6 +972,15 @@ func TestPgStore_PurgeAll(t *testing.T) {
 		t.Error("goose_db_version should not be empty after purge")
 	}
 
+	// parser_algorithm_version should be cleared
+	ver, err := store.GetConfig(ctx, "parser_algorithm_version")
+	if err != nil {
+		t.Fatalf("GetConfig after purge: %v", err)
+	}
+	if ver != "" {
+		t.Errorf("parser_algorithm_version = %q after purge, want empty", ver)
+	}
+
 	// Store should still be usable
 	_, err = store.UpsertFile(ctx, &types.FileRecord{
 		Path: "after.go", ContentHash: "h2", Mtime: 2.0,
@@ -971,5 +988,37 @@ func TestPgStore_PurgeAll(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("UpsertFile after purge: %v", err)
+	}
+}
+
+func TestKeywordSearch_RankIsNegative(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	fileID, err := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "hello.go", ContentHash: "h1", Mtime: 1.0,
+		Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	_, err = store.InsertChunks(ctx, fileID, []types.ChunkRecord{
+		{ChunkIndex: 0, Kind: "function", StartLine: 1, EndLine: 10,
+			Content: "func Hello() string { return \"hello world\" }", TokenCount: 10, ParseQuality: "full"},
+	})
+	if err != nil {
+		t.Fatalf("InsertChunks: %v", err)
+	}
+
+	results, err := store.KeywordSearch(ctx, "Hello", 10)
+	if err != nil {
+		t.Fatalf("KeywordSearch: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one FTS result")
+	}
+	if results[0].Rank >= 0 {
+		t.Errorf("FTSResult.Rank must be negative (got %f); positive ranks break normalizeBM25", results[0].Rank)
 	}
 }

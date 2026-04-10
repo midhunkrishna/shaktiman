@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/shaktimanai/shaktiman/internal/storage"
+	_ "github.com/shaktimanai/shaktiman/internal/storage/sqlite"
 	"github.com/shaktimanai/shaktiman/internal/testutil"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
@@ -28,7 +29,6 @@ func TestLanguageForExt(t *testing.T) {
 		{".tsx", "typescript", true},
 		{".rs", "rust", true},
 		{".java", "java", true},
-		{".groovy", "groovy", true},
 		{".sh", "bash", true},
 		{".js", "javascript", true},
 		{".jsx", "javascript", true},
@@ -58,8 +58,7 @@ func TestIsTestFile(t *testing.T) {
 	tsPatterns := []string{"*.test.ts", "*.spec.ts", "*.test.tsx", "*.spec.tsx", "__tests__/"}
 	jsPatterns := []string{"*.test.js", "*.spec.js", "__tests__/"}
 	javaPatterns := []string{"*Test.java", "*Tests.java", "src/test/"}
-	groovyPatterns := []string{"*Test.groovy", "*Spec.groovy"}
-	bashPatterns := []string{"test_*.sh", "*_test.sh"}
+bashPatterns := []string{"test_*.sh", "*_test.sh"}
 
 	tests := []struct {
 		name     string
@@ -99,11 +98,6 @@ func TestIsTestFile(t *testing.T) {
 		{"java tests class", "src/AuthTests.java", javaPatterns, true},
 		{"java src/test dir", "src/test/java/Auth.java", javaPatterns, true},
 		{"java impl", "src/main/java/Auth.java", javaPatterns, false},
-
-		// Groovy
-		{"groovy test", "AuthTest.groovy", groovyPatterns, true},
-		{"groovy spec", "AuthSpec.groovy", groovyPatterns, true},
-		{"groovy impl", "Auth.groovy", groovyPatterns, false},
 
 		// Bash
 		{"bash test_ prefix", "test_deploy.sh", bashPatterns, true},
@@ -403,43 +397,34 @@ func TestEnrichFile_UnreadableFile(t *testing.T) {
 	}
 }
 
-// waitForWriter submits a sync marker to the writer and waits for it,
+// waitForWriter submits a sync job to the writer and waits for it,
 // ensuring all preceding jobs are processed. Same pattern as IndexAll.
 func waitForWriter(t *testing.T, wm *WriterManager) {
 	t.Helper()
 	done := make(chan error, 1)
 	if err := wm.Submit(types.WriteJob{
-		Type: types.WriteJobEnrichment,
-		File: &types.FileRecord{
-			Path:            "__test_sync__",
-			ContentHash:     "sync",
-			EmbeddingStatus: "pending",
-			ParseQuality:    "full",
-		},
-		FilePath:  "__test_sync__",
-		Timestamp: time.Now(),
-		Done:      done,
+		Type: types.WriteJobSync,
+		Done: done,
 	}); err != nil {
 		t.Fatalf("submit sync: %v", err)
 	}
 	<-done
 }
 
-// Suppress unused import
-var _ = types.Config{}
-
 func TestIndexAll_WithLifecycleHooks(t *testing.T) {
 	t.Parallel()
+	if !storage.HasMetadataStore("sqlite") {
+		t.Skip("lifecycle hooks test requires sqlite backend")
+	}
 
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
+	store, lifecycle, closer, err := storage.NewMetadataStore(storage.MetadataStoreConfig{
+		Backend:        "sqlite",
+		SQLiteInMemory: true,
+	})
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		t.Fatalf("NewMetadataStore: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
-	if err := storage.Migrate(db); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	store := storage.NewStore(db)
+	t.Cleanup(func() { closer() })
 
 	wm := NewWriterManager(store, 100, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -449,9 +434,8 @@ func TestIndexAll_WithLifecycleHooks(t *testing.T) {
 		<-wm.Done()
 	}()
 
-	// Use a real SQLiteLifecycle instead of nil — this exercises the
+	// lifecycle from the registry exercises the
 	// OnBulkWriteBegin/OnBulkWriteEnd code paths in IndexAll.
-	lifecycle := storage.NewSQLiteLifecycle(store)
 	pipeline := NewEnrichmentPipeline(store, wm, 1, lifecycle)
 
 	dir := t.TempDir()
@@ -540,5 +524,45 @@ func TestFilterChanged_NonBatchFallback(t *testing.T) {
 	}
 	if paths["a.go"] {
 		t.Error("a.go should NOT be in changed set (hash unchanged)")
+	}
+}
+
+func TestIndexAll_NoSyncMarkerLeftBehind(t *testing.T) {
+	t.Parallel()
+
+	store := testutil.NewTestWriterStore(t)
+	wm := NewWriterManager(store, 100, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	go wm.Run(ctx)
+	defer func() {
+		cancel()
+		<-wm.Done()
+	}()
+
+	pipeline := NewEnrichmentPipeline(store, wm, 1, nil)
+
+	dir := t.TempDir()
+	goFile := filepath.Join(dir, "main.go")
+	os.WriteFile(goFile, []byte("package main\n\nfunc Main() {}\n"), 0o644)
+
+	scanResult, err := ScanRepo(context.Background(), ScanInput{ProjectRoot: dir})
+	if err != nil {
+		t.Fatalf("ScanRepo: %v", err)
+	}
+
+	if err := pipeline.IndexAll(context.Background(), IndexAllInput{
+		ProjectRoot: dir,
+		Files:       scanResult.Files,
+	}); err != nil {
+		t.Fatalf("IndexAll: %v", err)
+	}
+
+	// No __sync_marker__ record should exist in the database.
+	f, err := store.GetFileByPath(context.Background(), "__sync_marker__")
+	if err != nil {
+		t.Fatalf("GetFileByPath: %v", err)
+	}
+	if f != nil {
+		t.Error("IndexAll must not leave a __sync_marker__ record in the database")
 	}
 }

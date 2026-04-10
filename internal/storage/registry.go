@@ -20,7 +20,8 @@ type MetadataStoreConfig struct {
 	PostgresMaxIdle int
 	PostgresSchema  string
 
-	EmbeddingDims int // vector dimension for pgvector (e.g. 768)
+	EmbeddingDims int    // vector dimension for pgvector (e.g. 768)
+	ProjectRoot   string // project root path for multi-project isolation (postgres only)
 }
 
 // MetadataStoreFactory creates a WriterStore from config.
@@ -70,5 +71,6 @@ func MetadataStoreConfigFrom(cfg types.Config) MetadataStoreConfig {
 		PostgresMaxIdle: cfg.PostgresMaxIdle,
 		PostgresSchema:  cfg.PostgresSchema,
 		EmbeddingDims:   cfg.EmbeddingDims,
+		ProjectRoot:     cfg.ProjectRoot,
 	}
 }

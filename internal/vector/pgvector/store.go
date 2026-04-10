@@ -24,8 +24,9 @@ const searchTimeout = 30 * time.Second
 // It borrows a *pgxpool.Pool from the Postgres MetadataStore and does NOT
 // own the pool lifecycle — Close() must not close the pool.
 type PgVectorStore struct {
-	pool *pgxpool.Pool
-	dims int
+	pool      *pgxpool.Pool
+	dims      int
+	projectID int64
 
 	mu     sync.Mutex
 	closed bool
@@ -63,7 +64,8 @@ func ValidateDimensions(ctx context.Context, pool *pgxpool.Pool, expected int) e
 // NewPgVectorStore creates a PgVectorStore. The embeddings table and pgvector
 // extension must already exist (created by goose migrations during MetadataStore
 // initialization). This constructor only validates dimensions.
-func NewPgVectorStore(pool *pgxpool.Pool, dims int) (*PgVectorStore, error) {
+// projectID scopes all operations to the given project for multi-project isolation.
+func NewPgVectorStore(pool *pgxpool.Pool, dims int, projectID int64) (*PgVectorStore, error) {
 	if pool == nil {
 		return nil, fmt.Errorf("pgvector: pool is nil (pgvector requires database.backend = postgres)")
 	}
@@ -72,10 +74,12 @@ func NewPgVectorStore(pool *pgxpool.Pool, dims int) (*PgVectorStore, error) {
 		return nil, err
 	}
 
-	return &PgVectorStore{pool: pool, dims: dims}, nil
+	return &PgVectorStore{pool: pool, dims: dims, projectID: projectID}, nil
 }
 
-// Search returns the topK most similar vectors by cosine similarity.
+// Search returns the topK most similar vectors by cosine similarity,
+// scoped to the current project. Over-fetches by 3x to compensate for
+// HNSW post-filtering, then trims to topK.
 func (s *PgVectorStore) Search(ctx context.Context, query []float32, topK int) ([]types.VectorResult, error) {
 	if topK <= 0 {
 		return nil, nil
@@ -87,12 +91,16 @@ func (s *PgVectorStore) Search(ctx context.Context, query []float32, topK int) (
 	ctx, cancel := context.WithTimeout(ctx, searchTimeout)
 	defer cancel()
 
+	// Over-fetch to compensate for HNSW post-filter on project_id.
+	fetchLimit := topK * 3
+
 	rows, err := s.pool.Query(ctx, `
 		SELECT chunk_id, 1 - (embedding <=> $1::vector) AS score
 		FROM embeddings
+		WHERE project_id = $3
 		ORDER BY embedding <=> $1::vector
 		LIMIT $2`,
-		pgvec.NewVector(query), topK)
+		pgvec.NewVector(query), fetchLimit, s.projectID)
 	if err != nil {
 		return nil, fmt.Errorf("pgvector search: %w", err)
 	}
@@ -105,6 +113,9 @@ func (s *PgVectorStore) Search(ctx context.Context, query []float32, topK int) (
 			return nil, fmt.Errorf("pgvector scan: %w", err)
 		}
 		results = append(results, r)
+		if len(results) >= topK {
+			break
+		}
 	}
 	return results, rows.Err()
 }
@@ -118,10 +129,10 @@ func (s *PgVectorStore) Upsert(ctx context.Context, chunkID int64, vector []floa
 		return fmt.Errorf("pgvector: zero vector not allowed (produces NaN in cosine distance)")
 	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO embeddings (chunk_id, embedding)
-		VALUES ($1, $2)
+		INSERT INTO embeddings (chunk_id, embedding, project_id)
+		VALUES ($1, $2, $3)
 		ON CONFLICT (chunk_id) DO UPDATE SET embedding = EXCLUDED.embedding`,
-		chunkID, pgvec.NewVector(vector))
+		chunkID, pgvec.NewVector(vector), s.projectID)
 	return err
 }
 
@@ -143,10 +154,10 @@ func (s *PgVectorStore) UpsertBatch(ctx context.Context, chunkIDs []int64, vecto
 				continue
 			}
 			batch.Queue(`
-				INSERT INTO embeddings (chunk_id, embedding)
-				VALUES ($1, $2)
+				INSERT INTO embeddings (chunk_id, embedding, project_id)
+				VALUES ($1, $2, $3)
 				ON CONFLICT (chunk_id) DO UPDATE SET embedding = EXCLUDED.embedding`,
-				chunkIDs[j], pgvec.NewVector(vectors[j]))
+				chunkIDs[j], pgvec.NewVector(vectors[j]), s.projectID)
 		}
 		if batch.Len() == 0 {
 			continue
@@ -188,9 +199,10 @@ func (s *PgVectorStore) Delete(ctx context.Context, chunkIDs []int64) error {
 	return nil
 }
 
-// PurgeAll deletes all vectors from the embeddings table.
+// PurgeAll deletes all embeddings for the current project.
+// Other projects sharing the same Postgres database are not affected.
 func (s *PgVectorStore) PurgeAll(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, "TRUNCATE TABLE embeddings")
+	_, err := s.pool.Exec(ctx, "DELETE FROM embeddings WHERE project_id = $1", s.projectID)
 	return err
 }
 
@@ -203,10 +215,10 @@ func (s *PgVectorStore) Has(ctx context.Context, chunkID int64) (bool, error) {
 	return exists, err
 }
 
-// Count returns the exact number of stored vectors.
+// Count returns the exact number of stored vectors for the current project.
 func (s *PgVectorStore) Count(ctx context.Context) (int, error) {
 	var count int
-	err := s.pool.QueryRow(ctx, "SELECT COUNT(*) FROM embeddings").Scan(&count)
+	err := s.pool.QueryRow(ctx, "SELECT COUNT(*) FROM embeddings WHERE project_id = $1", s.projectID).Scan(&count)
 	return count, err
 }
 

@@ -3,7 +3,7 @@ package parser
 import (
 	"strings"
 
-	sitter "github.com/smacker/go-tree-sitter"
+	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
@@ -40,7 +40,7 @@ func (c *edgeContext) addEdgeQualified(src, dst, qualifiedDst, kind string) {
 }
 
 // extractEdges extracts dependency edges (imports, calls, inherits) from the AST.
-func (p *Parser) extractEdges(root *sitter.Node, source []byte, symbols []types.SymbolRecord, cfg *LanguageConfig) []types.EdgeRecord {
+func (p *Parser) extractEdges(root *tree_sitter.Node, source []byte, symbols []types.SymbolRecord, cfg *LanguageConfig) []types.EdgeRecord {
 	// importOwner is the fallback source for file-level import edges that
 	// appear before any class/function declaration. Without this, file-level
 	// imports get SrcSymbolName="" and are dropped during storage because no
@@ -67,13 +67,13 @@ func (p *Parser) extractEdges(root *sitter.Node, source []byte, symbols []types.
 	return ctx.edges
 }
 
-func (p *Parser) walkForEdges(node *sitter.Node, owner string, ctx *edgeContext) {
-	nodeType := node.Type()
+func (p *Parser) walkForEdges(node *tree_sitter.Node, owner string, ctx *edgeContext) {
+	nodeType := node.Kind()
 
 	// Handle export wrapper (TypeScript)
 	if ctx.cfg.ExportType != "" && nodeType == ctx.cfg.ExportType {
 		for i := 0; i < int(node.NamedChildCount()); i++ {
-			p.walkForEdges(node.NamedChild(i), owner, ctx)
+			p.walkForEdges(node.NamedChild(uint(i)), owner, ctx)
 		}
 		return
 	}
@@ -81,8 +81,8 @@ func (p *Parser) walkForEdges(node *sitter.Node, owner string, ctx *edgeContext)
 	// Handle decorated_definition (Python)
 	if nodeType == "decorated_definition" {
 		for i := 0; i < int(node.NamedChildCount()); i++ {
-			child := node.NamedChild(i)
-			if child.Type() != "decorator" {
+			child := node.NamedChild(uint(i))
+			if child.Kind() != "decorator" {
 				p.walkForEdges(child, owner, ctx)
 			}
 		}
@@ -104,10 +104,16 @@ func (p *Parser) walkForEdges(node *sitter.Node, owner string, ctx *edgeContext)
 		}
 	}
 
-	// Call expressions
+	// Call expressions — bug #9: the parser records the syntactic edge as
+	// it appears in source, including self-calls. Recursive functions show
+	// up as `fn → fn` edges, which downstream consumers need for
+	// recursion-aware analyses. The previous `callee != newOwner` filter
+	// silently dropped self-calls and same-named calls; semantic
+	// deduplication (e.g., distinguishing overloads) belongs in the graph
+	// layer, not the parser.
 	if nodeType == "call_expression" || nodeType == "call" || nodeType == "method_invocation" || nodeType == "function_call" {
 		callee := extractCalleeName(node, ctx.source)
-		if callee != "" && callee != newOwner {
+		if callee != "" {
 			ctx.addEdge(newOwner, callee, "calls")
 		}
 	}
@@ -132,33 +138,23 @@ func (p *Parser) walkForEdges(node *sitter.Node, owner string, ctx *edgeContext)
 		return
 	}
 
-	// Python/Groovy class bases
-	if nodeType == "class_definition" {
-		if ctx.cfg.Name == "python" {
-			superclasses := node.ChildByFieldName("superclasses")
-			if superclasses != nil {
-				p.extractPythonBases(superclasses, newOwner, ctx)
-			}
-		} else if ctx.cfg.Name == "groovy" {
-			superclass := node.ChildByFieldName("superclass")
-			if superclass != nil {
-				name := extractName(superclass, ctx.source)
-				if name != "" {
-					ctx.addEdge(newOwner, name, "inherits")
-				}
-			}
+	// Python class bases
+	if nodeType == "class_definition" && ctx.cfg.Name == "python" {
+		superclasses := node.ChildByFieldName("superclasses")
+		if superclasses != nil {
+			p.extractPythonBases(superclasses, newOwner, ctx)
 		}
 	}
 
 	// Recurse into children
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		p.walkForEdges(node.NamedChild(i), newOwner, ctx)
+		p.walkForEdges(node.NamedChild(uint(i)), newOwner, ctx)
 	}
 }
 
 // ── Import edge extraction ──
 
-func (p *Parser) extractImportEdgesFrom(node *sitter.Node, owner string, ctx *edgeContext) {
+func (p *Parser) extractImportEdgesFrom(node *tree_sitter.Node, owner string, ctx *edgeContext) {
 	// For file-level imports (owner=""), use the importOwner fallback so
 	// the edge gets a valid SrcSymbolName and isn't dropped by InsertEdges.
 	if owner == "" && ctx.importOwner != "" {
@@ -175,15 +171,13 @@ func (p *Parser) extractImportEdgesFrom(node *sitter.Node, owner string, ctx *ed
 		p.goImportEdges(node, owner, ctx)
 	case "java":
 		p.javaImportEdges(node, owner, ctx)
-	case "groovy":
-		p.groovyImportEdges(node, owner, ctx)
 	case "rust":
 		p.rustImportEdges(node, owner, ctx)
 	// bash has no imports
 	}
 }
 
-func (p *Parser) tsImportEdges(node *sitter.Node, owner string, ctx *edgeContext) {
+func (p *Parser) tsImportEdges(node *tree_sitter.Node, owner string, ctx *edgeContext) {
 	clause := findChildByType(node, "import_clause")
 	if clause == nil {
 		return
@@ -193,24 +187,24 @@ func (p *Parser) tsImportEdges(node *sitter.Node, owner string, ctx *edgeContext
 	modulePath := ""
 	src := findChildByType(node, "string")
 	if src != nil {
-		modulePath = strings.Trim(src.Content(ctx.source), "\"'`")
+		modulePath = strings.Trim(src.Utf8Text(ctx.source), "\"'`")
 	}
 
 	for i := 0; i < int(clause.NamedChildCount()); i++ {
-		child := clause.NamedChild(i)
-		switch child.Type() {
+		child := clause.NamedChild(uint(i))
+		switch child.Kind() {
 		case "identifier":
 			// Default import: import Foo from 'bar'
-			shortName := child.Content(ctx.source)
+			shortName := child.Utf8Text(ctx.source)
 			ctx.addEdgeQualified(owner, shortName, modulePath+"/"+shortName, "imports")
 		case "named_imports":
 			// Named imports: import { Foo, Bar } from 'baz'
 			for j := 0; j < int(child.NamedChildCount()); j++ {
-				spec := child.NamedChild(j)
-				if spec.Type() == "import_specifier" {
+				spec := child.NamedChild(uint(j))
+				if spec.Kind() == "import_specifier" {
 					name := spec.ChildByFieldName("name")
 					if name != nil {
-						shortName := name.Content(ctx.source)
+						shortName := name.Utf8Text(ctx.source)
 						ctx.addEdgeQualified(owner, shortName, modulePath+"/"+shortName, "imports")
 					}
 				}
@@ -225,24 +219,24 @@ func (p *Parser) tsImportEdges(node *sitter.Node, owner string, ctx *edgeContext
 	}
 }
 
-func (p *Parser) pyImportEdges(node *sitter.Node, owner string, ctx *edgeContext) {
+func (p *Parser) pyImportEdges(node *tree_sitter.Node, owner string, ctx *edgeContext) {
 	moduleField := node.ChildByFieldName("module_name")
 
 	// Extract module prefix for "from X import Y" statements
 	modulePrefix := ""
 	if moduleField != nil {
-		modulePrefix = moduleField.Content(ctx.source)
+		modulePrefix = moduleField.Utf8Text(ctx.source)
 	}
 
-	var walk func(n *sitter.Node)
-	walk = func(n *sitter.Node) {
+	var walk func(n *tree_sitter.Node)
+	walk = func(n *tree_sitter.Node) {
 		// Skip the module_name subtree for import_from_statement
 		if n == moduleField {
 			return
 		}
-		switch n.Type() {
+		switch n.Kind() {
 		case "dotted_name":
-			content := n.Content(ctx.source)
+			content := n.Utf8Text(ctx.source)
 			qualified := content
 			if modulePrefix != "" {
 				qualified = modulePrefix + "." + content
@@ -252,7 +246,7 @@ func (p *Parser) pyImportEdges(node *sitter.Node, owner string, ctx *edgeContext
 		case "aliased_import":
 			name := n.ChildByFieldName("name")
 			if name != nil {
-				content := name.Content(ctx.source)
+				content := name.Utf8Text(ctx.source)
 				qualified := content
 				if modulePrefix != "" {
 					qualified = modulePrefix + "." + content
@@ -264,19 +258,19 @@ func (p *Parser) pyImportEdges(node *sitter.Node, owner string, ctx *edgeContext
 			return
 		}
 		for i := 0; i < int(n.NamedChildCount()); i++ {
-			walk(n.NamedChild(i))
+			walk(n.NamedChild(uint(i)))
 		}
 	}
 	walk(node)
 }
 
-func (p *Parser) goImportEdges(node *sitter.Node, owner string, ctx *edgeContext) {
-	var walk func(n *sitter.Node)
-	walk = func(n *sitter.Node) {
-		if n.Type() == "import_spec" {
+func (p *Parser) goImportEdges(node *tree_sitter.Node, owner string, ctx *edgeContext) {
+	var walk func(n *tree_sitter.Node)
+	walk = func(n *tree_sitter.Node) {
+		if n.Kind() == "import_spec" {
 			path := n.ChildByFieldName("path")
 			if path != nil {
-				pkgPath := strings.Trim(path.Content(ctx.source), "\"")
+				pkgPath := strings.Trim(path.Utf8Text(ctx.source), "\"")
 				parts := strings.Split(pkgPath, "/")
 				pkgName := parts[len(parts)-1]
 				ctx.addEdgeQualified(owner, pkgName, pkgPath, "imports")
@@ -284,71 +278,44 @@ func (p *Parser) goImportEdges(node *sitter.Node, owner string, ctx *edgeContext
 			return
 		}
 		for i := 0; i < int(n.NamedChildCount()); i++ {
-			walk(n.NamedChild(i))
+			walk(n.NamedChild(uint(i)))
 		}
 	}
 	walk(node)
 }
 
-func (p *Parser) javaImportEdges(node *sitter.Node, owner string, ctx *edgeContext) {
+func (p *Parser) javaImportEdges(node *tree_sitter.Node, owner string, ctx *edgeContext) {
 	// Java: import foo.bar.Baz; → extract "Baz" with qualified "foo.bar.Baz"
-	var walk func(n *sitter.Node)
-	walk = func(n *sitter.Node) {
-		if n.Type() == "scoped_identifier" {
-			qualified := n.Content(ctx.source)
+	var walk func(n *tree_sitter.Node)
+	walk = func(n *tree_sitter.Node) {
+		if n.Kind() == "scoped_identifier" {
+			qualified := n.Utf8Text(ctx.source)
 			name := n.ChildByFieldName("name")
 			if name != nil {
-				ctx.addEdgeQualified(owner, name.Content(ctx.source), qualified, "imports")
+				ctx.addEdgeQualified(owner, name.Utf8Text(ctx.source), qualified, "imports")
 			}
 			return
 		}
-		if n.Type() == "identifier" {
-			content := n.Content(ctx.source)
+		if n.Kind() == "identifier" {
+			content := n.Utf8Text(ctx.source)
 			ctx.addEdgeQualified(owner, content, content, "imports")
 			return
 		}
 		for i := 0; i < int(n.NamedChildCount()); i++ {
-			walk(n.NamedChild(i))
+			walk(n.NamedChild(uint(i)))
 		}
 	}
 	walk(node)
 }
 
-func (p *Parser) groovyImportEdges(node *sitter.Node, owner string, ctx *edgeContext) {
-	// Groovy: import foo.bar.Baz → extract last dot-separated component with full qualified path
-	// Extract the full import text from the node to use as qualified name
-	fullImportText := node.Content(ctx.source)
-	// Strip "import " prefix and any trailing whitespace/semicolons
-	fullImportText = strings.TrimPrefix(fullImportText, "import ")
-	fullImportText = strings.TrimRight(fullImportText, " \t\n\r;")
+// TODO: groovyImportEdges removed — groovy support dropped pending official Go bindings.
 
-	var walk func(n *sitter.Node)
-	walk = func(n *sitter.Node) {
-		if n.Type() == "dotted_identifier" || n.Type() == "identifier" {
-			content := n.Content(ctx.source)
-			parts := strings.Split(content, ".")
-			shortName := parts[len(parts)-1]
-			// Use fullImportText as qualified name if it contains dots (the full path)
-			qualified := content
-			if strings.Contains(fullImportText, ".") {
-				qualified = fullImportText
-			}
-			ctx.addEdgeQualified(owner, shortName, qualified, "imports")
-			return
-		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
-			walk(n.NamedChild(i))
-		}
-	}
-	walk(node)
-}
-
-func (p *Parser) rustImportEdges(node *sitter.Node, owner string, ctx *edgeContext) {
+func (p *Parser) rustImportEdges(node *tree_sitter.Node, owner string, ctx *edgeContext) {
 	// Rust: use std::collections::HashMap; → extract "HashMap" with qualified "std::collections::HashMap"
 	// Also handles: use std::{io, fs}; (use_list) and use foo as bar (use_as_clause)
-	var walk func(n *sitter.Node)
-	walk = func(n *sitter.Node) {
-		switch n.Type() {
+	var walk func(n *tree_sitter.Node)
+	walk = func(n *tree_sitter.Node) {
+		switch n.Kind() {
 		case "use_as_clause":
 			// use foo::Bar as Baz → extract the alias "Baz" with the original path as qualified
 			alias := n.ChildByFieldName("alias")
@@ -357,21 +324,21 @@ func (p *Parser) rustImportEdges(node *sitter.Node, owner string, ctx *edgeConte
 				path := n.ChildByFieldName("path")
 				qualified := ""
 				if path != nil {
-					qualified = path.Content(ctx.source)
+					qualified = path.Utf8Text(ctx.source)
 				}
-				ctx.addEdgeQualified(owner, alias.Content(ctx.source), qualified, "imports")
+				ctx.addEdgeQualified(owner, alias.Utf8Text(ctx.source), qualified, "imports")
 				return
 			}
 			// No alias field, fall through to extract the path's last component
 		case "scoped_identifier":
-			qualified := n.Content(ctx.source)
+			qualified := n.Utf8Text(ctx.source)
 			name := n.ChildByFieldName("name")
 			if name != nil {
-				ctx.addEdgeQualified(owner, name.Content(ctx.source), qualified, "imports")
+				ctx.addEdgeQualified(owner, name.Utf8Text(ctx.source), qualified, "imports")
 			}
 			return
 		case "identifier":
-			content := n.Content(ctx.source)
+			content := n.Utf8Text(ctx.source)
 			ctx.addEdgeQualified(owner, content, content, "imports")
 			return
 		case "scoped_use_list":
@@ -380,14 +347,14 @@ func (p *Parser) rustImportEdges(node *sitter.Node, owner string, ctx *edgeConte
 			pathNode := n.ChildByFieldName("path")
 			prefix := ""
 			if pathNode != nil {
-				prefix = pathNode.Content(ctx.source)
+				prefix = pathNode.Utf8Text(ctx.source)
 			}
 			list := n.ChildByFieldName("list")
 			if list != nil {
 				for i := 0; i < int(list.NamedChildCount()); i++ {
-					child := list.NamedChild(i)
-					if child.Type() == "identifier" {
-						shortName := child.Content(ctx.source)
+					child := list.NamedChild(uint(i))
+					if child.Kind() == "identifier" {
+						shortName := child.Utf8Text(ctx.source)
 						qualified := shortName
 						if prefix != "" {
 							qualified = prefix + "::" + shortName
@@ -404,7 +371,7 @@ func (p *Parser) rustImportEdges(node *sitter.Node, owner string, ctx *edgeConte
 			return
 		}
 		for i := 0; i < int(n.NamedChildCount()); i++ {
-			walk(n.NamedChild(i))
+			walk(n.NamedChild(uint(i)))
 		}
 	}
 	walk(node)
@@ -412,7 +379,7 @@ func (p *Parser) rustImportEdges(node *sitter.Node, owner string, ctx *edgeConte
 
 // ── Call expression helpers ──
 
-func extractCalleeName(node *sitter.Node, source []byte) string {
+func extractCalleeName(node *tree_sitter.Node, source []byte) string {
 	fn := node.ChildByFieldName("function")
 	if fn != nil {
 		return resolveCallee(fn, source)
@@ -420,67 +387,118 @@ func extractCalleeName(node *sitter.Node, source []byte) string {
 	// Java method_invocation uses "name" field
 	name := node.ChildByFieldName("name")
 	if name != nil {
-		return name.Content(source)
+		return name.Utf8Text(source)
 	}
 	return ""
 }
 
-func resolveCallee(node *sitter.Node, source []byte) string {
-	switch node.Type() {
-	case "identifier":
-		return node.Content(source)
+// resolveCallee returns a qualified name for the callee of a call expression,
+// preserving the receiver for member-style invocations. For `a.foo()` this
+// returns "a.foo"; for `pkg1.Func()` this returns "pkg1.Func"; for nested
+// chains like `a.b.c()` it recursively resolves to "a.b.c". Plain identifier
+// callees return just the identifier.
+//
+// Bug #8 in docs/review-findings/parser-bugs-from-recursive-chunking.md:
+// previously this helper returned only the .property / .field / .attribute
+// leaf, causing `a.foo()` and `b.foo()` to collapse to a single "foo" edge
+// in the call graph.
+func resolveCallee(node *tree_sitter.Node, source []byte) string {
+	switch node.Kind() {
+	case "identifier", "type_identifier", "property_identifier",
+		"field_identifier", "package_identifier", "constant", "word":
+		return node.Utf8Text(source)
 	case "member_expression":
-		// TypeScript: obj.method
+		// TypeScript / JavaScript: obj.method
+		obj := node.ChildByFieldName("object")
 		prop := node.ChildByFieldName("property")
-		if prop != nil {
-			return prop.Content(source)
-		}
+		return joinReceiverProp(obj, prop, source)
 	case "selector_expression":
 		// Go: pkg.Func or recv.Method
+		operand := node.ChildByFieldName("operand")
 		field := node.ChildByFieldName("field")
-		if field != nil {
-			return field.Content(source)
-		}
+		return joinReceiverProp(operand, field, source)
 	case "attribute":
 		// Python: obj.method
+		obj := node.ChildByFieldName("object")
 		attr := node.ChildByFieldName("attribute")
-		if attr != nil {
-			return attr.Content(source)
+		return joinReceiverProp(obj, attr, source)
+	case "field_access":
+		// Java: obj.field (not a call, but member calls on qualified fields)
+		obj := node.ChildByFieldName("object")
+		field := node.ChildByFieldName("field")
+		return joinReceiverProp(obj, field, source)
+	case "scoped_identifier":
+		// Rust: foo::bar
+		path := node.ChildByFieldName("path")
+		name := node.ChildByFieldName("name")
+		if path != nil && name != nil {
+			leftStr := resolveCallee(path, source)
+			rightStr := name.Utf8Text(source)
+			if leftStr != "" && rightStr != "" {
+				return leftStr + "::" + rightStr
+			}
+			if rightStr != "" {
+				return rightStr
+			}
 		}
 	}
 	return ""
+}
+
+// joinReceiverProp concatenates a receiver (object/operand) and a property
+// (method/field) with a dot separator. If the receiver can't be resolved
+// (complex expression, e.g. `(a + b).foo()`), fall back to just the
+// property name so the caller still gets a best-effort target.
+func joinReceiverProp(receiver, prop *tree_sitter.Node, source []byte) string {
+	if prop == nil {
+		return ""
+	}
+	propText := prop.Utf8Text(source)
+	if receiver == nil {
+		return propText
+	}
+	receiverText := resolveCallee(receiver, source)
+	if receiverText == "" {
+		return propText
+	}
+	return receiverText + "." + propText
 }
 
 // ── Inheritance/heritage helpers ──
 
-func (p *Parser) extractHeritageTypeNames(node *sitter.Node, owner string, kind string, ctx *edgeContext) {
-	var walk func(n *sitter.Node)
-	walk = func(n *sitter.Node) {
-		if n.Type() == "type_identifier" || n.Type() == "identifier" {
-			ctx.addEdge(owner, n.Content(ctx.source), kind)
+func (p *Parser) extractHeritageTypeNames(node *tree_sitter.Node, owner string, kind string, ctx *edgeContext) {
+	var walk func(n *tree_sitter.Node)
+	walk = func(n *tree_sitter.Node) {
+		switch n.Kind() {
+		case "type_identifier", "identifier":
+			ctx.addEdge(owner, n.Utf8Text(ctx.source), kind)
+			// Still recurse into siblings — a generic_type node pairs a
+			// type_identifier with a type_arguments sibling, and both
+			// should be walked. Returning here for leaf identifier nodes
+			// is safe because they have no children.
 			return
 		}
-		// Skip generic type arguments
-		if n.Type() == "type_arguments" {
-			return
-		}
+		// Bug #10: previously `type_arguments` was skipped entirely, so
+		// `Map<String, List<User>>` produced an edge to Map but lost
+		// String, List, and User. Recursing into type_arguments children
+		// extracts every named type inside the generics list.
 		for i := 0; i < int(n.NamedChildCount()); i++ {
-			walk(n.NamedChild(i))
+			walk(n.NamedChild(uint(i)))
 		}
 	}
 	walk(node)
 }
 
-func (p *Parser) extractPythonBases(node *sitter.Node, owner string, ctx *edgeContext) {
+func (p *Parser) extractPythonBases(node *tree_sitter.Node, owner string, ctx *edgeContext) {
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		child := node.NamedChild(i)
-		switch child.Type() {
+		child := node.NamedChild(uint(i))
+		switch child.Kind() {
 		case "identifier":
-			ctx.addEdge(owner, child.Content(ctx.source), "inherits")
+			ctx.addEdge(owner, child.Utf8Text(ctx.source), "inherits")
 		case "attribute":
 			attr := child.ChildByFieldName("attribute")
 			if attr != nil {
-				ctx.addEdge(owner, attr.Content(ctx.source), "inherits")
+				ctx.addEdge(owner, attr.Utf8Text(ctx.source), "inherits")
 			}
 		case "keyword_argument":
 			// metaclass=Meta — skip

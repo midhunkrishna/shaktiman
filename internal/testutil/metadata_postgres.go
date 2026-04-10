@@ -39,7 +39,7 @@ func parsePgTestDBConfig(connStr string) pgtestdb.Config {
 	}
 }
 
-func newPostgresTestStore(t *testing.T) types.WriterStore {
+func newPostgresTestStore(t testing.TB) types.WriterStore {
 	t.Helper()
 
 	connStr := os.Getenv("SHAKTIMAN_TEST_POSTGRES_URL")
@@ -66,6 +66,10 @@ func newPostgresTestStore(t *testing.T) types.WriterStore {
 	store, err := postgres.NewPgStore(ctx, testURL, 5, 2, "public")
 	if err != nil {
 		t.Fatalf("NewTestWriterStore(postgres): %v", err)
+	}
+	// Register a test project for multi-project isolation.
+	if err := store.EnsureProject(ctx, "/tmp/test-project"); err != nil {
+		t.Fatalf("EnsureProject: %v", err)
 	}
 
 	// Publish connection URL so the pgvector factory can reuse it.

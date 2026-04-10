@@ -86,6 +86,7 @@ type WriteJobType int
 const (
 	WriteJobEnrichment WriteJobType = iota
 	WriteJobFileDelete
+	WriteJobSync // no-op barrier; signals Done without touching the database
 )
 
 // WriteJob is submitted to the writer goroutine for serialized DB writes.

@@ -27,9 +27,9 @@ func (s *PgStore) UpsertFile(ctx context.Context, file *types.FileRecord) (int64
 
 	var id int64
 	err := s.queryRow(ctx, `
-		INSERT INTO files (path, content_hash, mtime, size, language, indexed_at, embedding_status, parse_quality, is_test)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		ON CONFLICT(path) DO UPDATE SET
+		INSERT INTO files (path, content_hash, mtime, size, language, indexed_at, embedding_status, parse_quality, is_test, project_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT(project_id, path) DO UPDATE SET
 			content_hash = EXCLUDED.content_hash,
 			mtime = EXCLUDED.mtime,
 			size = EXCLUDED.size,
@@ -40,7 +40,7 @@ func (s *PgStore) UpsertFile(ctx context.Context, file *types.FileRecord) (int64
 			is_test = EXCLUDED.is_test
 		RETURNING id`,
 		file.Path, file.ContentHash, file.Mtime, file.Size,
-		file.Language, now, embStatus, pq, file.IsTest,
+		file.Language, now, embStatus, pq, file.IsTest, s.projectID,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("upsert file %s: %w", file.Path, err)
@@ -54,7 +54,7 @@ func (s *PgStore) GetFileByPath(ctx context.Context, path string) (*types.FileRe
 	err := s.queryRow(ctx, `
 		SELECT id, path, content_hash, mtime, size, language, indexed_at,
 		       embedding_status, parse_quality, is_test
-		FROM files WHERE path = $1`, path,
+		FROM files WHERE path = $1 AND project_id = $2`, path, s.projectID,
 	).Scan(&f.ID, &f.Path, &f.ContentHash, &f.Mtime, &f.Size,
 		&f.Language, &indexedAt, &f.EmbeddingStatus, &f.ParseQuality, &f.IsTest)
 	if err == pgx.ErrNoRows {
@@ -73,7 +73,7 @@ func (s *PgStore) ListFiles(ctx context.Context) ([]types.FileRecord, error) {
 	rows, err := s.query(ctx, `
 		SELECT id, path, content_hash, mtime, size, language, indexed_at,
 		       embedding_status, parse_quality, is_test
-		FROM files ORDER BY path`)
+		FROM files WHERE project_id = $1 ORDER BY path`, s.projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list files: %w", err)
 	}
@@ -101,6 +101,45 @@ func (s *PgStore) DeleteFile(ctx context.Context, fileID int64) error {
 		_, err := tx.Exec(ctx, "DELETE FROM files WHERE id = $1", fileID)
 		return err
 	})
+}
+
+func (s *PgStore) DeleteFileByPath(ctx context.Context, path string) (int64, error) {
+	var fileID int64
+	err := s.pool.QueryRow(ctx, "SELECT id FROM files WHERE path = $1 AND project_id = $2", path, s.projectID).Scan(&fileID)
+	if err != nil {
+		return 0, nil // not found → no-op
+	}
+	_, err = s.pool.Exec(ctx, "DELETE FROM files WHERE id = $1", fileID)
+	return fileID, err
+}
+
+func (s *PgStore) GetEmbeddedChunkIDsByFile(ctx context.Context, fileID int64) ([]int64, error) {
+	rows, err := s.query(ctx, "SELECT id FROM chunks WHERE file_id = $1 AND embedded = 1", fileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (s *PgStore) UpdateChunkParents(ctx context.Context, updates map[int64]int64) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	for chunkID, parentID := range updates {
+		if _, err := s.pool.Exec(ctx, "UPDATE chunks SET parent_chunk_id = $1 WHERE id = $2", parentID, chunkID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ── Chunk operations ──
@@ -220,9 +259,11 @@ func (s *PgStore) GetSymbolsByFile(ctx context.Context, fileID int64) ([]types.S
 
 func (s *PgStore) GetSymbolByName(ctx context.Context, name string) ([]types.SymbolRecord, error) {
 	rows, err := s.query(ctx, `
-		SELECT id, chunk_id, file_id, name, qualified_name, kind,
-		       line, signature, visibility, is_exported
-		FROM symbols WHERE name = $1`, name)
+		SELECT s.id, s.chunk_id, s.file_id, s.name, s.qualified_name, s.kind,
+		       s.line, s.signature, s.visibility, s.is_exported
+		FROM symbols s
+		JOIN files f ON s.file_id = f.id
+		WHERE s.name = $1 AND f.project_id = $2`, name, s.projectID)
 	if err != nil {
 		return nil, fmt.Errorf("get symbols named %s: %w", name, err)
 	}
@@ -280,12 +321,12 @@ func (s *PgStore) GetFileIsTestByID(ctx context.Context, fileID int64) (bool, er
 func (s *PgStore) GetIndexStats(ctx context.Context) (*types.IndexStats, error) {
 	stats := &types.IndexStats{Languages: make(map[string]int)}
 
-	s.queryRow(ctx, "SELECT COUNT(*) FROM files").Scan(&stats.TotalFiles)
-	s.queryRow(ctx, "SELECT COUNT(*) FROM chunks").Scan(&stats.TotalChunks)
-	s.queryRow(ctx, "SELECT COUNT(*) FROM symbols").Scan(&stats.TotalSymbols)
-	s.queryRow(ctx, "SELECT COUNT(*) FROM files WHERE parse_quality IN ('error', 'unparseable')").Scan(&stats.ParseErrors)
+	s.queryRow(ctx, "SELECT COUNT(*) FROM files WHERE project_id = $1", s.projectID).Scan(&stats.TotalFiles)
+	s.queryRow(ctx, "SELECT COUNT(*) FROM chunks WHERE file_id IN (SELECT id FROM files WHERE project_id = $1)", s.projectID).Scan(&stats.TotalChunks)
+	s.queryRow(ctx, "SELECT COUNT(*) FROM symbols WHERE file_id IN (SELECT id FROM files WHERE project_id = $1)", s.projectID).Scan(&stats.TotalSymbols)
+	s.queryRow(ctx, "SELECT COUNT(*) FROM files WHERE project_id = $1 AND parse_quality IN ('error', 'unparseable')", s.projectID).Scan(&stats.ParseErrors)
 
-	rows, err := s.query(ctx, "SELECT language, COUNT(*) FROM files WHERE language != '' GROUP BY language")
+	rows, err := s.query(ctx, "SELECT language, COUNT(*) FROM files WHERE project_id = $1 AND language != '' GROUP BY language", s.projectID)
 	if err != nil {
 		return stats, nil
 	}
@@ -313,11 +354,12 @@ func (s *PgStore) KeywordSearch(ctx context.Context, query string, limit int) ([
 	}
 
 	rows, err := s.query(ctx, `
-		SELECT id, ts_rank(content_tsv, to_tsquery('simple', $1)) AS rank
-		FROM chunks
-		WHERE content_tsv @@ to_tsquery('simple', $1)
-		ORDER BY rank DESC
-		LIMIT $2`, tsQuery, limit)
+		SELECT c.id, -ts_rank(c.content_tsv, to_tsquery('simple', $1)) AS rank
+		FROM chunks c
+		JOIN files f ON c.file_id = f.id
+		WHERE f.project_id = $3 AND c.content_tsv @@ to_tsquery('simple', $1)
+		ORDER BY rank
+		LIMIT $2`, tsQuery, limit, s.projectID)
 	if err != nil {
 		return nil, fmt.Errorf("FTS search %q: %w", query, err)
 	}
@@ -338,8 +380,11 @@ func (s *PgStore) KeywordSearch(ctx context.Context, query string, limit int) ([
 
 func (s *PgStore) GetEmbedPage(ctx context.Context, afterID int64, limit int) ([]types.EmbedJob, error) {
 	rows, err := s.query(ctx,
-		`SELECT id, content FROM chunks WHERE embedded = 0 AND id > $1 ORDER BY id LIMIT $2`,
-		afterID, limit)
+		`SELECT c.id, c.content FROM chunks c
+		 JOIN files f ON c.file_id = f.id
+		 WHERE f.project_id = $3 AND c.embedded = 0 AND c.id > $1
+		 ORDER BY c.id LIMIT $2`,
+		afterID, limit, s.projectID)
 	if err != nil {
 		return nil, fmt.Errorf("get embed page: %w", err)
 	}
@@ -401,7 +446,9 @@ func (s *PgStore) MarkChunksEmbedded(ctx context.Context, chunkIDs []int64) erro
 
 func (s *PgStore) CountChunksNeedingEmbedding(ctx context.Context) (int, error) {
 	var count int
-	err := s.queryRow(ctx, "SELECT COUNT(*) FROM chunks WHERE embedded = 0").Scan(&count)
+	err := s.queryRow(ctx,
+		`SELECT COUNT(*) FROM chunks c JOIN files f ON c.file_id = f.id
+		 WHERE f.project_id = $1 AND c.embedded = 0`, s.projectID).Scan(&count)
 	return count, err
 }
 
@@ -409,23 +456,32 @@ func (s *PgStore) CountChunksNeedingEmbedding(ctx context.Context) (int, error) 
 
 func (s *PgStore) CountChunksEmbedded(ctx context.Context) (int, error) {
 	var count int
-	err := s.queryRow(ctx, "SELECT COUNT(*) FROM chunks WHERE embedded = 1").Scan(&count)
+	err := s.queryRow(ctx,
+		`SELECT COUNT(*) FROM chunks c JOIN files f ON c.file_id = f.id
+		 WHERE f.project_id = $1 AND c.embedded = 1`, s.projectID).Scan(&count)
 	return count, err
 }
 
 func (s *PgStore) ResetAllEmbeddedFlags(ctx context.Context) error {
 	return s.WithWriteTx(ctx, func(txh types.TxHandle) error {
 		tx := txh.(PgTxHandle).Tx
-		tx.Exec(ctx, "UPDATE chunks SET embedded = 0 WHERE embedded = 1")
-		tx.Exec(ctx, "UPDATE files SET embedding_status = 'pending' WHERE embedding_status != 'pending'")
+		tx.Exec(ctx,
+			`UPDATE chunks SET embedded = 0
+			 WHERE embedded = 1 AND file_id IN (SELECT id FROM files WHERE project_id = $1)`, s.projectID)
+		tx.Exec(ctx,
+			`UPDATE files SET embedding_status = 'pending'
+			 WHERE project_id = $1 AND embedding_status != 'pending'`, s.projectID)
 		return nil
 	})
 }
 
 func (s *PgStore) GetEmbeddedChunkIDs(ctx context.Context, afterID int64, limit int) ([]int64, error) {
 	rows, err := s.query(ctx,
-		"SELECT id FROM chunks WHERE embedded = 1 AND id > $1 ORDER BY id LIMIT $2",
-		afterID, limit)
+		`SELECT c.id FROM chunks c
+		 JOIN files f ON c.file_id = f.id
+		 WHERE f.project_id = $3 AND c.embedded = 1 AND c.id > $1
+		 ORDER BY c.id LIMIT $2`,
+		afterID, limit, s.projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -478,15 +534,31 @@ func (s *PgStore) ResetEmbeddedFlags(ctx context.Context, chunkIDs []int64) erro
 // diff_log, diff_symbols, and embeddings (pgvector FK). Standalone tables
 // (access_log, working_set, tool_calls) are truncated explicitly.
 // Preserved: goose_db_version, schema_version, config.
+// PurgeAll deletes all indexed data for the current project while preserving
+// schema, migrations, and the project registry entry.
+// DELETE FROM files WHERE project_id cascades to: chunks, symbols, edges,
+// pending_edges, diff_log, diff_symbols (via ON DELETE CASCADE FKs).
+// Session-level tables (access_log, working_set, tool_calls) are not scoped
+// by project_id and are left intact.
+// Preserved: goose_db_version, projects, config (except parser_algorithm_version).
 func (s *PgStore) PurgeAll(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx,
-		"TRUNCATE TABLE files, access_log, working_set, tool_calls CASCADE")
-	return err
+	_, err := s.pool.Exec(ctx, "DELETE FROM files WHERE project_id = $1", s.projectID)
+	if err != nil {
+		return fmt.Errorf("purge files for project %d: %w", s.projectID, err)
+	}
+	// Clear parser version so the next index records the current version.
+	_, err = s.pool.Exec(ctx, "DELETE FROM config WHERE key = 'parser_algorithm_version'")
+	if err != nil {
+		return fmt.Errorf("purge parser version config: %w", err)
+	}
+	return nil
 }
 
 func (s *PgStore) EmbeddingReadiness(ctx context.Context, vectorCount int) (float64, error) {
 	var totalChunks int
-	if err := s.queryRow(ctx, "SELECT COUNT(*) FROM chunks").Scan(&totalChunks); err != nil {
+	if err := s.queryRow(ctx,
+		`SELECT COUNT(*) FROM chunks c JOIN files f ON c.file_id = f.id
+		 WHERE f.project_id = $1`, s.projectID).Scan(&totalChunks); err != nil {
 		return 0, err
 	}
 	if totalChunks == 0 {
@@ -572,7 +644,7 @@ func (s *PgStore) BatchHydrateChunks(ctx context.Context, chunkIDs []int64) ([]t
 		       f.path, f.is_test
 		FROM chunks c
 		JOIN files f ON c.file_id = f.id
-		WHERE c.id = ANY($1)`, chunkIDs)
+		WHERE f.project_id = $2 AND c.id = ANY($1)`, chunkIDs, s.projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -594,7 +666,7 @@ func (s *PgStore) BatchHydrateChunks(ctx context.Context, chunkIDs []int64) ([]t
 func (s *PgStore) BatchGetFileHashes(ctx context.Context, paths []string) (map[string]string, error) {
 	result := make(map[string]string, len(paths))
 	rows, err := s.query(ctx,
-		"SELECT path, content_hash FROM files WHERE path = ANY($1)", paths)
+		"SELECT path, content_hash FROM files WHERE project_id = $2 AND path = ANY($1)", paths, s.projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -669,4 +741,58 @@ func scanSymbols(rows pgx.Rows) ([]types.SymbolRecord, error) {
 		symbols = append(symbols, sym)
 	}
 	return symbols, rows.Err()
+}
+
+// ── Config key-value ──
+
+// GetConfig returns the value for a config key. Returns empty string and nil
+// error if the key is absent.
+func (s *PgStore) GetConfig(ctx context.Context, key string) (string, error) {
+	var value string
+	err := s.queryRow(ctx, "SELECT value FROM config WHERE key = $1", key).Scan(&value)
+	if err == pgx.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get config %q: %w", key, err)
+	}
+	return value, nil
+}
+
+// SetConfig writes or overwrites a config key/value pair.
+func (s *PgStore) SetConfig(ctx context.Context, key, value string) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO config (key, value) VALUES ($1, $2)
+		ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value`, key, value)
+	if err != nil {
+		return fmt.Errorf("set config %q: %w", key, err)
+	}
+	return nil
+}
+
+// ── Metrics ──
+
+// RecordToolCalls batch-inserts MCP tool call metrics.
+func (s *PgStore) RecordToolCalls(ctx context.Context, records []types.ToolCallRecord) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	for _, rec := range records {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO tool_calls (session_id, timestamp, tool_name, args_json,
+				args_bytes, response_bytes, response_tokens_est, result_count,
+				duration_ms, is_error)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			rec.SessionID, rec.Timestamp.UTC(), rec.ToolName, rec.ArgsJSON,
+			rec.ArgsBytes, rec.ResponseBytes, rec.ResponseTokensEst,
+			rec.ResultCount, rec.DurationMs, rec.IsError,
+		); err != nil {
+			return fmt.Errorf("insert tool call %s: %w", rec.ToolName, err)
+		}
+	}
+
+	return tx.Commit(ctx)
 }

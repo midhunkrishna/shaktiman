@@ -4,26 +4,26 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	sitter "github.com/smacker/go-tree-sitter"
+	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
 // extractSymbols walks the tree and extracts symbols, associating each
 // with its containing chunk based on line ranges.
-func (p *Parser) extractSymbols(root *sitter.Node, source []byte, chunks []types.ChunkRecord, cfg *LanguageConfig) []types.SymbolRecord {
+func (p *Parser) extractSymbols(root *tree_sitter.Node, source []byte, chunks []types.ChunkRecord, cfg *LanguageConfig) []types.SymbolRecord {
 	var symbols []types.SymbolRecord
 	p.walkForSymbols(root, source, false, chunks, &symbols, cfg)
 	return symbols
 }
 
-func (p *Parser) walkForSymbols(node *sitter.Node, source []byte, exported bool, chunks []types.ChunkRecord, symbols *[]types.SymbolRecord, cfg *LanguageConfig) {
-	nodeType := node.Type()
+func (p *Parser) walkForSymbols(node *tree_sitter.Node, source []byte, exported bool, chunks []types.ChunkRecord, symbols *[]types.SymbolRecord, cfg *LanguageConfig) {
+	nodeType := node.Kind()
 
 	// Track export context (TypeScript)
 	if cfg.ExportType != "" && nodeType == cfg.ExportType {
 		for i := 0; i < int(node.NamedChildCount()); i++ {
-			p.walkForSymbols(node.NamedChild(i), source, true, chunks, symbols, cfg)
+			p.walkForSymbols(node.NamedChild(uint(i)), source, true, chunks, symbols, cfg)
 		}
 		return
 	}
@@ -31,8 +31,8 @@ func (p *Parser) walkForSymbols(node *sitter.Node, source []byte, exported bool,
 	// Python decorated_definition — recurse into the definition child
 	if nodeType == "decorated_definition" {
 		for i := 0; i < int(node.NamedChildCount()); i++ {
-			child := node.NamedChild(i)
-			if child.Type() != "decorator" {
+			child := node.NamedChild(uint(i))
+			if child.Kind() != "decorator" {
 				p.walkForSymbols(child, source, exported, chunks, symbols, cfg)
 			}
 		}
@@ -54,10 +54,13 @@ func (p *Parser) walkForSymbols(node *sitter.Node, source []byte, exported bool,
 		case "type_declaration":
 			p.extractGoTypeSymbols(node, source, chunks, symbols, cfg)
 			return
+		case "field_declaration":
+			p.extractJavaFieldSymbols(node, source, chunks, symbols)
+			return
 		default:
 			name := extractName(node, source)
 			if name != "" {
-				line := int(node.StartPoint().Row) + 1
+				line := int(node.StartPosition().Row) + 1
 				isExp := exported || isGoExported(name, cfg)
 				sym := types.SymbolRecord{
 					Name:       name,
@@ -77,46 +80,40 @@ func (p *Parser) walkForSymbols(node *sitter.Node, source []byte, exported bool,
 		}
 	}
 
-	// Recurse into class bodies for methods
-	if cfg.ClassBodyType != "" && nodeType == cfg.ClassBodyType {
+	// Unwrap ambient declaration wrapper (TypeScript declare)
+	if cfg.AmbientType != "" && nodeType == cfg.AmbientType {
 		for i := 0; i < int(node.NamedChildCount()); i++ {
-			child := node.NamedChild(i)
-			if cfg.ClassBodyTypes[child.Type()] {
-				p.walkForSymbols(child, source, exported, chunks, symbols, cfg)
-			}
+			p.walkForSymbols(node.NamedChild(uint(i)), source, exported, chunks, symbols, cfg)
 		}
 		return
 	}
 
-	// For class declarations, recurse into their body
-	if cfg.ClassTypes[nodeType] {
-		if cfg.ClassBodyType != "" {
-			body := findChildByType(node, cfg.ClassBodyType)
-			if body != nil {
-				p.walkForSymbols(body, source, exported, chunks, symbols, cfg)
-			}
-		}
-		return
+	// Recurse into containers and structural nodes to find nested symbols.
+	// For symbol nodes, recursion is driven by NodeMeta.IsContainer — the
+	// single source of truth set in the language config. Non-symbol
+	// structural nodes (body_statement, class_body, declaration_list, etc.)
+	// always recurse so symbol nodes nested inside them are reachable.
+	shouldRecurse := !isSymbol
+	if isSymbol {
+		shouldRecurse = cfg.ChunkableTypes[nodeType].IsContainer
 	}
-
-	// For container nodes, recurse into named children
-	if !isSymbol {
+	if shouldRecurse {
 		for i := 0; i < int(node.NamedChildCount()); i++ {
-			p.walkForSymbols(node.NamedChild(i), source, exported, chunks, symbols, cfg)
+			p.walkForSymbols(node.NamedChild(uint(i)), source, exported, chunks, symbols, cfg)
 		}
 	}
 }
 
 // extractVariableSymbols handles TS const/let/var declarations with multiple declarators.
-func (p *Parser) extractVariableSymbols(node *sitter.Node, source []byte, exported bool, chunks []types.ChunkRecord, symbols *[]types.SymbolRecord) {
+func (p *Parser) extractVariableSymbols(node *tree_sitter.Node, source []byte, exported bool, chunks []types.ChunkRecord, symbols *[]types.SymbolRecord) {
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		child := node.NamedChild(i)
-		if child.Type() == "variable_declarator" {
+		child := node.NamedChild(uint(i))
+		if child.Kind() == "variable_declarator" {
 			name := extractName(child, source)
 			if name == "" {
 				continue
 			}
-			line := int(child.StartPoint().Row) + 1
+			line := int(child.StartPosition().Row) + 1
 			kind := "variable"
 			if isConstDeclaration(node) {
 				kind = "constant"
@@ -139,21 +136,21 @@ func (p *Parser) extractVariableSymbols(node *sitter.Node, source []byte, export
 }
 
 // extractGoVarSymbols handles Go var/const declarations with var_spec/const_spec children.
-func (p *Parser) extractGoVarSymbols(node *sitter.Node, source []byte, chunks []types.ChunkRecord, symbols *[]types.SymbolRecord, cfg *LanguageConfig) {
+func (p *Parser) extractGoVarSymbols(node *tree_sitter.Node, source []byte, chunks []types.ChunkRecord, symbols *[]types.SymbolRecord, cfg *LanguageConfig) {
 	specType := "var_spec"
 	kind := "variable"
-	if node.Type() == "const_declaration" {
+	if node.Kind() == "const_declaration" {
 		specType = "const_spec"
 		kind = "constant"
 	}
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		child := node.NamedChild(i)
-		if child.Type() == specType {
+		child := node.NamedChild(uint(i))
+		if child.Kind() == specType {
 			name := extractName(child, source)
 			if name == "" {
 				continue
 			}
-			line := int(child.StartPoint().Row) + 1
+			line := int(child.StartPosition().Row) + 1
 			isExp := isGoExported(name, cfg)
 			sym := types.SymbolRecord{
 				Name:       name,
@@ -172,16 +169,87 @@ func (p *Parser) extractGoVarSymbols(node *sitter.Node, source []byte, chunks []
 	}
 }
 
-// extractGoTypeSymbols handles Go type declarations with type_spec children.
-func (p *Parser) extractGoTypeSymbols(node *sitter.Node, source []byte, chunks []types.ChunkRecord, symbols *[]types.SymbolRecord, cfg *LanguageConfig) {
+// extractJavaFieldSymbols handles Java field_declaration nodes, which can
+// declare multiple variables in one statement (`int x = 1, y = 2;`).
+// Tree-sitter exposes each variable as its own variable_declarator child;
+// extractName alone would only return the first declarator's name and lose
+// the rest. This mirrors extractVariableSymbols for TypeScript/JavaScript
+// lexical_declaration. Visibility is inferred from the node's `modifiers`
+// child (public/private/protected) with package-private as the default.
+// `static final` fields are indexed as "constant", regular fields as
+// "variable".
+func (p *Parser) extractJavaFieldSymbols(node *tree_sitter.Node, source []byte, chunks []types.ChunkRecord, symbols *[]types.SymbolRecord) {
+	visibility, isConstant := inspectJavaFieldModifiers(node, source)
+	isExported := visibility == "public"
+
 	for i := 0; i < int(node.NamedChildCount()); i++ {
-		child := node.NamedChild(i)
-		if child.Type() == "type_spec" {
+		child := node.NamedChild(uint(i))
+		if child.Kind() != "variable_declarator" {
+			continue
+		}
+		name := extractName(child, source)
+		if name == "" {
+			continue
+		}
+		kind := "variable"
+		if isConstant {
+			kind = "constant"
+		}
+		sym := types.SymbolRecord{
+			Name:       name,
+			Kind:       kind,
+			Line:       int(child.StartPosition().Row) + 1,
+			Visibility: visibility,
+			IsExported: isExported,
+		}
+		sym.ChunkID = findContainingChunk(sym.Line, chunks)
+		*symbols = append(*symbols, sym)
+	}
+}
+
+// inspectJavaFieldModifiers walks a field_declaration's `modifiers` child to
+// determine visibility (public/private/protected/internal — internal means
+// package-private) and whether the field is `static final` (indexed as
+// "constant" rather than "variable").
+func inspectJavaFieldModifiers(node *tree_sitter.Node, source []byte) (visibility string, isConstant bool) {
+	visibility = "internal" // package-private default
+	sawStatic := false
+	sawFinal := false
+
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(uint(i))
+		if child.Kind() != "modifiers" {
+			continue
+		}
+		for j := 0; j < int(child.ChildCount()); j++ {
+			mod := child.Child(uint(j))
+			switch mod.Kind() {
+			case "public":
+				visibility = "public"
+			case "private":
+				visibility = "private"
+			case "protected":
+				visibility = "internal" // treat protected as package-visible for our taxonomy
+			case "static":
+				sawStatic = true
+			case "final":
+				sawFinal = true
+			}
+		}
+	}
+	return visibility, sawStatic && sawFinal
+}
+
+// extractGoTypeSymbols handles Go type declarations with type_spec children.
+func (p *Parser) extractGoTypeSymbols(node *tree_sitter.Node, source []byte, chunks []types.ChunkRecord, symbols *[]types.SymbolRecord, cfg *LanguageConfig) {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		child := node.NamedChild(uint(i))
+		if child.Kind() == "type_spec" {
 			name := extractName(child, source)
 			if name == "" {
 				continue
 			}
-			line := int(child.StartPoint().Row) + 1
+			line := int(child.StartPosition().Row) + 1
 			isExp := isGoExported(name, cfg)
 			sym := types.SymbolRecord{
 				Name:       name,
@@ -221,10 +289,10 @@ func isGoExported(name string, cfg *LanguageConfig) bool {
 }
 
 // isConstDeclaration checks if a lexical_declaration uses "const".
-func isConstDeclaration(node *sitter.Node) bool {
+func isConstDeclaration(node *tree_sitter.Node) bool {
 	for i := 0; i < int(node.ChildCount()); i++ {
-		child := node.Child(i)
-		if child.Type() == "const" {
+		child := node.Child(uint(i))
+		if child.Kind() == "const" {
 			return true
 		}
 	}

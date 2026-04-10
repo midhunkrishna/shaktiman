@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/testutil"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
@@ -623,7 +622,7 @@ func BenchmarkKeywordSearch(b *testing.B) {
 }
 
 func BenchmarkHybridRank(b *testing.B) {
-	store := setupBenchStore(b)
+	store := newBenchStore(b)
 
 	candidates := make([]types.ScoredResult, 100)
 	for i := range candidates {
@@ -672,35 +671,19 @@ func BenchmarkContextAssembly(b *testing.B) {
 	}
 }
 
-func setupBenchEngine(b *testing.B) (*QueryEngine, *storage.Store) {
+func setupBenchEngine(b *testing.B) (*QueryEngine, types.WriterStore) {
 	b.Helper()
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		b.Fatalf("Open: %v", err)
-	}
-	b.Cleanup(func() { db.Close() })
-	if err := storage.Migrate(db); err != nil {
-		b.Fatalf("Migrate: %v", err)
-	}
-	store := storage.NewStore(db)
+	store := newBenchStore(b)
 	engine := NewQueryEngine(store, b.TempDir())
 	return engine, store
 }
 
-func setupBenchStore(b *testing.B) *storage.Store {
+func newBenchStore(b *testing.B) types.WriterStore {
 	b.Helper()
-	db, err := storage.Open(storage.OpenInput{InMemory: true})
-	if err != nil {
-		b.Fatalf("Open: %v", err)
-	}
-	b.Cleanup(func() { db.Close() })
-	if err := storage.Migrate(db); err != nil {
-		b.Fatalf("Migrate: %v", err)
-	}
-	return storage.NewStore(db)
+	return testutil.NewTestWriterStore(b)
 }
 
-func seedBenchData(b *testing.B, store *storage.Store) {
+func seedBenchData(b *testing.B, store types.WriterStore) {
 	b.Helper()
 	ctx := context.Background()
 

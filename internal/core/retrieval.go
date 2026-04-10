@@ -14,6 +14,18 @@ type TestFilter struct {
 	TestOnly     bool // keep only test files
 }
 
+// ScopeToFilter converts a scope string ("impl", "test", "all") to TestFilter.
+func ScopeToFilter(scope string) TestFilter {
+	switch scope {
+	case "test":
+		return TestFilter{TestOnly: true}
+	case "all":
+		return TestFilter{}
+	default: // "impl"
+		return TestFilter{ExcludeTests: true}
+	}
+}
+
 // KeywordSearch performs FTS5 search and returns hydrated scored results.
 // When filter excludes or selects test files, FTS limit is doubled to
 // compensate for filtered-out results.

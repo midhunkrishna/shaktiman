@@ -126,7 +126,9 @@ func (s *QdrantStore) Delete(ctx context.Context, chunkIDs []int64) error {
 	return nil
 }
 
-// PurgeAll deletes the collection and recreates it empty.
+// PurgeAll deletes the entire Qdrant collection and recreates it empty.
+// WARNING: Qdrant has no project_id scoping. If multiple projects share
+// the same collection name, this deletes ALL projects' vectors.
 func (s *QdrantStore) PurgeAll(ctx context.Context) error {
 	if err := s.client.DeleteCollection(ctx, s.collection); err != nil {
 		return fmt.Errorf("delete collection: %w", err)

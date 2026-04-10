@@ -5,46 +5,226 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.8.0] — 2026-03-30
+## [0.9.3] — 2026-04-09
 
 ### Added
 
-- **Scope-based test file filtering** — all MCP tools (`search`, `context`,
-  `symbols`, `dependencies`, `diff`) now exclude test files by default. New
-  `scope` parameter: `"impl"` (default), `"test"` (test files only), `"all"`.
-  Test classification stored as `is_test` on the `files` table, computed at
-  index time from configurable glob patterns.
-- **Configurable test file patterns** (`internal/types/config.go`) — `[test]`
-  section in `shaktiman.toml` with `patterns` array. Auto-populated with
-  language-specific defaults after indexing. Supports basename globs
-  (`*_test.go`) and directory prefixes (`testdata/`, `__tests__/`).
-- **`IsTestFile` utility** (`internal/daemon/scanner.go`) — path-based test
-  file detection supporting Go, Python, TypeScript, JavaScript, Java, Groovy,
-  Rust, and Bash patterns.
-- **`GetFileIsTestByID` store method** (`internal/storage/metadata.go`) —
-  single-column lookup for test file classification, used by all tool handlers
-  during scope filtering.
-- **Schema V3→V4 migration** (`internal/storage/schema.go`) — adds `is_test`
-  column to `files` table. Existing files default to `is_test=0` (impl) until
-  next re-index.
-- **MCP server instructions** (`internal/mcp/server.go`) — `WithInstructions`
-  set during initialize handshake, telling the LLM when to use shaktiman vs
-  built-in tools and that test files are excluded by default.
+- **Multi-instance concurrency via single-daemon + socket proxy** (ADR-002
+  Amendment 4) — when multiple Claude Code sessions open on the same project,
+  the first `shaktimand` becomes the leader (owns DB, vectors, watcher) and
+  subsequent instances become stateless proxies bridging their Claude Code
+  client's stdio to the leader via a Unix domain socket. Zero stale reads,
+  zero double-enrichment, zero races.
+  - New `internal/lockfile/` package: `flock`-based singleton enforcement on
+    `.shaktiman/daemon.pid` with path canonicalization via
+    `filepath.EvalSymlinks`.
+  - New `internal/proxy/` package: ~80 LOC stdio-to-HTTP bridge that forwards
+    JSON-RPC requests to the leader's `StreamableHTTPServer` endpoint. Captures
+    `Mcp-Session-Id` from first response for session continuity.
+  - Leader serves MCP on both `StdioServer` (own client) and
+    `StreamableHTTPServer` on `/tmp/shaktiman-<hash>.sock` (proxy clients),
+    sharing the same `MCPServer` instance.
+  - Proxy promotion: when leader exits, proxies detect connection-refused,
+    attempt `flock`, and the winner re-execs as the new leader. Losers
+    reconnect as proxies.
+  - CLI `shaktiman index` checks flock before indexing; refuses if daemon is
+    running.
+- **ADR-003 A12: Postgres requires pgvector or qdrant** — `ValidateBackendConfig`
+  now rejects `postgres + brute_force` and `postgres + hnsw` at startup.
+  File-backed vector stores (`embeddings.bin`) race across daemons sharing the
+  same Postgres database.
 
 ### Changed
 
-- MCP server version bumped to `0.8.0`.
-- **Tool descriptions rewritten** — honest positioning as complementary to
-  Grep/Glob (not a replacement), framing value around reducing context waste
-  during codebase exploration. Each description now mentions default test
-  exclusion.
-- **CLAUDE.md templates updated** (`docs/reference/sample_claude.md`,
-  `README.md`) — replaced "STOP RULE" / "INSTEAD of Grep" framing with
-  bidirectional decision tables: when to use shaktiman, when to use Grep/Glob,
-  and signs you should switch. Added scope guidance and subagent delegation
-  template.
+- `cmd/shaktimand/main.go` canonicalizes `projectRoot` via `filepath.Abs` +
+  `filepath.EvalSymlinks` at startup, preventing two daemons from the same
+  directory via different paths.
 
----
+## [0.9.2] — 2026-04-08
+
+### Added
+
+- **Recursive AST-driven chunking** (ADR-004,
+  `internal/parser/chunker.go`) — replaces the whitelist-driven two-level
+  chunker (file → class → method) with a recursive, size-gated AST traversal
+  guided by `ChunkableTypes`. New `chunkNode` + `findChunkableChildren`
+  decompose oversized nodes by walking structural containers
+  (`body_statement`, `block`, `declaration_list`, `class_body`) to reach
+  chunkable descendants at arbitrary depth. Fixes silent drops of nested
+  modules, decorated methods, inner classes, trait methods, and namespaces.
+  `walkForSymbols` mirrors the same recursion with a container whitelist.
+  `buildSignatureFromExtracted` emits compact code-only parent summaries;
+  comments are excluded from chunking entirely.
+- **11 new `ChunkableTypes` across 5 languages** — Ruby `singleton_class`;
+  Python `type_alias_statement`; Rust `function_signature_item`,
+  `foreign_mod_item`, `union_item`; Java `compact_constructor_declaration`,
+  `static_initializer`; TypeScript `internal_module`, `ambient_declaration`,
+  `function_signature`, `generator_function_declaration`.
+- **`AmbientType` in `LanguageConfig`** — TypeScript `declare` unwrapping,
+  mirroring `ExportType`.
+- **Chunk algorithm version tracking** — `parser.ChunkAlgorithmVersion` as
+  the single source of truth. `MetadataStore.GetConfig` / `SetConfig` backed
+  by the existing `config` key-value table (sqlite + postgres implementations,
+  no migration needed). `daemon.ensureParserVersion` runs before cold
+  indexing: on mismatch it purges every file (cascading chunks/symbols/edges
+  via FKs) so cold-index re-parses with the new algorithm. Wired into
+  `Start()` and `IndexProject()`.
+- **Parser tests for recursive chunking** — 20 parser tests covering every
+  nesting fix and new `ChunkableType`; 13 new testdata fixtures across
+  ruby/python/rust/java/typescript projects. `TestConfig_GetSet` (sqlite),
+  `TestEnsureParserVersion_PurgesOnMismatch`, `TestEnsureParserVersion_NoOpOnMatch`.
+- **`symbols.kind` CHECK constraint expanded for `namespace`** —
+  migration `002_symbols_kind_namespace.sql` (sqlite) and
+  `005_symbols_kind_namespace.sql` (postgres) add `namespace` to the allowed
+  set so TypeScript `internal_module` symbols persist. Previously the writer
+  silently dropped them at the DB layer.
+- **Multi-project isolation for PostgreSQL backend** — when multiple projects
+  share the same Postgres database, each project's data is now fully isolated.
+  New `projects` table registers each project by its canonicalized root path.
+  `project_id` column added to `files` and `embeddings` tables. All queries
+  (~26 sites across `metadata.go`, `graph.go`, `diff.go`, `pgvector/store.go`)
+  are scoped by project. Migration `006_add_project_id.sql` handles backward
+  compatibility: existing single-project databases are automatically claimed
+  by the first daemon that starts.
+- **`PgStore.EnsureProject` method** (`internal/storage/postgres/db.go`) —
+  registers a project at startup using race-safe upsert-or-get pattern
+  (`INSERT ON CONFLICT DO NOTHING` + fallback `SELECT`). Path is
+  canonicalized via `filepath.Abs` + `filepath.EvalSymlinks` to prevent
+  duplicates from symlinks or relative paths.
+- **`PgStore.ProjectID` getter** (`internal/storage/postgres/db.go`) — exposes
+  the project ID for pgvector pool sharing.
+- **pgvector project scoping** (`internal/vector/pgvector/store.go`) —
+  `Search`, `Upsert`, `UpsertBatch`, and `Count` are scoped by `project_id`.
+  Search over-fetches by 3x to compensate for HNSW post-filtering, then trims
+  to the requested `topK`.
+- **Project isolation integration tests** — 13 Postgres tests
+  (`internal/storage/postgres/project_test.go`) and 2 pgvector tests
+  (`internal/vector/pgvector/project_test.go`) covering file isolation,
+  symbol isolation, FTS isolation, stats isolation, diff isolation, edge
+  resolution isolation, embed page isolation, batch hash isolation,
+  concurrent startup, path canonicalization, and backward compatibility.
+- **Qdrant multi-project warning** (`internal/daemon/daemon.go`) — startup
+  warning when Qdrant + Postgres backends are used together, since Qdrant
+  does not yet support project isolation.
+
+### Changed
+
+- **`LanguageConfig` simplification** — removed `ClassTypes`, `ClassBodyTypes`,
+  and `ClassBodyType` triplet; all traversal now flows through
+  `ChunkableTypes` + structural container recursion instead of a
+  hand-maintained whitelist per language.
+- **`lookupSymbolIDPg` project-scoped** (`internal/storage/postgres/graph.go`)
+  — language-fallback and bare-name-fallback branches now filter by
+  `project_id`, preventing cross-project symbol resolution in `InsertEdges`
+  and `ResolvePendingEdges`.
+- **`GetRecentDiffs` project-scoped** (`internal/storage/postgres/diff.go`) —
+  the no-`FileID` branch now joins through `files` to filter by `project_id`.
+- **`VectorStoreConfig` carries `ProjectID`** (`internal/vector/registry.go`)
+  — extracted from the metadata store via `ProjectID()` interface assertion
+  and passed to pgvector at construction.
+- **`MetadataStoreConfig` carries `ProjectRoot`**
+  (`internal/storage/registry.go`) — threaded from application config through
+  to the Postgres factory for project registration after migrations.
+
+### Fixed
+
+- **Parser bug #1 — `extractName` returns type name for fields** — walked
+  named children in order and returned `type_identifier` before
+  `variable_declarator`, losing the variable name on Java field declarations.
+  Now prefers `variable_declarator`.
+- **Parser bug #2 — multi-declarator Java field symbols lost** — only the
+  first declarator in `int a, b, c;` was emitted; remaining declarators are
+  now walked and each produces its own symbol.
+- **Parser bug #3** — resolved transitively by bugs #1 + #2.
+- **Parser bug #4 — `walkForSymbols` recursion kind-string-switched** —
+  replaced with a `NodeMeta` struct refactor driven by `ChunkableTypes` so
+  symbol extraction and chunking share one source of truth.
+- **Parser bug #5 — `findDeclarationChild` hardcoded** — now reads the
+  declaration child kind from `LanguageConfig`.
+- **Parser bug #6 — signature truncates multi-line declarations** —
+  `buildSignatureFromExtracted` reconstructs the signature header via AST
+  geometry (first/last byte range of declaration preamble) instead of
+  single-line slicing.
+- **Parser bug #7 — depth guard fallback is silent** — `chunkNode` now emits
+  `slog.Warn` when the depth guard triggers so oversized-nesting cases are
+  observable instead of silently line-split.
+- **Parser bug #8 — `resolveCallee` drops receiver on member calls** —
+  member-expression callees now preserve the receiver so `foo.bar()` resolves
+  to `bar` on `foo`'s type rather than a bare `bar`.
+- **Parser bug #9 — recursive self-calls dropped from call graph** —
+  call-edge extraction now records self-recursive invocations instead of
+  filtering them out.
+- **Parser bug #10 — generic type arguments skipped by edges walker** —
+  heritage walker now descends into `type_arguments` so `class Foo extends
+  Bar<Baz>` records an edge to `Baz`.
+- **Parser bug #11 — small containers decomposed eagerly** — `chunkNode`
+  now size-gates before `findChunkableChildren`, so a container whose full
+  body fits under `maxChunkTokens` is emitted as a single chunk (matching
+  ADR-004: "a 20-line module with a 15-line class doesn't decompose").
+  Previously any container with chunkable descendants was decomposed
+  regardless of total size.
+- **Parser bug #12 — depth guard off-by-one in `chunkNode`** — ADR-004 §6
+  specifies `depth > maxChunkDepth` but the code used `>=`, capping effective
+  recursion at depth 9 instead of 10 and swallowing innermost methods at the
+  boundary into their parent class chunk.
+- **Parser bug #13 — `namespace` rejected by `symbols.kind` CHECK constraint**
+  — TypeScript namespace symbols were silently dropped at the DB layer after
+  ADR-004 added `internal_module → namespace` to `SymbolKindMap`. Fixed by
+  the sqlite + postgres migrations above.
+
+## [0.9.1] — 2026-04-06
+
+### Added
+
+- **Migration validation tests** (`internal/parser/parser_test.go`) —
+  `TestParse_ContextCancellation` (no panic on immediate cancel),
+  `TestParse_InvalidLanguageReturnsError` (unsupported language error),
+  `TestParse_AllLanguagesSmoke` (7 languages parse without error),
+  `TestParse_ByteRangesValid` (chunk line ranges valid),
+  `TestParse_TypeScriptClassSignature` (class signature byte slicing correct).
+
+### Changed
+
+- **Backend isolation** — storage and vector implementations moved into
+  sub-packages (`internal/storage/sqlite/`, `internal/vector/bruteforce/`,
+  `internal/vector/hnsw/`). Backends register via `init()` and are selected
+  at runtime via config. The parent packages (`internal/storage/`,
+  `internal/vector/`) are now pure registry + interface hubs.
+- **Build tags for default backends** — `sqlite`, `bruteforce`, and `hnsw`
+  are now gated by build tags (matching the existing pattern for `postgres`,
+  `pgvector`, `qdrant`). This enables CGo-free builds for postgres-only
+  deployments. Default build command is now:
+  `go build -tags "sqlite_fts5 sqlite bruteforce hnsw" ./...`
+- **Test matrix resilience** — tests that target specific backends now skip
+  gracefully when the backend is not compiled in, instead of failing.
+- **Migrated tree-sitter bindings** — replaced stalled community
+  `smacker/go-tree-sitter` (no activity since Aug 2024) with official
+  `tree-sitter/go-tree-sitter` v0.25.0 and per-language grammar packages
+  from `tree-sitter/*`. Actively maintained, semantically versioned.
+- **Replaced deprecated `ParseCtx`** — migrated to `ParseWithOptions` with
+  `ProgressCallback` for proper context cancellation. Callback checks
+  `ctx.Done()` channel; nil-tree return differentiates cancellation from
+  parse failure.
+
+### Removed
+
+- **Groovy language support temporarily dropped** — no official
+  `tree-sitter/tree-sitter-groovy` Go bindings exist. Community fork has
+  module path mismatch preventing use. Removed `.groovy`/`.gradle` extension
+  mappings, `groovyConfig()`, groovy import/edge extraction, and related
+  test fixtures. TODO comments mark all removal points for re-addition when
+  official bindings become available.
+
+### Dependencies
+
+- Removed `github.com/smacker/go-tree-sitter` and all `smacker/go-tree-sitter-*`
+  grammar packages.
+- Added `github.com/tree-sitter/go-tree-sitter` v0.25.0.
+- Added official grammar packages: `tree-sitter-typescript` v0.23.2,
+  `tree-sitter-javascript` v0.23.1, `tree-sitter-python` v0.23.6,
+  `tree-sitter-go` v0.23.4, `tree-sitter-rust` v0.23.2,
+  `tree-sitter-java` v0.23.5, `tree-sitter-bash` v0.23.3.
+- Added `github.com/mattn/go-pointer` v0.0.1 (transitive dependency).
 
 ## [0.9.0] — 2026-03-31
 
@@ -109,9 +289,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **1MB `bufio.Writer` for `SaveToDisk`** — up from default 4KB buffer to
   match typical write syscall granularity for large embedding files.
 
----
+## [0.8.0] — 2026-03-30
 
-## [Unreleased]
+### Added
+
+- **Scope-based test file filtering** — all MCP tools (`search`, `context`,
+  `symbols`, `dependencies`, `diff`) now exclude test files by default. New
+  `scope` parameter: `"impl"` (default), `"test"` (test files only), `"all"`.
+  Test classification stored as `is_test` on the `files` table, computed at
+  index time from configurable glob patterns.
+- **Configurable test file patterns** (`internal/types/config.go`) — `[test]`
+  section in `shaktiman.toml` with `patterns` array. Auto-populated with
+  language-specific defaults after indexing. Supports basename globs
+  (`*_test.go`) and directory prefixes (`testdata/`, `__tests__/`).
+- **`IsTestFile` utility** (`internal/daemon/scanner.go`) — path-based test
+  file detection supporting Go, Python, TypeScript, JavaScript, Java, Groovy,
+  Rust, and Bash patterns.
+- **`GetFileIsTestByID` store method** (`internal/storage/metadata.go`) —
+  single-column lookup for test file classification, used by all tool handlers
+  during scope filtering.
+- **Schema V3→V4 migration** (`internal/storage/schema.go`) — adds `is_test`
+  column to `files` table. Existing files default to `is_test=0` (impl) until
+  next re-index.
+- **MCP server instructions** (`internal/mcp/server.go`) — `WithInstructions`
+  set during initialize handshake, telling the LLM when to use shaktiman vs
+  built-in tools and that test files are excluded by default.
+
+### Changed
+
+- MCP server version bumped to `0.8.0`.
+- **Tool descriptions rewritten** — honest positioning as complementary to
+  Grep/Glob (not a replacement), framing value around reducing context waste
+  during codebase exploration. Each description now mentions default test
+  exclusion.
+- **CLAUDE.md templates updated** (`docs/reference/sample_claude.md`,
+  `README.md`) — replaced "STOP RULE" / "INSTEAD of Grep" framing with
+  bidirectional decision tables: when to use shaktiman, when to use Grep/Glob,
+  and signs you should switch. Added scope guidance and subagent delegation
+  template.
+
+## [0.7.0] — 2026-03-29
 
 ### Added
 
@@ -144,7 +361,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - MCP server version bumped to `0.7.0`.
 
----
+## [0.6.0] — 2026-03-28
+
+### Added
 
 - **HNSW vector store backend** (`internal/vector/hnsw.go`) — `HNSWStore`
   adapter implementing `VectorStore` + `VectorPersister` interfaces, backed by
@@ -162,21 +381,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   selects backend based on config. `embeddingsPath()` returns backend-specific
   persistence path (`.hnsw` extension for HNSW, `.bin` for brute force) to
   avoid format conflicts.
-
-### Changed
-
-- MCP server version bumped to `0.6.0`.
-- `internal/daemon/daemon.go` — `initEmbedding()` uses factory method instead
-  of hardcoded `NewBruteForceStore`. Five `EmbeddingsPath` call sites updated
-  to use `embeddingsPath()` helper.
-
-### Dependencies
-
-- Added `github.com/midhunkrishna/hnswgo v1.0.0` — CGo bindings to hnswlib
-  C++ (fork of oligo/hnswgo with proper error propagation, idempotent `Free()`
-  with finalizer safety net, `ErrIndexClosed` sentinel, `sync.RWMutex` on all
-  methods).
-
 - **`--format` CLI flag** (`cmd/shaktiman/main.go`) — persistent flag on root
   command accepting `json` (default, backward-compatible) or `text` (MCP-style
   plain text). Applied to all query subcommands: `search`, `context`, `symbols`,
@@ -194,7 +398,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Format package tests** (`internal/format/format_test.go`) — tests for all
   formatter functions including empty inputs, single/multi results, explain
   mode, and adjacent-same-file path elision.
-
 - **Pull-based embedding pipeline** (`internal/vector/embedding.go`) —
   `RunFromDB` method replaces fire-and-forget channel submission with a
   cursor-based DB pagination loop. Zero data loss at any chunk count.
@@ -234,7 +437,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `architecture/`, `design/`, `planning/`, `reference/` subdirectories.
 - **Contributing guide** (`docs/reference/contributing_guide.md`) — test
   commands for unit, integration, benchmark, and coverage runs.
-
 - **Indexing progress callback** (`internal/daemon/enrichment.go`) —
   `IndexProgress` type with `Indexed`, `Errors`, `Total` fields.
   `IndexAllInput.OnProgress` callback fires after each file indexed.
@@ -270,6 +472,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- MCP server version bumped to `0.6.0`.
+- `internal/daemon/daemon.go` — `initEmbedding()` uses factory method instead
+  of hardcoded `NewBruteForceStore`. Five `EmbeddingsPath` call sites updated
+  to use `embeddingsPath()` helper.
 - `internal/daemon/daemon.go` — `IndexProject` signature changed from
   `(ctx)` to `(ctx, onProgress func(IndexProgress))`. `EmbedProject`
   changed from `(ctx)` to `(ctx, onProgress func(EmbedProgress))`.
@@ -283,7 +489,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   examples, workflow recipes, and checklist fallback policy.
 - `README.md` — inline CLAUDE.md template updated to match sample_claude.md.
   Added link to full template file.
-
 - `internal/mcp/format.go` — functions replaced with thin delegates to
   `internal/format`. No behavior change.
 - `internal/mcp/tools.go` — local `symbolResult`, `depResult`, `diffResult`
@@ -292,7 +497,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI query commands now use `format.*Result` types instead of local struct
   definitions.
 
-## [0.5.0] - 2026-03-23
+### Dependencies
+
+- Added `github.com/midhunkrishna/hnswgo v1.0.0` — CGo bindings to hnswlib
+  C++ (fork of oligo/hnswgo with proper error propagation, idempotent `Free()`
+  with finalizer safety net, `ErrIndexClosed` sentinel, `sync.RWMutex` on all
+  methods).
+
+## [0.5.0] — 2026-03-23
 
 Phase 5 — Language Expansion: add Java, Groovy, Shell, and JavaScript support
 with full-pipeline integration tests for all supported languages.
@@ -337,7 +549,7 @@ with full-pipeline integration tests for all supported languages.
   `TestParse_JavaClassWithMethods`, `TestParse_GroovyFunction`,
   `TestParse_BashFunctions`, `TestParse_JavaScriptClassWithMethods`.
 
-## [0.4.0] - 2026-03-23
+## [0.4.0] — 2026-03-23
 
 Phase 4 — Session Awareness & Operational Polish: session-aware ranking,
 branch switch detection, summary tool, and production hardening.
@@ -388,7 +600,7 @@ branch switch detection, summary tool, and production hardening.
   Session scores recorded after every search via `recordSession()`.
 - Daemon `New()` creates a `SessionStore(2000)` and wires it to the engine.
 
-## [Unreleased]
+## [0.3.1] — 2026-03-23
 
 ### Added
 
@@ -486,7 +698,7 @@ branch switch detection, summary tool, and production hardening.
 
 - Added `github.com/BurntSushi/toml v1.6.0`.
 
-## [0.3.0] - 2026-03-21
+## [0.3.0] — 2026-03-21
 
 Phase 3 — Semantic Intelligence + Hardening: vector embeddings via Ollama,
 hybrid 5-signal ranking, Rust language support, and security/correctness
@@ -644,7 +856,7 @@ hardening from adversarial + security analysis.
 - Error message sanitization in MCP handlers.
 - Restrictive directory permissions for `.shaktiman/` data.
 
-## [0.2.0] - 2026-03-20
+## [0.2.0] — 2026-03-20
 
 Phase 2 — Structured Intelligence: multi-language support, dependency graph,
 diff tracking, hybrid ranking, file watching, and incremental updates.
@@ -719,7 +931,7 @@ diff tracking, hybrid ranking, file watching, and incremental updates.
 
 - Added `github.com/fsnotify/fsnotify` v1.9.0 for file watching.
 
-## [0.1.0] - 2026-03-20
+## [0.1.0] — 2026-03-20
 
 Phase 1 — Minimal working system: TypeScript-only parsing, SQLite storage,
 FTS5 keyword search, budget-fitted context assembly, and MCP tools.
@@ -793,8 +1005,15 @@ FTS5 keyword search, budget-fitted context assembly, and MCP tools.
   to find inner `class_declaration` for tree walking while preserving the
   outer node for content.
 
-[unreleased]: https://github.com/shaktimanai/shaktiman/compare/v0.4.0...HEAD
-[0.4.0]: https://github.com/shaktimanai/shaktiman/compare/v0.3.0...v0.4.0
+[0.9.2]: https://github.com/shaktimanai/shaktiman/compare/v0.9.1...v0.9.2
+[0.9.1]: https://github.com/shaktimanai/shaktiman/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/shaktimanai/shaktiman/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/shaktimanai/shaktiman/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/shaktimanai/shaktiman/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/shaktimanai/shaktiman/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/shaktimanai/shaktiman/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/shaktimanai/shaktiman/compare/v0.3.1...v0.4.0
+[0.3.1]: https://github.com/shaktimanai/shaktiman/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/shaktimanai/shaktiman/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/shaktimanai/shaktiman/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/shaktimanai/shaktiman/releases/tag/v0.1.0

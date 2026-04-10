@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,12 +15,19 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/core"
 	"github.com/shaktimanai/shaktiman/internal/mcp"
 	"github.com/shaktimanai/shaktiman/internal/observability"
+	"github.com/shaktimanai/shaktiman/internal/parser"
 	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 	"github.com/shaktimanai/shaktiman/internal/vector"
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )
+
+// parserVersionConfigKey is the config-table key under which the parser
+// chunk algorithm version is persisted. When the running code's
+// parser.ChunkAlgorithmVersion differs from the stored value, the daemon
+// performs a full reindex.
+const parserVersionConfigKey = "parser_algorithm_version"
 
 // Daemon manages the lifecycle of the Shaktiman indexing system.
 type Daemon struct {
@@ -35,6 +44,11 @@ type Daemon struct {
 	embeddingActive  atomic.Bool
 	embedMu          sync.Mutex
 	serveFunc        func(*mcpserver.MCPServer) error // injectable for testing; defaults to mcpserver.ServeStdio
+
+	// SocketListener, when set, enables a StreamableHTTPServer on this listener
+	// for proxy clients. Set before calling Start(). The listener is closed on Stop().
+	SocketListener net.Listener
+	socketServer   *http.Server // internal; for shutdown
 
 	// Configurable intervals for periodicEmbeddingSave (tests use short values).
 	saveActiveInterval time.Duration
@@ -69,6 +83,12 @@ func New(cfg types.Config) (*Daemon, error) {
 		saveActiveInterval: 30 * time.Second,
 		saveIdleInterval:   5 * time.Minute,
 		savePollInterval:   10 * time.Second,
+	}
+
+	// Warn about Qdrant multi-project isolation gap.
+	if cfg.VectorBackend == "qdrant" && cfg.DatabaseBackend == "postgres" {
+		d.logger.Warn("Qdrant vector backend does not support multi-project isolation; " +
+			"semantic search may return results from other projects sharing this Qdrant instance")
 	}
 
 	// Initialize vector store + embedding pipeline
@@ -146,6 +166,13 @@ func (d *Daemon) Start(ctx context.Context) error {
 		}
 	}
 
+	// Detect parser algorithm version change and purge stale data so cold
+	// indexing re-parses every file. Done before cold index so the scan+index
+	// path repopulates with the new chunking.
+	if err := d.ensureParserVersion(ctx); err != nil {
+		d.logger.Warn("parser version check failed", "err", err)
+	}
+
 	// Run cold indexing in background, then start watcher
 	go func() {
 		defer observability.Op(d.logger, "cold_index", "root", d.cfg.ProjectRoot)()
@@ -164,6 +191,12 @@ func (d *Daemon) Start(ctx context.Context) error {
 			return
 		}
 
+		// Persist the parser algorithm version after a successful cold index
+		// so the next startup sees a matching stored version.
+		if err := d.store.SetConfig(ctx, parserVersionConfigKey, parser.ChunkAlgorithmVersion); err != nil {
+			d.logger.Warn("persist parser version failed", "err", err)
+		}
+
 		// Embed chunks after cold index using pull-based cursor
 		if d.embedWorker != nil {
 			if _, err := d.embedFromDB(ctx, nil); err != nil {
@@ -178,21 +211,14 @@ func (d *Daemon) Start(ctx context.Context) error {
 	}()
 
 	// Start metrics recorder.
-	// MetricsRecorder needs raw *sql.DB — access via concrete Store.DB().Writer().
-	// This will be replaced with a MetricsWriter interface in a future PR.
-	var recorder *mcp.MetricsRecorder
-	if sqliteStore, ok := d.store.(*storage.Store); ok {
-		recorder = mcp.NewMetricsRecorder(mcp.MetricsRecorderInput{
-			DB:        sqliteStore.DB().Writer(),
-			SessionID: d.sessionID,
-			Logger:    d.logger.With("component", "metrics"),
-		})
-	}
-	if recorder != nil {
-		metricsCtx, metricsCancel := context.WithCancel(ctx)
-		defer metricsCancel()
-		go recorder.Run(metricsCtx)
-	}
+	recorder := mcp.NewMetricsRecorder(mcp.MetricsRecorderInput{
+		Writer:    d.store,
+		SessionID: d.sessionID,
+		Logger:    d.logger.With("component", "metrics"),
+	})
+	metricsCtx, metricsCancel := context.WithCancel(ctx)
+	defer metricsCancel()
+	go recorder.Run(metricsCtx)
 
 	// Start MCP server (blocks on stdio)
 	s := mcp.NewServer(mcp.NewServerInput{
@@ -203,6 +229,22 @@ func (d *Daemon) Start(ctx context.Context) error {
 		Recorder:    recorder,
 		Config:      d.cfg,
 	})
+
+	// Start socket server for proxy clients (if listener provided).
+	// Both transports share the same MCPServer instance.
+	if d.SocketListener != nil {
+		httpHandler := mcpserver.NewStreamableHTTPServer(s)
+		mux := http.NewServeMux()
+		mux.Handle("/mcp", httpHandler)
+		d.socketServer = &http.Server{Handler: mux}
+		go func() {
+			d.logger.Info("MCP socket server starting", "addr", d.SocketListener.Addr().String())
+			if err := d.socketServer.Serve(d.SocketListener); err != nil && err != http.ErrServerClosed {
+				d.logger.Error("socket server error", "err", err)
+			}
+		}()
+	}
+
 	d.logger.Info("MCP server starting on stdio", "session_id", d.sessionID)
 
 	if err := d.serveFunc(s); err != nil {
@@ -399,6 +441,15 @@ func (d *Daemon) periodicEmbeddingSave(ctx context.Context) {
 func (d *Daemon) Stop() error {
 	start := time.Now()
 	d.logger.Info("shutting down")
+
+	// Shut down socket server first so proxies see connection-refused quickly.
+	if d.socketServer != nil {
+		socketCtx, socketCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := d.socketServer.Shutdown(socketCtx); err != nil {
+			d.logger.Warn("socket server shutdown error", "err", err)
+		}
+		socketCancel()
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -600,6 +651,10 @@ func (d *Daemon) IndexProject(ctx context.Context, onProgress func(IndexProgress
 	defer writerCancel()
 	go d.writer.Run(writerCtx)
 
+	if err := d.ensureParserVersion(ctx); err != nil {
+		d.logger.Warn("parser version check failed", "err", err)
+	}
+
 	scanResult, err := ScanRepo(ctx, ScanInput{ProjectRoot: d.cfg.ProjectRoot})
 	if err != nil {
 		return fmt.Errorf("scan repo: %w", err)
@@ -614,7 +669,59 @@ func (d *Daemon) IndexProject(ctx context.Context, onProgress func(IndexProgress
 		return fmt.Errorf("index all: %w", err)
 	}
 
+	if err := d.store.SetConfig(ctx, parserVersionConfigKey, parser.ChunkAlgorithmVersion); err != nil {
+		d.logger.Warn("persist parser version failed", "err", err)
+	}
+
 	writerCancel()
 	<-d.writer.Done()
+	return nil
+}
+
+// ensureParserVersion detects a parser algorithm version change and purges
+// stale indexed state (files + cascaded chunks/symbols/edges) so the
+// subsequent cold-index call re-parses every file with the new algorithm.
+//
+// On a fresh database the stored value is empty and this performs no deletion
+// beyond recording the current version. On upgrade — when
+// parser.ChunkAlgorithmVersion differs from the stored value — every file is
+// deleted. Because chunks, symbols, and edges have ON DELETE CASCADE foreign
+// keys to files, removing files removes all derived data in one step.
+// Embeddings in the vector store are cleaned up separately by the writer's
+// VectorDeleter hook when chunks are deleted; any vectors orphaned here will
+// be reclaimed on next save by the chunk-existence reconciliation logic.
+func (d *Daemon) ensureParserVersion(ctx context.Context) error {
+	stored, err := d.store.GetConfig(ctx, parserVersionConfigKey)
+	if err != nil {
+		return fmt.Errorf("get parser version: %w", err)
+	}
+	if stored == parser.ChunkAlgorithmVersion {
+		return nil
+	}
+
+	// Empty stored value means fresh DB — nothing to purge. Record version and return.
+	if stored == "" {
+		// Defer recording until after a successful cold index. If we recorded
+		// now and the cold index failed, a subsequent retry would skip reindex.
+		d.logger.Info("parser version not yet recorded",
+			"current", parser.ChunkAlgorithmVersion)
+		return nil
+	}
+
+	// Version mismatch on an existing database — purge all files so every
+	// file is re-scanned and re-parsed by the cold-index pass.
+	d.logger.Info("parser algorithm version changed, purging indexed data",
+		"stored", stored, "current", parser.ChunkAlgorithmVersion)
+
+	files, err := d.store.ListFiles(ctx)
+	if err != nil {
+		return fmt.Errorf("list files for reindex: %w", err)
+	}
+	for _, f := range files {
+		if err := d.store.DeleteFile(ctx, f.ID); err != nil {
+			return fmt.Errorf("delete file %d (%s): %w", f.ID, f.Path, err)
+		}
+	}
+	d.logger.Info("parser reindex purge complete", "files_removed", len(files))
 	return nil
 }

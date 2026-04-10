@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/shaktimanai/shaktiman/internal/daemon"
+	"github.com/shaktimanai/shaktiman/internal/lockfile"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
@@ -49,6 +51,7 @@ func main() {
 	rootCmd.AddCommand(depsCmd())
 	rootCmd.AddCommand(diffCmd())
 	rootCmd.AddCommand(enrichmentStatusCmd())
+	rootCmd.AddCommand(summaryCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -229,6 +232,17 @@ func indexCmd() *cobra.Command {
 				return err
 			}
 
+			// Refuse to index if a daemon is already running (would race on writes).
+			lock, lockErr := lockfile.Acquire(args[0])
+			if lockErr != nil {
+				if errors.Is(lockErr, lockfile.ErrAlreadyLocked) {
+					return fmt.Errorf("a shaktimand daemon is running for this project; " +
+						"it handles indexing automatically")
+				}
+				return fmt.Errorf("check daemon lock: %w", lockErr)
+			}
+			defer lock.Release()
+
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
@@ -278,6 +292,17 @@ func reindexCmd() *cobra.Command {
 					return nil
 				}
 			}
+
+			// Refuse to reindex if a daemon is already running (would race on writes).
+			lock, lockErr := lockfile.Acquire(args[0])
+			if lockErr != nil {
+				if errors.Is(lockErr, lockfile.ErrAlreadyLocked) {
+					return fmt.Errorf("a shaktimand daemon is running for this project; " +
+						"stop it before running reindex")
+				}
+				return fmt.Errorf("check daemon lock: %w", lockErr)
+			}
+			defer lock.Release()
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
@@ -332,6 +357,10 @@ func statusCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectRoot := args[0]
 			cfg := types.DefaultConfig(projectRoot)
+			cfg, err := types.LoadConfigFromFile(cfg)
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
 
 			store, closer, err := openStore(cfg)
 			if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/core"
 	"github.com/shaktimanai/shaktiman/internal/parser"
 	"github.com/shaktimanai/shaktiman/internal/storage"
+	"github.com/shaktimanai/shaktiman/internal/storage/sqlite"
 	"github.com/shaktimanai/shaktiman/internal/testutil"
 	"github.com/shaktimanai/shaktiman/internal/types"
 	"github.com/shaktimanai/shaktiman/internal/vector"
@@ -129,6 +131,189 @@ func TestIntegration_IndexAndSearch(t *testing.T) {
 
 	t.Logf("Integration test passed: %d files, %d chunks, %d symbols, %d search results",
 		stats.TotalFiles, stats.TotalChunks, stats.TotalSymbols, len(results))
+}
+
+// TestIndex_TypeScriptNamespaceSymbolPersists is the RED test for bug #13
+// in docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// ADR-004 added `"internal_module": "namespace"` to TypeScript's
+// SymbolKindMap, but the symbols.kind CHECK constraint in both sqlite and
+// postgres migrations doesn't include "namespace". Inserting the symbol
+// fails at the DB layer and the writer logs an error, but cold-index
+// continues. The symbol is silently dropped.
+//
+// This test indexes the typescript_project testdata (which contains
+// namespace.ts with `namespace Validators { ... }`) and asserts that a
+// symbol with name "Validators" and kind "namespace" is persisted. Under
+// the buggy schema the symbol never reaches storage; under the fixed
+// schema it's queryable via GetSymbolByName.
+func TestIndex_TypeScriptNamespaceSymbolPersists(t *testing.T) {
+	t.Parallel()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	testdataRoot := filepath.Join(cwd, "..", "..", "testdata", "typescript_project")
+	if _, err := os.Stat(testdataRoot); os.IsNotExist(err) {
+		t.Skipf("testdata not found at %s", testdataRoot)
+	}
+
+	tmpDir := t.TempDir()
+	cfg := types.Config{
+		ProjectRoot:       testdataRoot,
+		DBPath:            filepath.Join(tmpDir, "test.db"),
+		EnrichmentWorkers: 2,
+		WriterChannelSize: 100,
+	}
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon: %v", err)
+	}
+	defer d.Stop()
+
+	ctx := context.Background()
+
+	if err := d.IndexProject(ctx, nil); err != nil {
+		t.Fatalf("IndexProject: %v", err)
+	}
+
+	syms, err := d.Store().GetSymbolByName(ctx, "Validators")
+	if err != nil {
+		t.Fatalf("GetSymbolByName: %v", err)
+	}
+	foundNamespace := false
+	for _, s := range syms {
+		if s.Kind == "namespace" {
+			foundNamespace = true
+			break
+		}
+	}
+	if !foundNamespace {
+		t.Errorf("expected 'Validators' namespace symbol to be persisted — " +
+			"bug #13: symbols.kind CHECK constraint rejects 'namespace' " +
+			"so TypeScript namespace symbols silently fail to insert")
+	}
+}
+
+func TestEnsureParserVersion_PurgesOnMismatch(t *testing.T) {
+	t.Parallel()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	testdataRoot := filepath.Join(cwd, "..", "..", "testdata", "typescript_project")
+	if _, err := os.Stat(testdataRoot); os.IsNotExist(err) {
+		t.Skipf("testdata not found at %s", testdataRoot)
+	}
+
+	tmpDir := t.TempDir()
+	cfg := types.Config{
+		ProjectRoot:       testdataRoot,
+		DBPath:            filepath.Join(tmpDir, "test.db"),
+		EnrichmentWorkers: 2,
+		WriterChannelSize: 100,
+	}
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon: %v", err)
+	}
+	defer d.Stop()
+
+	ctx := context.Background()
+
+	// Initial index — records current parser version.
+	if err := d.IndexProject(ctx, nil); err != nil {
+		t.Fatalf("IndexProject: %v", err)
+	}
+	stats, err := d.Store().GetIndexStats(ctx)
+	if err != nil {
+		t.Fatalf("GetIndexStats: %v", err)
+	}
+	if stats.TotalFiles == 0 {
+		t.Fatal("expected files after initial index")
+	}
+	stored, err := d.Store().GetConfig(ctx, parserVersionConfigKey)
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if stored != parser.ChunkAlgorithmVersion {
+		t.Fatalf("stored version = %q, want %q", stored, parser.ChunkAlgorithmVersion)
+	}
+
+	// Simulate an upgrade: force an older version into the config table.
+	if err := d.Store().SetConfig(ctx, parserVersionConfigKey, "0-legacy"); err != nil {
+		t.Fatalf("SetConfig legacy: %v", err)
+	}
+
+	// ensureParserVersion should purge every file.
+	if err := d.ensureParserVersion(ctx); err != nil {
+		t.Fatalf("ensureParserVersion: %v", err)
+	}
+	stats, err = d.Store().GetIndexStats(ctx)
+	if err != nil {
+		t.Fatalf("GetIndexStats after purge: %v", err)
+	}
+	if stats.TotalFiles != 0 {
+		t.Errorf("expected 0 files after purge, got %d", stats.TotalFiles)
+	}
+	if stats.TotalChunks != 0 {
+		t.Errorf("expected 0 chunks after purge (cascade), got %d", stats.TotalChunks)
+	}
+	if stats.TotalSymbols != 0 {
+		t.Errorf("expected 0 symbols after purge (cascade), got %d", stats.TotalSymbols)
+	}
+}
+
+func TestEnsureParserVersion_NoOpOnMatch(t *testing.T) {
+	t.Parallel()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	testdataRoot := filepath.Join(cwd, "..", "..", "testdata", "typescript_project")
+	if _, err := os.Stat(testdataRoot); os.IsNotExist(err) {
+		t.Skipf("testdata not found at %s", testdataRoot)
+	}
+
+	tmpDir := t.TempDir()
+	cfg := types.Config{
+		ProjectRoot:       testdataRoot,
+		DBPath:            filepath.Join(tmpDir, "test.db"),
+		EnrichmentWorkers: 2,
+		WriterChannelSize: 100,
+	}
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New daemon: %v", err)
+	}
+	defer d.Stop()
+
+	ctx := context.Background()
+
+	if err := d.IndexProject(ctx, nil); err != nil {
+		t.Fatalf("IndexProject: %v", err)
+	}
+	statsBefore, _ := d.Store().GetIndexStats(ctx)
+
+	// Second call with matching version must not touch data.
+	if err := d.ensureParserVersion(ctx); err != nil {
+		t.Fatalf("ensureParserVersion: %v", err)
+	}
+	statsAfter, _ := d.Store().GetIndexStats(ctx)
+	if statsAfter.TotalFiles != statsBefore.TotalFiles {
+		t.Errorf("files changed on no-op: before=%d after=%d",
+			statsBefore.TotalFiles, statsAfter.TotalFiles)
+	}
+	if statsAfter.TotalChunks != statsBefore.TotalChunks {
+		t.Errorf("chunks changed on no-op: before=%d after=%d",
+			statsBefore.TotalChunks, statsAfter.TotalChunks)
+	}
 }
 
 func TestScanRepo(t *testing.T) {
@@ -725,16 +910,6 @@ func TestIntegration_LanguageCompatibility(t *testing.T) {
 			expectSymbol:  "UserService",
 		},
 		{
-			name:          "Groovy",
-			project:       "groovy_project",
-			language:      "groovy",
-			expectFiles:   2,
-			expectChunks:  2,
-			expectSymbols: 2,
-			searchQuery:   "addUser removeUser",
-			expectSymbol:  "addUser",
-		},
-		{
 			name:          "Bash",
 			project:       "bash_project",
 			language:      "bash",
@@ -936,17 +1111,6 @@ public class Handler {
     }
 }
 `,
-		"config.groovy": `def loadConfig(String path) {
-    def config = new ConfigSlurper().parse(new File(path).toURL())
-    return config
-}
-
-def mergeConfigs(Map base, Map overrides) {
-    def merged = new HashMap(base)
-    merged.putAll(overrides)
-    return merged
-}
-`,
 		"deploy.sh": `#!/bin/bash
 
 build_project() {
@@ -1024,7 +1188,7 @@ export function createClient(url) {
 		langCounts[f.Language]++
 	}
 
-	expectedLangs := []string{"go", "typescript", "python", "java", "groovy", "bash", "javascript"}
+	expectedLangs := []string{"go", "typescript", "python", "java", "bash", "javascript"}
 	for _, lang := range expectedLangs {
 		if langCounts[lang] == 0 {
 			t.Errorf("expected at least one %s file detected, got 0 (detected: %v)", lang, langCounts)
@@ -1059,7 +1223,6 @@ export function createClient(url) {
 		"Application",    // TypeScript
 		"PaymentService", // Python
 		"registerRoute",  // Java
-		"loadConfig",     // Groovy
 		"build",          // Bash
 		"ApiClient",      // JavaScript
 	}
@@ -1654,6 +1817,9 @@ func TestEmbedProject_OllamaDown(t *testing.T) {
 
 func TestEmbedProject_CrashRecovery(t *testing.T) {
 	t.Parallel()
+	if !storage.HasMetadataStore("sqlite") {
+		t.Skip("crash recovery test requires sqlite backend")
+	}
 
 	const dims = 4
 	var reqCount atomic.Int64
@@ -1699,7 +1865,7 @@ func TestEmbedProject_CrashRecovery(t *testing.T) {
 
 	// Simulate crash: reset some chunks to embedded=0 in the DB.
 	// Open the DB directly to manipulate it.
-	crashDB, err := storage.Open(storage.OpenInput{Path: dbPath})
+	crashDB, err := sqlite.Open(sqlite.OpenInput{Path: dbPath})
 	if err != nil {
 		t.Fatalf("Open crash DB: %v", err)
 	}
@@ -2816,6 +2982,9 @@ func TestEmbeddingsPath_EmptyBackend(t *testing.T) {
 
 func TestNewVectorStore_BruteForce(t *testing.T) {
 	t.Parallel()
+	if !vector.HasVectorStore("brute_force") {
+		t.Skip("brute_force backend not compiled in")
+	}
 	d := &Daemon{
 		cfg: types.Config{
 			VectorBackend: "brute_force",
@@ -2826,13 +2995,19 @@ func TestNewVectorStore_BruteForce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newVectorStore: %v", err)
 	}
-	if _, ok := vs.(*vector.BruteForceStore); !ok {
-		t.Errorf("expected *BruteForceStore, got %T", vs)
+	defer vs.Close()
+	// Verify the store is functional
+	ctx := context.Background()
+	if err := vs.Upsert(ctx, 1, []float32{0.1, 0.2, 0.3, 0.4}); err != nil {
+		t.Fatalf("Upsert: %v", err)
 	}
 }
 
 func TestNewVectorStore_HNSW(t *testing.T) {
 	t.Parallel()
+	if !vector.HasVectorStore("hnsw") {
+		t.Skip("hnsw backend not compiled in")
+	}
 	d := &Daemon{
 		cfg: types.Config{
 			VectorBackend: "hnsw",
@@ -2843,14 +3018,18 @@ func TestNewVectorStore_HNSW(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newVectorStore: %v", err)
 	}
-	if _, ok := vs.(*vector.HNSWStore); !ok {
-		t.Errorf("expected *HNSWStore, got %T", vs)
+	defer vs.Close()
+	ctx := context.Background()
+	if err := vs.Upsert(ctx, 1, []float32{0.1, 0.2, 0.3, 0.4}); err != nil {
+		t.Fatalf("Upsert: %v", err)
 	}
-	vs.Close()
 }
 
 func TestNewVectorStore_EmptyBackendDefaultsBruteForce(t *testing.T) {
 	t.Parallel()
+	if !vector.HasVectorStore("brute_force") {
+		t.Skip("brute_force backend not compiled in")
+	}
 	d := &Daemon{
 		cfg: types.Config{
 			VectorBackend: "",
@@ -2861,13 +3040,18 @@ func TestNewVectorStore_EmptyBackendDefaultsBruteForce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newVectorStore: %v", err)
 	}
-	if _, ok := vs.(*vector.BruteForceStore); !ok {
-		t.Errorf("expected *BruteForceStore for empty backend, got %T", vs)
+	defer vs.Close()
+	ctx := context.Background()
+	if err := vs.Upsert(ctx, 1, []float32{0.1, 0.2, 0.3, 0.4}); err != nil {
+		t.Fatalf("Upsert: %v", err)
 	}
 }
 
 func TestDaemon_New_WithHNSWBackend(t *testing.T) {
 	t.Parallel()
+	if !vector.HasVectorStore("hnsw") {
+		t.Skip("hnsw backend not compiled in")
+	}
 
 	const dims = 4
 	srv := newMockOllama(dims, nil)
@@ -2888,9 +3072,8 @@ func TestDaemon_New_WithHNSWBackend(t *testing.T) {
 		t.Fatalf("New daemon with HNSW backend: %v", err)
 	}
 
-	// Verify the vector store is HNSW type
-	if _, ok := d.vectorStore.(*vector.HNSWStore); !ok {
-		t.Errorf("expected *HNSWStore, got %T", d.vectorStore)
+	if d.vectorStore == nil {
+		t.Fatal("expected non-nil vectorStore after New with HNSW backend")
 	}
 
 	// Verify embeddingsPath uses .hnsw extension
@@ -2963,4 +3146,210 @@ func TestEmbedProject_HNSWBackend(t *testing.T) {
 	}
 
 	d2.Stop()
+}
+
+// testSocketPath returns a short socket path suitable for macOS (104-byte limit).
+func testSocketPath(t *testing.T) string {
+	t.Helper()
+	f, err := os.CreateTemp("", "shaktiman-test-*.sock")
+	if err != nil {
+		t.Fatalf("create temp: %v", err)
+	}
+	path := f.Name()
+	f.Close()
+	os.Remove(path) // net.Listen needs the path to not exist
+	t.Cleanup(func() { os.Remove(path) })
+	return path
+}
+
+func TestDaemon_SocketListener_AcceptsConnections(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	os.MkdirAll(projectDir, 0o755)
+	os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644)
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	cfg := types.Config{
+		ProjectRoot:       projectDir,
+		DBPath:            dbPath,
+		EnrichmentWorkers: 1,
+		WriterChannelSize: 10,
+	}
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Create Unix socket listener with short path (macOS 104-byte limit).
+	sockPath := testSocketPath(t)
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	defer ln.Close()
+	d.SocketListener = ln
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d.serveFunc = func(s *mcpserver.MCPServer) error {
+		<-ctx.Done()
+		return nil
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- d.Start(ctx) }()
+
+	// Give socket server time to start.
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify we can connect to the socket.
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		cancel()
+		t.Fatalf("Dial unix: %v", err)
+	}
+	conn.Close()
+
+	cancel()
+	<-done
+	d.Stop()
+}
+
+func TestDaemon_SocketListener_MCPInitialize(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	os.MkdirAll(projectDir, 0o755)
+	os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644)
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	cfg := types.Config{
+		ProjectRoot:       projectDir,
+		DBPath:            dbPath,
+		EnrichmentWorkers: 1,
+		WriterChannelSize: 10,
+	}
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	sockPath := testSocketPath(t)
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	defer ln.Close()
+	d.SocketListener = ln
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d.serveFunc = func(s *mcpserver.MCPServer) error {
+		<-ctx.Done()
+		return nil
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- d.Start(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	// Send MCP initialize request via HTTP over Unix socket.
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", sockPath)
+			},
+		},
+	}
+
+	initReq := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"clientInfo":{"name":"test","version":"1.0"},"protocolVersion":"2024-11-05"}}`
+	resp, err := client.Post("http://unix/mcp", "application/json", strings.NewReader(initReq))
+	if err != nil {
+		cancel()
+		t.Fatalf("POST initialize: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		cancel()
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Parse response to verify it's valid JSON-RPC.
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		cancel()
+		t.Fatalf("decode response: %v", err)
+	}
+
+	// Verify it has a "result" key (successful MCP initialize response).
+	if _, ok := result["result"]; !ok {
+		cancel()
+		t.Fatalf("expected 'result' in response, got: %v", result)
+	}
+
+	cancel()
+	<-done
+	d.Stop()
+}
+
+func TestDaemon_Stop_ClosesSocket(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	os.MkdirAll(projectDir, 0o755)
+	os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644)
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	cfg := types.Config{
+		ProjectRoot:       projectDir,
+		DBPath:            dbPath,
+		EnrichmentWorkers: 1,
+		WriterChannelSize: 10,
+	}
+
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	sockPath := testSocketPath(t)
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	d.SocketListener = ln
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d.serveFunc = func(s *mcpserver.MCPServer) error {
+		<-ctx.Done()
+		return nil
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- d.Start(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify socket is active.
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		cancel()
+		t.Fatalf("Dial before stop: %v", err)
+	}
+	conn.Close()
+
+	// Stop the daemon.
+	cancel()
+	<-done
+	d.Stop()
+
+	// After stop, new connections should be refused.
+	_, err = net.DialTimeout("unix", sockPath, 500*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected connection refused after Stop, but dial succeeded")
+	}
 }

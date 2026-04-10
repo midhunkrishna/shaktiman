@@ -5,8 +5,9 @@ package parser
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
-	sitter "github.com/smacker/go-tree-sitter"
+	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
@@ -14,14 +15,16 @@ import (
 // Parser wraps a tree-sitter parser and token counter.
 // NOT goroutine-safe — each worker goroutine must own its own instance (IP-2).
 type Parser struct {
-	ts      *sitter.Parser
+	ts      *tree_sitter.Parser
 	tokens  *tokenCounter
 	configs map[string]*LanguageConfig // cached per language
+	logger  *slog.Logger               // structured logger (defaults to slog.Default())
+	curPath string                     // file path of the current Parse call, used in diagnostic logs
 }
 
 // NewParser creates a fresh Parser supporting all registered languages.
 func NewParser() (*Parser, error) {
-	ts := sitter.NewParser()
+	ts := tree_sitter.NewParser()
 
 	tc, err := newTokenCounter("cl100k_base")
 	if err != nil {
@@ -33,6 +36,7 @@ func NewParser() (*Parser, error) {
 		ts:      ts,
 		tokens:  tc,
 		configs: make(map[string]*LanguageConfig),
+		logger:  slog.Default().With("component", "parser"),
 	}, nil
 }
 
@@ -57,18 +61,39 @@ type ParseResult struct {
 
 // Parse parses a source file and returns chunks, symbols, and edges.
 func (p *Parser) Parse(ctx context.Context, input ParseInput) (*ParseResult, error) {
+	p.curPath = input.FilePath
 	cfg, err := p.getConfig(input.Language)
 	if err != nil {
 		return nil, fmt.Errorf("get language config for %s: %w", input.Language, err)
 	}
 
-	p.ts.SetLanguage(cfg.Grammar)
-
-	tree, err := p.ts.ParseCtx(ctx, nil, input.Content)
-	if err != nil {
-		return nil, fmt.Errorf("tree-sitter parse %s: %w", input.FilePath, err)
+	if err := p.ts.SetLanguage(cfg.Grammar); err != nil {
+		return nil, fmt.Errorf("set language %s: %w", input.Language, err)
 	}
+
+	tree := p.ts.ParseWithOptions(
+		func(offset int, _ tree_sitter.Point) []byte {
+			if offset >= len(input.Content) {
+				return nil
+			}
+			return input.Content[offset:]
+		},
+		nil, // no old tree for incremental parsing
+		&tree_sitter.ParseOptions{
+			ProgressCallback: func(_ tree_sitter.ParseState) bool {
+				select {
+				case <-ctx.Done():
+					return true // cancel parsing
+				default:
+					return false
+				}
+			},
+		},
+	)
 	if tree == nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("parse cancelled for %s: %w", input.FilePath, ctx.Err())
+		}
 		return nil, fmt.Errorf("tree-sitter returned nil tree for %s", input.FilePath)
 	}
 	defer tree.Close()

@@ -1,8 +1,16 @@
 package parser
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
+
+	tree_sitter "github.com/tree-sitter/go-tree-sitter"
+
+	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
 func TestNewParser(t *testing.T) {
@@ -136,38 +144,40 @@ func TestParse_ClassWithMethods(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 
-	// Should have chunks for class and methods
-	if len(result.Chunks) < 2 {
-		t.Fatalf("expected at least 2 chunks (class + methods), got %d", len(result.Chunks))
+	// Small class (~90 tokens) fits under maxChunkTokens so ADR-004
+	// emits it as a single class chunk — method content lives inside
+	// the class chunk's source, not as separate method chunks.
+	if len(result.Chunks) == 0 {
+		t.Fatal("expected at least one chunk for the class")
 	}
 
 	foundClass := false
-	foundMethod := false
 	for _, c := range result.Chunks {
-		if c.SymbolName == "UserService" {
+		if c.SymbolName == "UserService" && c.Kind == "class" {
 			foundClass = true
-		}
-		if c.Kind == "method" {
-			foundMethod = true
+			if !strings.Contains(c.Content, "findById") || !strings.Contains(c.Content, "create") {
+				t.Errorf("class chunk should contain method source, got content length %d", len(c.Content))
+			}
+			break
 		}
 	}
 	if !foundClass {
 		t.Error("expected class chunk 'UserService'")
 	}
-	if !foundMethod {
-		t.Error("expected method chunks")
-	}
 
-	// Should have class symbol
-	foundSym := false
+	// Symbols should still list the class and its methods — symbol
+	// extraction is independent of chunk decomposition.
+	syms := map[string]string{}
 	for _, s := range result.Symbols {
-		if s.Name == "UserService" && s.Kind == "class" {
-			foundSym = true
-			break
-		}
+		syms[s.Name] = s.Kind
 	}
-	if !foundSym {
-		t.Error("expected class symbol 'UserService'")
+	if syms["UserService"] != "class" {
+		t.Errorf("expected class symbol 'UserService', got kind=%q", syms["UserService"])
+	}
+	for _, m := range []string{"findById", "create"} {
+		if syms[m] != "method" {
+			t.Errorf("expected method symbol %q, got kind=%q", m, syms[m])
+		}
 	}
 }
 
@@ -909,10 +919,11 @@ func TestSupportedLanguage(t *testing.T) {
 		{"typescript", true},
 		{"rust", true},
 		{"java", true},
-		{"groovy", true},
+		{"groovy", false}, // TODO: dropped pending official tree-sitter-groovy Go bindings
 		{"bash", true},
 		{"javascript", true},
-		{"ruby", false},
+		{"ruby", true},
+		{"erb", true},
 		{"", false},
 		{"c++", false},
 		{"csharp", false},
@@ -1014,6 +1025,7 @@ public class UserService {
 // ── Groovy tests ──
 
 func TestParse_GroovyFunction(t *testing.T) {
+	t.Skip("TODO: groovy support dropped pending official tree-sitter-groovy Go bindings")
 	t.Parallel()
 
 	p, err := NewParser()
@@ -1244,5 +1256,2123 @@ func TestParse_LargeFunction_SplitsChunks(t *testing.T) {
 		if c.TokenCount > 1200 { // allow some margin over 1024
 			t.Errorf("chunk %q has %d tokens, expected ≤ ~1024", c.SymbolName, c.TokenCount)
 		}
+	}
+}
+
+// ── Migration validation tests ──
+
+func TestParse_ContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err = p.Parse(ctx, ParseInput{
+		FilePath: "test.go",
+		Content:  []byte(`package main; func main() {}`),
+		Language: "go",
+	})
+	if err == nil {
+		// Some parsers may complete before checking cancellation on small inputs.
+		// This is acceptable — the test verifies no panic occurs.
+		return
+	}
+	if ctx.Err() == nil {
+		t.Errorf("expected context error, got: %v", err)
+	}
+}
+
+func TestParse_InvalidLanguageReturnsError(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	_, err = p.Parse(context.Background(), ParseInput{
+		FilePath: "test.swift",
+		Content:  []byte(`print("hello")`),
+		Language: "swift",
+	})
+	if err == nil {
+		t.Fatal("expected error for unsupported language, got nil")
+	}
+}
+
+func TestParse_AllLanguagesSmoke(t *testing.T) {
+	t.Parallel()
+
+	langs := []struct {
+		lang    string
+		file    string
+		content string
+	}{
+		{"go", "main.go", "package main\nfunc main() {}"},
+		{"python", "main.py", "def hello():\n    pass"},
+		{"typescript", "app.ts", "function greet(): void {}"},
+		{"javascript", "app.js", "function greet() {}"},
+		{"rust", "main.rs", "fn main() {}"},
+		{"java", "Main.java", "public class Main { public void run() {} }"},
+		{"bash", "run.sh", "#!/bin/bash\nrun() { echo ok; }"},
+	}
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	for _, tc := range langs {
+		t.Run(tc.lang, func(t *testing.T) {
+			result, err := p.Parse(context.Background(), ParseInput{
+				FilePath: tc.file,
+				Content:  []byte(tc.content),
+				Language: tc.lang,
+			})
+			if err != nil {
+				t.Fatalf("Parse(%s): %v", tc.lang, err)
+			}
+			if len(result.Chunks) == 0 {
+				t.Errorf("expected at least 1 chunk for %s, got 0", tc.lang)
+			}
+		})
+	}
+}
+
+func TestParse_ByteRangesValid(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`package main
+
+import "fmt"
+
+type Server struct {
+	port int
+}
+
+func (s *Server) Start() {
+	fmt.Println("starting")
+}
+`)
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "server.go",
+		Content:  src,
+		Language: "go",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	for _, c := range result.Chunks {
+		if c.StartLine < 1 {
+			t.Errorf("chunk %q has StartLine %d < 1", c.SymbolName, c.StartLine)
+		}
+		if c.EndLine < c.StartLine {
+			t.Errorf("chunk %q has EndLine %d < StartLine %d", c.SymbolName, c.EndLine, c.StartLine)
+		}
+		if c.Content == "" {
+			t.Errorf("chunk %q has empty content", c.SymbolName)
+		}
+	}
+}
+
+func TestParse_TypeScriptClassSignature(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`export class UserService {
+    getUser(id: string): User {
+        return this.db.find(id);
+    }
+    deleteUser(id: string): void {
+        this.db.remove(id);
+    }
+}
+`)
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "service.ts",
+		Content:  src,
+		Language: "typescript",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Should have a class chunk with non-empty content (tests buildClassSignatureWithConfig byte slicing)
+	found := false
+	for _, c := range result.Chunks {
+		if c.SymbolName == "UserService" && c.Kind == "class" {
+			found = true
+			if c.Content == "" {
+				t.Error("UserService class chunk has empty content")
+			}
+		}
+	}
+	if !found {
+		t.Error("UserService class chunk not found")
+	}
+}
+
+// ── Ruby tests ──
+
+func TestParse_RubyClassWithMethods(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`# frozen_string_literal: true
+
+class UserService
+  def initialize(repo)
+    @repo = repo
+  end
+
+  def create_user(name:, email:)
+    user = User.new(name: name, email: email)
+    @repo.add(user)
+    user
+  end
+
+  def get_user(user_id)
+    @repo.get(user_id)
+  end
+
+  def self.create_admin(repo, name:, email:)
+    user = User.new(name: name, email: email, role: 'admin')
+    repo.add(user)
+    user
+  end
+end
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "service.rb",
+		Content:  src,
+		Language: "ruby",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Check for class
+	foundClass := false
+	for _, s := range result.Symbols {
+		if s.Name == "UserService" && s.Kind == "class" {
+			foundClass = true
+			break
+		}
+	}
+	if !foundClass {
+		t.Error("expected class symbol UserService")
+	}
+
+	// Check for methods
+	methods := map[string]bool{}
+	for _, s := range result.Symbols {
+		if s.Kind == "method" {
+			methods[s.Name] = true
+		}
+	}
+	for _, m := range []string{"initialize", "create_user", "get_user", "create_admin"} {
+		if !methods[m] {
+			t.Errorf("expected method symbol %q", m)
+		}
+	}
+}
+
+func TestParse_RubyModule(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`module Utils
+  MAX_RETRIES = 3
+
+  def self.hash_string(value)
+    Digest::SHA256.hexdigest(value)
+  end
+
+  def self.format_user(user)
+    JSON.generate(user.to_h)
+  end
+end
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "utils.rb",
+		Content:  src,
+		Language: "ruby",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Check for module (treated as class)
+	foundModule := false
+	for _, s := range result.Symbols {
+		if s.Name == "Utils" && s.Kind == "class" {
+			foundModule = true
+			break
+		}
+	}
+	if !foundModule {
+		t.Error("expected module symbol Utils (kind=class)")
+	}
+
+	// Check for singleton methods
+	methods := map[string]bool{}
+	for _, s := range result.Symbols {
+		if s.Kind == "method" {
+			methods[s.Name] = true
+		}
+	}
+	for _, m := range []string{"hash_string", "format_user"} {
+		if !methods[m] {
+			t.Errorf("expected singleton method symbol %q", m)
+		}
+	}
+}
+
+// ── ERB tests ──
+
+func TestParse_ERBTemplate(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`<!DOCTYPE html>
+<html>
+<head>
+  <title><%= @page_title %></title>
+</head>
+<body>
+  <% if current_user %>
+    <h1>Welcome, <%= current_user.name %></h1>
+  <% end %>
+  <% @items.each do |item| %>
+    <p><%= item.name %></p>
+  <% end %>
+</body>
+</html>
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "index.html.erb",
+		Content:  src,
+		Language: "erb",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// ERB files should produce chunks (template content is indexed)
+	if len(result.Chunks) == 0 {
+		t.Error("expected at least one chunk from ERB template")
+	}
+
+	// Verify we can find the template content
+	foundContent := false
+	for _, c := range result.Chunks {
+		if len(c.Content) > 0 {
+			foundContent = true
+			break
+		}
+	}
+	if !foundContent {
+		t.Error("expected chunks to have content")
+	}
+}
+
+func TestParse_ERBSupportedLanguage(t *testing.T) {
+	t.Parallel()
+
+	if !SupportedLanguage("erb") {
+		t.Error("expected erb to be a supported language")
+	}
+}
+
+// ── Recursive chunking tests: nesting bugs ──
+
+func TestParse_RubyNestedModuleClass(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`module Authentication
+  class TokenValidator
+    def initialize(secret)
+      @secret = secret
+    end
+
+    def validate(token)
+      decoded = decode(token)
+      decoded && !expired?(decoded)
+    end
+  end
+
+  class TokenGenerator
+    def generate(payload)
+      Base64.encode64(payload.to_json)
+    end
+  end
+end
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "auth.rb",
+		Content:  src,
+		Language: "ruby",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Should find module, both classes, and methods
+	syms := map[string]string{}
+	for _, s := range result.Symbols {
+		syms[s.Name] = s.Kind
+	}
+
+	for _, want := range []struct{ name, kind string }{
+		{"Authentication", "class"},
+		{"TokenValidator", "class"},
+		{"TokenGenerator", "class"},
+		{"initialize", "method"},
+		{"validate", "method"},
+		{"generate", "method"},
+	} {
+		if syms[want.name] != want.kind {
+			t.Errorf("expected symbol %q kind=%q, got %q", want.name, want.kind, syms[want.name])
+		}
+	}
+
+	// Chunk count is not asserted: ADR-004 emits this small fixture as a
+	// single Authentication module chunk. Symbol extraction (above) is the
+	// real coverage for nested container recursion — walkForSymbols
+	// descends regardless of chunk size.
+}
+
+func TestParse_RubySingletonClass(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`class Configuration
+  class << self
+    def instance
+      @instance ||= new
+    end
+
+    def reset!
+      @instance = nil
+    end
+  end
+
+  def initialize
+    @host = "localhost"
+  end
+end
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "config.rb",
+		Content:  src,
+		Language: "ruby",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	methods := map[string]bool{}
+	for _, s := range result.Symbols {
+		if s.Kind == "method" {
+			methods[s.Name] = true
+		}
+	}
+	for _, m := range []string{"instance", "reset!", "initialize"} {
+		if !methods[m] {
+			t.Errorf("expected method symbol %q", m)
+		}
+	}
+}
+
+func TestParse_PythonDecoratedMethodsInClass(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`class CacheManager:
+    def __init__(self, max_size=100):
+        self._cache = {}
+        self._max_size = max_size
+
+    @property
+    def size(self):
+        return len(self._cache)
+
+    @staticmethod
+    def hash_key(key):
+        import hashlib
+        return hashlib.sha256(key.encode()).hexdigest()
+
+    @classmethod
+    def create_with_defaults(cls):
+        return cls(max_size=256)
+
+    def get(self, key):
+        return self._cache.get(self.hash_key(key))
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "cache.py",
+		Content:  src,
+		Language: "python",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	methods := map[string]bool{}
+	for _, s := range result.Symbols {
+		if s.Kind == "function" {
+			methods[s.Name] = true
+		}
+	}
+
+	// All methods including decorated ones should be found
+	for _, m := range []string{"__init__", "size", "hash_key", "create_with_defaults", "get"} {
+		if !methods[m] {
+			t.Errorf("expected function symbol %q (decorated methods inside class)", m)
+		}
+	}
+}
+
+func TestParse_PythonNestedClass(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`class Outer:
+    class Inner:
+        def __init__(self, value):
+            self.value = value
+
+        def process(self):
+            return self.value * 2
+
+    def __init__(self):
+        self.inner = self.Inner(42)
+
+    def run(self):
+        return self.inner.process()
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "nested.py",
+		Content:  src,
+		Language: "python",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	syms := map[string]string{}
+	for _, s := range result.Symbols {
+		syms[s.Name] = s.Kind
+	}
+
+	for _, want := range []struct{ name, kind string }{
+		{"Outer", "class"},
+		{"Inner", "class"},
+		{"__init__", "function"},
+		{"process", "function"},
+		{"run", "function"},
+	} {
+		if syms[want.name] != want.kind {
+			t.Errorf("expected symbol %q kind=%q, got %q", want.name, want.kind, syms[want.name])
+		}
+	}
+}
+
+func TestParse_PythonTypeAlias(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`type Point = tuple[float, float]
+
+def distance(a: Point, b: Point) -> float:
+    return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "types.py",
+		Content:  src,
+		Language: "python",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	foundType := false
+	foundFunc := false
+	for _, c := range result.Chunks {
+		if c.Kind == "type" {
+			foundType = true
+		}
+		if c.Kind == "function" {
+			foundFunc = true
+		}
+	}
+	if !foundType {
+		t.Error("expected type chunk for type alias")
+	}
+	if !foundFunc {
+		t.Error("expected function chunk for distance")
+	}
+}
+
+func TestParse_RustTraitWithMethods(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`pub trait Serializer {
+    fn serialize(&self) -> Vec<u8>;
+    fn content_type(&self) -> &str;
+
+    fn serialize_to_string(&self) -> String {
+        String::from_utf8_lossy(&self.serialize()).to_string()
+    }
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "lib.rs",
+		Content:  src,
+		Language: "rust",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	syms := map[string]string{}
+	for _, s := range result.Symbols {
+		syms[s.Name] = s.Kind
+	}
+
+	if syms["Serializer"] != "interface" {
+		t.Errorf("expected trait symbol 'Serializer' kind=interface, got %q", syms["Serializer"])
+	}
+	for _, m := range []string{"serialize", "content_type", "serialize_to_string"} {
+		if syms[m] != "function" {
+			t.Errorf("expected function symbol %q inside trait, got %q", m, syms[m])
+		}
+	}
+}
+
+func TestParse_RustModuleWithItems(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`mod internal {
+    pub fn validate(input: &str) -> bool {
+        !input.is_empty() && input.len() < 1024
+    }
+
+    pub struct Config {
+        pub host: String,
+        pub port: u16,
+    }
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "lib.rs",
+		Content:  src,
+		Language: "rust",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	syms := map[string]string{}
+	for _, s := range result.Symbols {
+		syms[s.Name] = s.Kind
+	}
+
+	if syms["internal"] != "module" {
+		t.Errorf("expected module symbol 'internal', got kind=%q", syms["internal"])
+	}
+	if syms["validate"] != "function" {
+		t.Errorf("expected function symbol 'validate' inside mod, got kind=%q", syms["validate"])
+	}
+	if syms["Config"] != "type" {
+		t.Errorf("expected type symbol 'Config' inside mod, got kind=%q", syms["Config"])
+	}
+}
+
+func TestParse_RustUnion(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`union FloatOrInt {
+    f: f32,
+    i: u32,
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "lib.rs",
+		Content:  src,
+		Language: "rust",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	foundUnion := false
+	for _, s := range result.Symbols {
+		if s.Name == "FloatOrInt" && s.Kind == "type" {
+			foundUnion = true
+			break
+		}
+	}
+	if !foundUnion {
+		t.Error("expected union symbol 'FloatOrInt' kind=type")
+	}
+}
+
+func TestParse_RustExternBlock(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`extern "C" {
+    fn abs(input: i32) -> i32;
+    fn strlen(s: *const std::os::raw::c_char) -> usize;
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "lib.rs",
+		Content:  src,
+		Language: "rust",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	funcs := map[string]bool{}
+	for _, s := range result.Symbols {
+		if s.Kind == "function" {
+			funcs[s.Name] = true
+		}
+	}
+	for _, f := range []string{"abs", "strlen"} {
+		if !funcs[f] {
+			t.Errorf("expected function symbol %q inside extern block", f)
+		}
+	}
+}
+
+func TestParse_JavaInnerClass(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`public class Outer {
+    private String name;
+
+    public Outer(String name) {
+        this.name = name;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public class Inner {
+        private int value;
+
+        public Inner(int value) {
+            this.value = value;
+        }
+
+        public int getValue() {
+            return value;
+        }
+    }
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "Outer.java",
+		Content:  src,
+		Language: "java",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Use a set of name+kind pairs since constructors share names with classes
+	type symKey struct{ name, kind string }
+	symSet := map[symKey]bool{}
+	for _, s := range result.Symbols {
+		symSet[symKey{s.Name, s.Kind}] = true
+	}
+
+	for _, want := range []symKey{
+		{"Outer", "class"},
+		{"Inner", "class"},
+		{"getName", "method"},
+		{"getValue", "method"},
+	} {
+		if !symSet[want] {
+			t.Errorf("expected symbol %q kind=%q", want.name, want.kind)
+		}
+	}
+}
+
+func TestParse_JavaInterfaceWithDefaults(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`public interface Cacheable {
+    String cacheKey();
+
+    default long ttl() {
+        return 3600;
+    }
+
+    static String buildKey(String id) {
+        return "cache:" + id;
+    }
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "Cacheable.java",
+		Content:  src,
+		Language: "java",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	syms := map[string]string{}
+	for _, s := range result.Symbols {
+		syms[s.Name] = s.Kind
+	}
+
+	if syms["Cacheable"] != "interface" {
+		t.Errorf("expected interface symbol 'Cacheable', got kind=%q", syms["Cacheable"])
+	}
+	for _, m := range []string{"cacheKey", "ttl", "buildKey"} {
+		if syms[m] != "method" {
+			t.Errorf("expected method symbol %q inside interface, got kind=%q", m, syms[m])
+		}
+	}
+}
+
+func TestParse_TypeScriptNamespace(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`namespace Validators {
+  export function isEmail(s: string): boolean {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+  }
+
+  export class RegexValidator {
+    constructor(private pattern: RegExp) {}
+
+    isValid(s: string): boolean {
+      return this.pattern.test(s);
+    }
+  }
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "validators.ts",
+		Content:  src,
+		Language: "typescript",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	syms := map[string]string{}
+	for _, s := range result.Symbols {
+		syms[s.Name] = s.Kind
+	}
+
+	if syms["Validators"] != "namespace" {
+		t.Errorf("expected namespace symbol 'Validators', got kind=%q", syms["Validators"])
+	}
+	if syms["isEmail"] != "function" {
+		t.Errorf("expected function symbol 'isEmail' inside namespace, got kind=%q", syms["isEmail"])
+	}
+	if syms["RegexValidator"] != "class" {
+		t.Errorf("expected class symbol 'RegexValidator' inside namespace, got kind=%q", syms["RegexValidator"])
+	}
+}
+
+func TestParse_TypeScriptGeneratorFunction(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`function* range(start: number, end: number): Generator<number> {
+  for (let i = start; i < end; i++) {
+    yield i;
+  }
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "gen.ts",
+		Content:  src,
+		Language: "typescript",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	foundFunc := false
+	for _, s := range result.Symbols {
+		if s.Name == "range" && s.Kind == "function" {
+			foundFunc = true
+			break
+		}
+	}
+	if !foundFunc {
+		t.Error("expected function symbol 'range' for generator function")
+	}
+}
+
+func TestParse_JavaRecordCompactConstructor(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`package com.example;
+
+public record Point(double x, double y) {
+    public Point {
+        if (Double.isNaN(x) || Double.isNaN(y)) {
+            throw new IllegalArgumentException("Coordinates must not be NaN");
+        }
+    }
+
+    public double distanceTo(Point other) {
+        double dx = this.x - other.x;
+        double dy = this.y - other.y;
+        return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    static {
+        System.out.println("Point record loaded");
+    }
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "Point.java",
+		Content:  src,
+		Language: "java",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	type symKey struct{ name, kind string }
+	symSet := map[symKey]bool{}
+	for _, s := range result.Symbols {
+		symSet[symKey{s.Name, s.Kind}] = true
+	}
+
+	// Record itself is indexed as class
+	if !symSet[symKey{"Point", "class"}] {
+		t.Error("expected record symbol 'Point' kind=class")
+	}
+	// Compact constructor is a "method" symbol named Point (same as enclosing record).
+	// Regular methods inside the record must also be extracted.
+	if !symSet[symKey{"distanceTo", "method"}] {
+		t.Error("expected method symbol 'distanceTo' inside record")
+	}
+	// Compact constructor: tree-sitter exposes compact_constructor_declaration;
+	// verify at least one "method" symbol with name "Point" exists.
+	foundCompact := false
+	for _, s := range result.Symbols {
+		if s.Name == "Point" && s.Kind == "method" {
+			foundCompact = true
+			break
+		}
+	}
+	if !foundCompact {
+		t.Error("expected compact constructor method symbol 'Point'")
+	}
+}
+
+func TestParse_JavaStaticInitializer(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`package com.example;
+
+public class Config {
+    private static final java.util.Map<String, String> DEFAULTS = new java.util.HashMap<>();
+
+    static {
+        DEFAULTS.put("host", "localhost");
+        DEFAULTS.put("port", "8080");
+        DEFAULTS.put("timeout", "30");
+    }
+
+    public static String get(String key) {
+        return DEFAULTS.get(key);
+    }
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "Config.java",
+		Content:  src,
+		Language: "java",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Symbol for enclosing class + the static method must both be found.
+	syms := map[string]string{}
+	for _, s := range result.Symbols {
+		syms[s.Name] = s.Kind
+	}
+	if syms["Config"] != "class" {
+		t.Errorf("expected class symbol 'Config', got kind=%q", syms["Config"])
+	}
+	if syms["get"] != "method" {
+		t.Errorf("expected method symbol 'get', got kind=%q", syms["get"])
+	}
+
+	// The static initializer body must survive chunking — under ADR-004 this
+	// small Config class fits in a single class chunk, so the initializer
+	// source lives inside that chunk's content. Verify the body is preserved.
+	foundInitBody := false
+	for _, c := range result.Chunks {
+		if strings.Contains(c.Content, `DEFAULTS.put("host"`) &&
+			strings.Contains(c.Content, `DEFAULTS.put("timeout"`) {
+			foundInitBody = true
+			break
+		}
+	}
+	if !foundInitBody {
+		t.Error("expected a chunk containing the static initializer body (DEFAULTS.put lines)")
+	}
+}
+
+func TestParse_TypeScriptAmbientDeclarations(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`declare function fetch(url: string): Promise<Response>;
+
+declare class EventEmitter {
+  on(event: string, listener: (...args: any[]) => void): this;
+  emit(event: string, ...args: any[]): boolean;
+}
+
+declare namespace NodeJS {
+  interface ProcessEnv {
+    NODE_ENV: string;
+    PORT?: string;
+  }
+}
+
+declare const VERSION: string;
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "ambient.d.ts",
+		Content:  src,
+		Language: "typescript",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	syms := map[string]string{}
+	for _, s := range result.Symbols {
+		syms[s.Name] = s.Kind
+	}
+
+	// declare function → function_signature symbol
+	if syms["fetch"] != "function" {
+		t.Errorf("expected ambient function 'fetch' kind=function, got %q", syms["fetch"])
+	}
+	// declare class → class symbol
+	if syms["EventEmitter"] != "class" {
+		t.Errorf("expected ambient class 'EventEmitter' kind=class, got %q", syms["EventEmitter"])
+	}
+	// declare namespace → namespace symbol
+	if syms["NodeJS"] != "namespace" {
+		t.Errorf("expected ambient namespace 'NodeJS' kind=namespace, got %q", syms["NodeJS"])
+	}
+	// declare const → variable symbol
+	if syms["VERSION"] != "variable" && syms["VERSION"] != "constant" {
+		t.Errorf("expected ambient const 'VERSION' kind=variable|constant, got %q", syms["VERSION"])
+	}
+}
+
+func TestParse_TypeScriptOverloadSignatures(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`function parse(input: string): number;
+function parse(input: number): string;
+function parse(input: string | number): string | number {
+  if (typeof input === "string") {
+    return parseInt(input, 10);
+  }
+  return input.toString();
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "overloads.ts",
+		Content:  src,
+		Language: "typescript",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Both overload signatures AND the implementation should be extracted.
+	// Overload signatures are function_signature (no body); the implementation
+	// is function_declaration. All three resolve to symbol name "parse".
+	parseCount := 0
+	for _, s := range result.Symbols {
+		if s.Name == "parse" && s.Kind == "function" {
+			parseCount++
+		}
+	}
+	if parseCount < 3 {
+		t.Errorf("expected 3 'parse' function symbols (2 overload signatures + 1 implementation), got %d", parseCount)
+	}
+}
+
+// TestParse_DepthGuardBoundary is the RED test for bug #12 in
+// docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Current buggy code at chunker.go:139 uses `depth >= maxChunkDepth` which
+// caps recursion at depth 9 — at depth 10 the chunker falls back to
+// splitNodeByLines and never extracts the children. ADR-004 §6 specifies
+// `depth > maxChunkDepth`, meaning depth 10 should still recurse and only
+// depth 11+ should hit the guard.
+//
+// This test constructs 11 levels of nested Ruby modules with a method at
+// the bottom. Under the buggy `>=` the innermost module at depth 10 gets
+// line-split and the method is never emitted as its own chunk. Under the
+// fixed `>` the method is extracted as a function chunk.
+func TestParse_DepthGuardBoundary(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	// Build 11 levels of nested Ruby modules. The innermost module L11
+	// contains a large FILLER_DATA array that alone exceeds maxChunkTokens
+	// (1024). Since the filler is inside L11, every outer level (L1..L11)
+	// inherits its token count, so the size gate at chunker.go
+	// (`tokens <= maxChunkTokens → emit as single chunk`) does NOT fire at
+	// any level, forcing real recursion through all 11 depths to reach
+	// deeply_nested_method. Without this bulk the bug #11 fix would collapse
+	// the whole tree into a single L1 chunk and there would be no depth-11
+	// recursion to guard.
+	//
+	// Token math: each FILLER_DATA line like "entry_000_alpha_beta_..." is
+	// ~15 tokens under tiktoken cl100k_base. 120 lines ≈ 1800 tokens, safely
+	// above 1024 at every nesting level.
+	var fill strings.Builder
+	for i := 0; i < 120; i++ {
+		fmt.Fprintf(&fill, "                        \"entry_%03d_alpha_beta_gamma_delta_epsilon\",\n", i)
+	}
+
+	// deeply_nested_method's body must exceed minChunkTokens (20) so the
+	// emitted function chunk survives mergeSmallChunks — otherwise it is
+	// folded into the parent signature chunk and the test can't observe it.
+	src := []byte(fmt.Sprintf(`module L1
+  module L2
+    module L3
+      module L4
+        module L5
+          module L6
+            module L7
+              module L8
+                module L9
+                  module L10
+                    module L11
+                      FILLER_DATA = [
+%s                      ]
+
+                      def deeply_nested_method
+                        accumulator = 0
+                        values = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+                        values.each do |v|
+                          accumulator += v * v
+                        end
+                        accumulator * 2
+                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+end
+`, fill.String()))
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "deep.rb",
+		Content:  src,
+		Language: "ruby",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// The method at AST depth 11 must be extracted as its own function
+	// chunk. Under the buggy depth guard (bug #12), L11 at depth 10 is
+	// line-split and the method is swallowed into the L11 body. Under the
+	// fixed `depth > maxChunkDepth`, L11 recurses and the method is emitted
+	// as a function chunk. Each outer level exceeds maxChunkTokens due to
+	// FILLER_DATA, so the bug #11 size gate does not short-circuit recursion.
+	foundMethod := false
+	for _, c := range result.Chunks {
+		if c.SymbolName == "deeply_nested_method" && c.Kind == "function" {
+			foundMethod = true
+			break
+		}
+	}
+	if !foundMethod {
+		t.Errorf("expected 'deeply_nested_method' function chunk at AST depth 11 — " +
+			"bug #12 regression: depth guard at chunker.go:149 must use > not >=")
+	}
+}
+
+// TestChunk_SmallContainerEmittedAsSingleChunk is the RED test for bug #11
+// in docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #11: chunkNode calls findChunkableChildren unconditionally BEFORE
+// checking tokens <= maxChunkTokens. Any container with chunkable
+// descendants is decomposed into a signature chunk + child chunks,
+// regardless of size. ADR-004 §"Core Algorithm" and §"Key behaviors"
+// specify the opposite: "A 20-line module with a 15-line class doesn't
+// decompose — the whole thing fits in one chunk."
+//
+// This test uses a small Ruby class (~60 tokens) with multiple methods
+// and asserts that:
+//  1. Exactly one chunk is produced (the whole class).
+//  2. The chunk kind is "class", not a signature summary.
+//  3. The chunk content contains the FULL source of every method body —
+//     not a "{ ... }" summary.
+//
+// Under the buggy eager decomposition the test fails: the parser emits
+// a class signature chunk plus one method chunk per definition, losing
+// the full method source from the class chunk.
+func TestChunk_SmallContainerEmittedAsSingleChunk(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	// Small Ruby class — well under maxChunkTokens (1024). Each method
+	// body is sized to exceed minChunkTokens (20) so extracted child
+	// chunks survive mergeSmallChunks — otherwise the post-processing
+	// pass merges tiny fragments and masks the eager-decomposition bug.
+	src := []byte(`class Greeter
+  def initialize(name, greeting, punctuation)
+    @name = name
+    @greeting = greeting
+    @punctuation = punctuation
+    @greeted_at = Time.now
+  end
+
+  def hello
+    prefix = @greeting.upcase
+    body = @name.capitalize
+    suffix = @punctuation
+    "#{prefix}, #{body}#{suffix}"
+  end
+
+  def goodbye
+    prefix = "goodbye"
+    body = @name.capitalize
+    suffix = @punctuation
+    "#{prefix}, #{body}#{suffix}"
+  end
+end
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "greeter.rb",
+		Content:  src,
+		Language: "ruby",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Exactly one chunk: the whole class emitted as-is.
+	if len(result.Chunks) != 1 {
+		var kinds []string
+		for _, c := range result.Chunks {
+			kinds = append(kinds, fmt.Sprintf("%s(%q)", c.Kind, c.SymbolName))
+		}
+		t.Fatalf("expected 1 chunk for small class (~60 tokens, well under maxChunkTokens=1024), "+
+			"got %d: %v — bug #11: chunkNode decomposes containers eagerly regardless of size",
+			len(result.Chunks), kinds)
+	}
+
+	chunk := result.Chunks[0]
+	if chunk.Kind != "class" {
+		t.Errorf("expected chunk kind=class, got %q", chunk.Kind)
+	}
+	if chunk.SymbolName != "Greeter" {
+		t.Errorf("expected chunk SymbolName=Greeter, got %q", chunk.SymbolName)
+	}
+
+	// Content must contain the FULL class source, not a signature summary.
+	// Under the bug, methods are replaced with "initialize { ... }" placeholders
+	// and the actual method bodies are moved to separate chunks.
+	for _, want := range []string{
+		"def initialize",
+		"@greeted_at = Time.now",
+		"def hello",
+		"prefix = @greeting.upcase",
+		"def goodbye",
+		`prefix = "goodbye"`,
+	} {
+		if !strings.Contains(chunk.Content, want) {
+			t.Errorf("chunk content missing %q — bug #11: method bodies extracted into separate chunks, "+
+				"parent chunk only holds a signature summary", want)
+		}
+	}
+}
+
+// findFirstNamed walks a tree-sitter node breadth-first and returns the
+// first named descendant whose Kind() matches `kind`. Test-only helper.
+func findFirstNamed(root *tree_sitter.Node, kind string) *tree_sitter.Node {
+	queue := []*tree_sitter.Node{root}
+	for len(queue) > 0 {
+		n := queue[0]
+		queue = queue[1:]
+		if n.Kind() == kind {
+			return n
+		}
+		for i := 0; i < int(n.NamedChildCount()); i++ {
+			queue = append(queue, n.NamedChild(uint(i)))
+		}
+	}
+	return nil
+}
+
+// TestExtractName_JavaField is the RED test for bug #1 in
+// docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #1: extractName walks a node's named children looking for an
+// identifier. For a Java field_declaration like
+// `private final ExecutorService executor;`, the AST is:
+//
+//	field_declaration
+//	  modifiers (private, final)
+//	  type_identifier  (ExecutorService)   ← walked first, wins
+//	  variable_declarator
+//	    identifier     (executor)          ← actually wanted
+//
+// Because type_identifier appears before variable_declarator in the named
+// children list, extractName returns "ExecutorService" instead of
+// "executor". The result is that any language relying on extractName to
+// identify a variable-name-after-type-identifier field loses the
+// variable's name — symbols for such fields would be indexed under the
+// type name.
+//
+// Java's SymbolKindMap currently omits field_declaration as a workaround
+// (see languages.go) so the bug is dormant in production, but the underlying
+// extractName bug remains and must be fixed before field symbol
+// extraction can be re-enabled. This test calls extractName directly on
+// a parsed field_declaration node.
+func TestExtractName_JavaField(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	cfg, err := p.getConfig("java")
+	if err != nil {
+		t.Fatalf("getConfig java: %v", err)
+	}
+	if err := p.ts.SetLanguage(cfg.Grammar); err != nil {
+		t.Fatalf("SetLanguage: %v", err)
+	}
+
+	src := []byte(`class Pool {
+    private final ExecutorService executor;
+}
+`)
+
+	tree := p.ts.Parse(src, nil)
+	if tree == nil {
+		t.Fatal("tree-sitter returned nil tree")
+	}
+	defer tree.Close()
+
+	field := findFirstNamed(tree.RootNode(), "field_declaration")
+	if field == nil {
+		t.Fatal("no field_declaration node found in parsed Java tree")
+	}
+
+	name := extractName(field, src)
+	if name != "executor" {
+		t.Errorf("extractName(field_declaration) = %q, want %q — "+
+			"bug #1: type_identifier walked before variable_declarator, so type name wins",
+			name, "executor")
+	}
+}
+
+// TestParse_JavaMultiDeclaratorField is the RED test for bug #2 in
+// docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #2: Java field_declaration and local_variable_declaration nodes
+// can declare multiple variables in one statement (`public int x = 1,
+// y = 2, z = 3;`). Tree-sitter exposes this as a field_declaration with
+// multiple variable_declarator children. walkForSymbols today either
+// (a) has no case for field_declaration at all (because Java's
+// SymbolKindMap omits it as a workaround for bug #1 — now fixed) or
+// (b) would call extractName which returns only the first declarator's
+// name. Either way, y and z are invisible to search and the symbol
+// index.
+//
+// This test parses a Java class containing a multi-declarator field
+// and asserts that all three variables — x, y, z — are indexed as
+// symbols with kind "variable". Under the current code only x (or
+// the type name) is extracted.
+func TestParse_JavaMultiDeclaratorField(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`package com.example;
+
+public class Counters {
+    public int x = 1, y = 2, z = 3;
+    private static final String name = "counter", label = "cnt";
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "Counters.java",
+		Content:  src,
+		Language: "java",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	foundByName := map[string]string{}
+	for _, s := range result.Symbols {
+		if s.Kind == "variable" || s.Kind == "constant" {
+			foundByName[s.Name] = s.Kind
+		}
+	}
+
+	// All five declarators across the two field_declaration statements
+	// must be present. Today the parser extracts none (field_declaration
+	// is omitted from SymbolKindMap) or at most the first of each.
+	for _, want := range []string{"x", "y", "z", "name", "label"} {
+		if _, ok := foundByName[want]; !ok {
+			t.Errorf("expected field symbol %q — bug #2: multi-declarator field loses all but the first variable",
+				want)
+		}
+	}
+
+	// No spurious type-name symbol should appear (regression guard against bug #1).
+	if _, ok := foundByName["String"]; ok {
+		t.Error("unexpected symbol 'String' — extractName regressed to returning type name")
+	}
+}
+
+// TestSymbols_ContainerRecursionDrivenByIsContainerFlag is the RED test for
+// bug #4 in docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #4: `ChunkableTypes map[string]string` conflates two concerns — the
+// chunk kind and whether the node is a container that should be recursed
+// into. `walkForSymbols` has a hardcoded switch on the kind string plus a
+// nested whitelist of "block"-kind container types:
+//
+//	switch chunkKind {
+//	case "class", "interface", "namespace", "":
+//	    shouldRecurse = true
+//	case "block":
+//	    switch nodeType {
+//	    case "impl_item", "mod_item", "foreign_mod_item", "internal_module",
+//	        "static_initializer":
+//	        shouldRecurse = true
+//	    }
+//	}
+//
+// Any time a language adds a new container kind — or uses a kind string the
+// switch does not know about — the switch must be updated in lockstep. The
+// duplication is fragile and invisible until a test fails far from the root
+// cause.
+//
+// The fix is to promote `ChunkableTypes` to `map[string]NodeMeta` where
+// NodeMeta carries both Kind and IsContainer. walkForSymbols keys recursion
+// off IsContainer, not a kind string whitelist.
+//
+// This test exercises the bug directly: it mutates Java's cached config at
+// runtime to rename class_declaration's chunk kind from "class" to a novel
+// value ("custom_container"). Under the current kind-string switch, the
+// novel kind does not match any `case` clause, so walkForSymbols refuses to
+// recurse into the class body and the method symbols are lost. After the
+// NodeMeta refactor, the walker reads IsContainer=true regardless of the
+// kind string and the methods are still extracted.
+func TestSymbols_ContainerRecursionDrivenByIsContainerFlag(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	// Prime cfg via getConfig so it's cached on this Parser only.
+	cfg, err := p.getConfig("java")
+	if err != nil {
+		t.Fatalf("getConfig java: %v", err)
+	}
+
+	// Rename class_declaration's chunk kind to a value the old
+	// walkForSymbols switch would not have recognized, while keeping
+	// IsContainer=true. After the NodeMeta refactor, recursion must be
+	// driven by the IsContainer flag — NOT by the kind string — so method
+	// symbols inside the class body must still be extracted.
+	cfg.ChunkableTypes["class_declaration"] = NodeMeta{Kind: "custom_container", IsContainer: true}
+
+	src := []byte(`public class Outer {
+    public void first() {}
+    public void second() {}
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "Outer.java",
+		Content:  src,
+		Language: "java",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	methodCount := 0
+	for _, s := range result.Symbols {
+		if s.Kind == "method" {
+			methodCount++
+		}
+	}
+	if methodCount < 2 {
+		t.Errorf("expected at least 2 method symbols inside the class (first, second), got %d — "+
+			"bug #4: walkForSymbols recursion is driven by a hardcoded kind-string switch "+
+			"that must know about every chunk kind, instead of a NodeMeta.IsContainer flag",
+			methodCount)
+	}
+}
+
+// TestFindDeclarationChild_UnwrapsViaConfig is the regression test for bug #5
+// in docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #5: findDeclarationChild previously carried a hardcoded declTypes map
+// that listed every node kind it would recognize as the unwrapped payload of
+// an export_statement, ambient_declaration, or decorated_definition. Adding
+// a new chunkable type to a language config required remembering to also
+// add it to this map, or silently losing the wrapper unwrap.
+//
+// The fix is to key findDeclarationChild off cfg.ChunkableTypes: any
+// non-wrapper entry is a valid unwrap target. The helper first consults
+// tree-sitter's `declaration` field (which export_statement exposes
+// directly) and only falls back to the ChunkableTypes scan when the field
+// is absent. Python's decorated_definition has no `declaration` field, so
+// it hits the scan path — this test uses it to exercise config-driven
+// unwrapping directly.
+func TestFindDeclarationChild_UnwrapsViaConfig(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	cfg, err := p.getConfig("python")
+	if err != nil {
+		t.Fatalf("getConfig python: %v", err)
+	}
+	if err := p.ts.SetLanguage(cfg.Grammar); err != nil {
+		t.Fatalf("SetLanguage: %v", err)
+	}
+
+	src := []byte(`@staticmethod
+def foo(x):
+    return x + 1
+`)
+
+	tree := p.ts.Parse(src, nil)
+	if tree == nil {
+		t.Fatal("tree-sitter returned nil tree")
+	}
+	defer tree.Close()
+
+	wrapper := findFirstNamed(tree.RootNode(), "decorated_definition")
+	if wrapper == nil {
+		t.Fatal("no decorated_definition in parsed Python tree")
+	}
+
+	// Sanity: decorated_definition does NOT expose a `declaration` field,
+	// so findDeclarationChild must consult cfg.ChunkableTypes to locate
+	// the inner function_definition.
+	if decl := wrapper.ChildByFieldName("declaration"); decl != nil {
+		t.Fatal("test precondition broken: decorated_definition now exposes a declaration field; " +
+			"this test assumed it doesn't and would short-circuit the config scan")
+	}
+
+	inner := findDeclarationChild(wrapper, cfg)
+	if inner == nil {
+		t.Fatal("findDeclarationChild returned nil for decorated_definition wrapping a function")
+	}
+	if inner.Kind() != "function_definition" {
+		t.Errorf("expected unwrapped function_definition, got %q", inner.Kind())
+	}
+
+	// Removing function_definition from the cached config MUST cause the
+	// unwrap to fail, demonstrating that the helper is reading from the
+	// config and not a hardcoded list. A regression that goes back to the
+	// hardcoded declTypes map would return the function_definition here
+	// even after we remove it from ChunkableTypes, and this assertion
+	// would fail.
+	delete(cfg.ChunkableTypes, "function_definition")
+	if inner := findDeclarationChild(wrapper, cfg); inner != nil {
+		t.Errorf("expected nil unwrap after removing function_definition from cfg.ChunkableTypes, "+
+			"got %q — bug #5 regressed: findDeclarationChild is hardcoding the declaration list "+
+			"instead of reading from cfg", inner.Kind())
+	}
+}
+
+// TestSignature_MultiLineDeclarationPreservesFullHeader is the RED test for
+// bug #6 in docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #6: buildSignatureFromExtracted builds the "declaration line" of a
+// container chunk by scanning raw source lines and picking the FIRST
+// non-comment, non-empty line. This has two problems:
+//
+//  1. Multi-line declarations (TypeScript classes with generic parameters
+//     split across lines, an `extends` clause, an `implements` list, or an
+//     opening `{` on its own line) are truncated to just their first line.
+//     The name, generics, and inheritance clauses are lost from the
+//     signature chunk — search hits on those fields get no context.
+//  2. Line-prefix comment matching is brittle: any line starting with `#`,
+//     `//`, `/*`, `*`, `"""`, or `'''` is skipped, so legitimate code that
+//     happens to start with one of those tokens (rare but possible) is
+//     dropped.
+//
+// The proper fix walks the node's tree-sitter children to find the
+// header tokens (up to the body) and the closing delimiter, skipping
+// `comment` siblings. The reconstruction uses source byte ranges between
+// non-comment tokens.
+//
+// This test parses a large TypeScript class whose declaration is split
+// across four lines (name, generics, `extends`, `implements`) so the
+// chunker is forced to decompose and call buildSignatureFromExtracted.
+// The signature chunk's content must contain the full header — not just
+// the first line. Under the bug, the assertion on `implements` fails.
+func TestSignature_MultiLineDeclarationPreservesFullHeader(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	// Build a TypeScript class with a multi-line header and enough method
+	// bodies to exceed maxChunkTokens (1024). Each method is ~30 tokens;
+	// 40 methods ≈ 1200 tokens total.
+	var body strings.Builder
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&body, `  method_%02d(alpha: number, beta: number, gamma: number): number {
+    const result = alpha + beta * gamma;
+    const formatted = `+"`"+`item_${alpha}_${beta}_${gamma}`+"`"+`;
+    return result + formatted.length;
+  }
+
+`, i)
+	}
+	src := []byte(fmt.Sprintf(`export class BigProcessor<TInput extends Record<string, unknown>>
+    extends BaseProcessor<TInput>
+    implements Serializable, Cacheable
+{
+%s}
+`, body.String()))
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "big_processor.ts",
+		Content:  src,
+		Language: "typescript",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Find the signature chunk for BigProcessor — after decomposition,
+	// it is the `class` kind chunk whose content is the summary (smallest
+	// in token count among class chunks).
+	var sig *types.ChunkRecord
+	for i := range result.Chunks {
+		c := result.Chunks[i]
+		if c.SymbolName == "BigProcessor" && c.Kind == "class" {
+			if sig == nil || c.TokenCount < sig.TokenCount {
+				sig = &result.Chunks[i]
+			}
+		}
+	}
+	if sig == nil {
+		t.Fatal("no BigProcessor class chunk found — decomposition did not happen")
+	}
+
+	// The signature must contain every line of the multi-line class header.
+	// Under the bug, only "export class BigProcessor<TInput extends ...>"
+	// is present — the `extends` and `implements` clauses are dropped.
+	for _, want := range []string{
+		"BigProcessor<TInput extends Record<string, unknown>>",
+		"extends BaseProcessor",
+		"implements Serializable, Cacheable",
+	} {
+		if !strings.Contains(sig.Content, want) {
+			t.Errorf("signature chunk missing %q — bug #6: "+
+				"buildSignatureFromExtracted picks only the first non-comment line as "+
+				"the declaration, truncating multi-line class headers; content:\n%s",
+				want, sig.Content)
+		}
+	}
+}
+
+// TestChunker_DepthGuardEmitsWarning is the RED test for bug #7 in
+// docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #7: when chunkNode's recursion depth exceeds maxChunkDepth (10), the
+// depth guard silently falls back to splitNodeByLines. No log, no metric,
+// no warning. A pathological AST that triggers this condition degrades
+// chunk quality invisibly — the parent container's body is line-split
+// instead of being decomposed into semantic chunks.
+//
+// The fix is to emit a structured slog Warn message when the guard fires,
+// including the file path, the node kind, and the depth. This test captures
+// parser log output via a custom slog handler, parses a pathological Ruby
+// fixture that forces the depth guard to fire, and asserts the log
+// contains the expected structured fields.
+//
+// To reliably trigger the guard we need a node at depth 11 whose tokens
+// exceed maxChunkTokens (so the size gate does not short-circuit). The
+// fixture wraps a single huge_method (>1024 tokens of body) inside 11
+// levels of nested Ruby modules. At depth 11 chunkNode is called on the
+// huge_method: tokens > 1024 skips the size gate, depth 11 > maxChunkDepth
+// hits the guard, splitNodeByLines runs, and the fix should log a warning.
+func TestChunker_DepthGuardEmitsWarning(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	logger := slog.New(handler)
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+	p.logger = logger
+
+	// huge_method body must exceed maxChunkTokens (1024) so the size gate
+	// inside chunkNode does not short-circuit at depth 11. Each line is
+	// ~10 tokens; 150 lines ≈ 1500 tokens.
+	var body strings.Builder
+	for i := 0; i < 150; i++ {
+		fmt.Fprintf(&body, "                        puts \"line %d value %d tag %d\"\n", i, i*2, i*3)
+	}
+	src := []byte(fmt.Sprintf(`module L1
+  module L2
+    module L3
+      module L4
+        module L5
+          module L6
+            module L7
+              module L8
+                module L9
+                  module L10
+                    module L11
+                      def huge_method
+%s                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+end
+`, body.String()))
+
+	_, err = p.Parse(context.Background(), ParseInput{
+		FilePath: "pathological.rb",
+		Content:  src,
+		Language: "ruby",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	logOutput := buf.String()
+	if logOutput == "" {
+		t.Fatal("expected a structured log warning when depth guard fires, got no output — " +
+			"bug #7: depth guard silently falls back to line splitting")
+	}
+	for _, want := range []string{
+		"parser depth guard",
+		"pathological.rb",
+		"node_type",
+		"depth",
+	} {
+		if !strings.Contains(logOutput, want) {
+			t.Errorf("expected depth guard log output to contain %q; got:\n%s", want, logOutput)
+		}
+	}
+}
+
+// TestEdges_MemberCallPreservesReceiver is the RED test for bug #8 in
+// docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #8: resolveCallee extracts only the .property / .field / .attribute
+// child of member_expression / selector_expression / attribute nodes,
+// losing the receiver entirely. `a.foo()` and `b.foo()` both produce an
+// edge with dst "foo", so the call graph conflates calls on different
+// receivers into a single edge target. `pkg1.Func()` and `pkg2.Func()`
+// indistinguishable. This drops information that downstream tools
+// (dependency graph, MCP dependencies tool) rely on for accuracy.
+//
+// The fix walks the member expression and concatenates receiver and
+// property as "receiver.property" (recursively for chains like a.b.c()).
+// This test parses a TypeScript file with two sibling member calls on
+// different receivers and asserts the call graph edges include the
+// receiver-qualified names.
+func TestEdges_MemberCallPreservesReceiver(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`function caller() {
+  a.foo();
+  b.foo();
+  pkg1.Func();
+  pkg2.Func();
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "calls.ts",
+		Content:  src,
+		Language: "typescript",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	callEdgeTargets := map[string]bool{}
+	for _, e := range result.Edges {
+		if e.Kind == "calls" && e.SrcSymbolName == "caller" {
+			callEdgeTargets[e.DstSymbolName] = true
+		}
+	}
+
+	for _, want := range []string{"a.foo", "b.foo", "pkg1.Func", "pkg2.Func"} {
+		if !callEdgeTargets[want] {
+			t.Errorf("expected call edge with dst %q, got targets: %v — "+
+				"bug #8: resolveCallee drops the receiver for member expressions",
+				want, callEdgeTargets)
+		}
+	}
+}
+
+// TestEdges_RecursiveFunctionHasSelfEdge is the RED test for bug #9 in
+// docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #9: extractEdges has a filter `if callee != "" && callee != newOwner`
+// that drops self-calls from the call graph. Recursive functions show no
+// self-edge, so dependency-graph consumers can't see recursion. The filter
+// also drops legitimate calls when a function happens to call a different
+// function with the same short name (overloading / method overriding).
+//
+// The fix removes the filter: the parser records the syntactic edge as
+// it appears in source, and the graph layer is responsible for semantic
+// deduplication.
+//
+// Test: a Go recursive factorial function must have a self-edge
+// `fact → fact` in the call graph.
+func TestEdges_RecursiveFunctionHasSelfEdge(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`package main
+
+func fact(n int) int {
+	if n == 0 {
+		return 1
+	}
+	return n * fact(n-1)
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "fact.go",
+		Content:  src,
+		Language: "go",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	foundSelfEdge := false
+	for _, e := range result.Edges {
+		if e.Kind == "calls" && e.SrcSymbolName == "fact" && e.DstSymbolName == "fact" {
+			foundSelfEdge = true
+			break
+		}
+	}
+	if !foundSelfEdge {
+		targets := []string{}
+		for _, e := range result.Edges {
+			if e.Kind == "calls" && e.SrcSymbolName == "fact" {
+				targets = append(targets, e.DstSymbolName)
+			}
+		}
+		t.Errorf("expected self-edge fact→fact in the call graph, got call targets from fact: %v — "+
+			"bug #9: `callee != newOwner` filter drops recursive self-calls",
+			targets)
+	}
+}
+
+// TestEdges_JavaGenericTypeArgumentsExtracted is the RED test for bug #10
+// in docs/review-findings/parser-bugs-from-recursive-chunking.md.
+//
+// Bug #10: extractHeritageTypeNames skips `type_arguments` nodes entirely:
+//
+//	if n.Kind() == "type_arguments" {
+//	    return
+//	}
+//
+// The effect is that generic type arguments are invisible to the edge
+// extractor. `Map<String, List<User>>` yields an edge to `Map` but not to
+// `String`, `List`, or `User`. `Box<MyType>` misses `MyType`. Rust and
+// Java lose significant type dependency information.
+//
+// The fix walks into `type_arguments` children like any other subtree
+// and extracts type names from each. This test parses a Java class that
+// extends `Cache<String, User>` and implements `Serializable<UserRecord>`
+// and asserts edges exist to String, User, UserRecord in addition to
+// the outer container types.
+func TestEdges_JavaGenericTypeArgumentsExtracted(t *testing.T) {
+	t.Parallel()
+
+	p, err := NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	defer p.Close()
+
+	src := []byte(`package com.example;
+
+public class UserStore extends Cache<String, User> implements Serializable<UserRecord> {
+}
+`)
+
+	result, err := p.Parse(context.Background(), ParseInput{
+		FilePath: "UserStore.java",
+		Content:  src,
+		Language: "java",
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	targetsByKind := map[string]map[string]bool{}
+	for _, e := range result.Edges {
+		if e.SrcSymbolName != "UserStore" {
+			continue
+		}
+		if targetsByKind[e.Kind] == nil {
+			targetsByKind[e.Kind] = map[string]bool{}
+		}
+		targetsByKind[e.Kind][e.DstSymbolName] = true
+	}
+
+	// Bug #10: under the current code, type_arguments walk is short-circuited,
+	// so String, User, UserRecord are all missing from the inherits/implements
+	// edge list. The outer types (Cache, Serializable) are still present.
+	if !targetsByKind["inherits"]["String"] {
+		t.Errorf("expected inherits edge to String (from Cache<String, User>), got inherits targets: %v",
+			targetsByKind["inherits"])
+	}
+	if !targetsByKind["inherits"]["User"] {
+		t.Errorf("expected inherits edge to User (from Cache<String, User>), got inherits targets: %v",
+			targetsByKind["inherits"])
+	}
+	if !targetsByKind["implements"]["UserRecord"] {
+		t.Errorf("expected implements edge to UserRecord (from Serializable<UserRecord>), got implements targets: %v",
+			targetsByKind["implements"])
 	}
 }

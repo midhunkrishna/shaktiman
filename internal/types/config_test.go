@@ -354,10 +354,39 @@ func TestValidateBackendConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "postgres with connection string is valid",
+			name: "postgres with pgvector is valid",
 			modify: func(c *Config) {
 				c.DatabaseBackend = "postgres"
 				c.PostgresConnString = "postgres://localhost/db"
+				c.VectorBackend = "pgvector"
+			},
+			wantErr: false,
+		},
+		{
+			name: "postgres with brute_force is rejected (A12)",
+			modify: func(c *Config) {
+				c.DatabaseBackend = "postgres"
+				c.PostgresConnString = "postgres://localhost/db"
+				c.VectorBackend = "brute_force"
+			},
+			wantErr: true,
+		},
+		{
+			name: "postgres with hnsw is rejected (A12)",
+			modify: func(c *Config) {
+				c.DatabaseBackend = "postgres"
+				c.PostgresConnString = "postgres://localhost/db"
+				c.VectorBackend = "hnsw"
+			},
+			wantErr: true,
+		},
+		{
+			name: "postgres with qdrant is valid",
+			modify: func(c *Config) {
+				c.DatabaseBackend = "postgres"
+				c.PostgresConnString = "postgres://localhost/db"
+				c.VectorBackend = "qdrant"
+				c.QdrantURL = "http://localhost:6334"
 			},
 			wantErr: false,
 		},
