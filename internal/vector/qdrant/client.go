@@ -40,10 +40,11 @@ type Point struct {
 
 // SearchRequest is the body for POST /collections/{name}/points/search.
 type SearchRequest struct {
-	Vector      []float32   `json:"vector"`
-	Limit       int         `json:"limit"`
-	WithPayload bool        `json:"with_payload"`
-	ScoreThreshold *float64 `json:"score_threshold,omitempty"`
+	Vector         []float32 `json:"vector"`
+	Limit          int       `json:"limit"`
+	WithPayload    bool      `json:"with_payload"`
+	ScoreThreshold *float64  `json:"score_threshold,omitempty"`
+	Filter         *Filter   `json:"filter,omitempty"`
 }
 
 // SearchResult is a single scored point returned by search.
@@ -82,13 +83,21 @@ type Filter struct {
 }
 
 // FilterCondition is a single filter clause.
+// For ID filtering use HasID; for payload matching use Key+Match.
 type FilterCondition struct {
 	HasID *HasIDCondition `json:"has_id,omitempty"`
+	Key   string         `json:"key,omitempty"`
+	Match *MatchValue    `json:"match,omitempty"`
 }
 
 // HasIDCondition matches points by ID.
 type HasIDCondition struct {
 	HasID []int64 `json:"has_id"`
+}
+
+// MatchValue matches a payload field against an exact value.
+type MatchValue struct {
+	Value any `json:"value"`
 }
 
 // DeletePointsRequest is the body for POST /collections/{name}/points/delete.
@@ -162,6 +171,22 @@ func (c *Client) GetCollection(ctx context.Context, name string) (*CollectionInf
 	return &info, nil
 }
 
+// DeleteCollection deletes a collection by name.
+func (c *Client) DeleteCollection(ctx context.Context, name string) error {
+	_, err := c.doRequest(ctx, http.MethodDelete, "/collections/"+name, nil)
+	return err
+}
+
+// CreatePayloadIndex creates an index on a payload field for faster filtering.
+func (c *Client) CreatePayloadIndex(ctx context.Context, collection, fieldName, fieldSchema string) error {
+	body := struct {
+		FieldName   string `json:"field_name"`
+		FieldSchema string `json:"field_schema"`
+	}{FieldName: fieldName, FieldSchema: fieldSchema}
+	_, err := c.doRequest(ctx, http.MethodPut, "/collections/"+collection+"/index?wait=true", body)
+	return err
+}
+
 // UpsertPoints inserts or updates points in a collection.
 func (c *Client) UpsertPoints(ctx context.Context, collection string, points []Point) error {
 	body := struct {
@@ -189,6 +214,15 @@ func (c *Client) DeletePoints(ctx context.Context, collection string, ids []int6
 	body := struct {
 		Points []int64 `json:"points"`
 	}{Points: ids}
+	_, err := c.doRequest(ctx, http.MethodPost, "/collections/"+collection+"/points/delete?wait=true", body)
+	return err
+}
+
+// DeletePointsByFilter removes all points matching the filter.
+func (c *Client) DeletePointsByFilter(ctx context.Context, collection string, filter Filter) error {
+	body := struct {
+		Filter Filter `json:"filter"`
+	}{Filter: filter}
 	_, err := c.doRequest(ctx, http.MethodPost, "/collections/"+collection+"/points/delete?wait=true", body)
 	return err
 }
@@ -224,11 +258,12 @@ func (c *Client) GetPoints(ctx context.Context, collection string, ids []int64) 
 	return points, nil
 }
 
-// CountPoints returns the number of points in a collection.
-func (c *Client) CountPoints(ctx context.Context, collection string) (int, error) {
+// CountPoints returns the number of points in a collection, optionally filtered.
+func (c *Client) CountPoints(ctx context.Context, collection string, filter *Filter) (int, error) {
 	body := struct {
-		Exact bool `json:"exact"`
-	}{Exact: true}
+		Exact  bool    `json:"exact"`
+		Filter *Filter `json:"filter,omitempty"`
+	}{Exact: true, Filter: filter}
 	data, err := c.doRequest(ctx, http.MethodPost, "/collections/"+collection+"/points/count", body)
 	if err != nil {
 		return 0, err

@@ -199,6 +199,13 @@ func (s *PgVectorStore) Delete(ctx context.Context, chunkIDs []int64) error {
 	return nil
 }
 
+// PurgeAll deletes all embeddings for the current project.
+// Other projects sharing the same Postgres database are not affected.
+func (s *PgVectorStore) PurgeAll(ctx context.Context) error {
+	_, err := s.pool.Exec(ctx, "DELETE FROM embeddings WHERE project_id = $1", s.projectID)
+	return err
+}
+
 // Has returns true if a vector exists for the given chunk ID.
 func (s *PgVectorStore) Has(ctx context.Context, chunkID int64) (bool, error) {
 	var exists bool

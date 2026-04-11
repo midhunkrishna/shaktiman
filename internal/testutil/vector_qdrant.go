@@ -31,7 +31,7 @@ func newQdrantTestStore(t *testing.T, dims int) types.VectorStore {
 	safe := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
 	collection := fmt.Sprintf("testutil_%s", safe)
 
-	store, err := qdrant.NewQdrantStore(client, collection, dims)
+	store, err := qdrant.NewQdrantStore(client, collection, dims, 1)
 	if err != nil {
 		t.Fatalf("NewQdrantStore: %v", err)
 	}

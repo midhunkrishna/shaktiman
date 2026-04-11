@@ -137,6 +137,18 @@ type VectorDeleter interface {
 	Delete(ctx context.Context, chunkIDs []int64) error
 }
 
+// StorePurger is optionally implemented by metadata stores that support
+// bulk purge of all indexed data while preserving schema and migrations.
+type StorePurger interface {
+	PurgeAll(ctx context.Context) error
+}
+
+// VectorPurger is optionally implemented by vector stores that support
+// bulk deletion of all vectors.
+type VectorPurger interface {
+	PurgeAll(ctx context.Context) error
+}
+
 // SessionScorer provides session-aware relevance scores for code locations.
 type SessionScorer interface {
 	Score(filePath string, startLine int) float64

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
+	"github.com/shaktimanai/shaktiman/internal/backends"
 	"github.com/shaktimanai/shaktiman/internal/core"
 	"github.com/shaktimanai/shaktiman/internal/parser"
 	"github.com/shaktimanai/shaktiman/internal/storage"
@@ -2064,7 +2065,7 @@ func TestEmbedProject_PartialVectorLoss(t *testing.T) {
 	}
 
 	// Save the partial vector store to disk.
-	if saveErr := d1.saveVectors(d1.embeddingsPath()); saveErr != nil {
+	if saveErr := d1.saveVectors(backends.EmbeddingsPath(d1.cfg)); saveErr != nil {
 		t.Fatalf("saveVectors: %v", saveErr)
 	}
 	d1.Stop()
@@ -2922,78 +2923,18 @@ func TestFlushPending_EventChannelDrop(t *testing.T) {
 	}
 }
 
-func TestEmbeddingsPath_BruteForce(t *testing.T) {
-	t.Parallel()
-	d := &Daemon{
-		cfg: types.Config{
-			VectorBackend:  "brute_force",
-			EmbeddingsPath: "/data/.shaktiman/embeddings.bin",
-		},
-	}
-	got := d.embeddingsPath()
-	if got != "/data/.shaktiman/embeddings.bin" {
-		t.Errorf("embeddingsPath() = %q, want /data/.shaktiman/embeddings.bin", got)
-	}
-}
-
-func TestEmbeddingsPath_HNSW_WithExtension(t *testing.T) {
-	t.Parallel()
-	d := &Daemon{
-		cfg: types.Config{
-			VectorBackend:  "hnsw",
-			EmbeddingsPath: "/data/.shaktiman/embeddings.bin",
-		},
-	}
-	got := d.embeddingsPath()
-	want := "/data/.shaktiman/embeddings.hnsw"
-	if got != want {
-		t.Errorf("embeddingsPath() = %q, want %q", got, want)
-	}
-}
-
-func TestEmbeddingsPath_HNSW_NoExtension(t *testing.T) {
-	t.Parallel()
-	d := &Daemon{
-		cfg: types.Config{
-			VectorBackend:  "hnsw",
-			EmbeddingsPath: "/data/.shaktiman/embeddings",
-		},
-	}
-	got := d.embeddingsPath()
-	want := "/data/.shaktiman/embeddings.hnsw"
-	if got != want {
-		t.Errorf("embeddingsPath() = %q, want %q", got, want)
-	}
-}
-
-func TestEmbeddingsPath_EmptyBackend(t *testing.T) {
-	t.Parallel()
-	d := &Daemon{
-		cfg: types.Config{
-			VectorBackend:  "",
-			EmbeddingsPath: "/data/embeddings.bin",
-		},
-	}
-	got := d.embeddingsPath()
-	if got != "/data/embeddings.bin" {
-		t.Errorf("embeddingsPath() = %q, want /data/embeddings.bin (default path)", got)
-	}
-}
-
 func TestNewVectorStore_BruteForce(t *testing.T) {
 	t.Parallel()
 	if !vector.HasVectorStore("brute_force") {
 		t.Skip("brute_force backend not compiled in")
 	}
-	d := &Daemon{
-		cfg: types.Config{
-			VectorBackend: "brute_force",
-			EmbeddingDims: 4,
-		},
+	cfg := vector.VectorStoreConfig{
+		Backend: "brute_force",
+		Dims:    4,
 	}
-	vs, err := d.newVectorStore()
+	vs, err := vector.NewVectorStore(cfg)
 	if err != nil {
-		t.Fatalf("newVectorStore: %v", err)
+		t.Fatalf("NewVectorStore: %v", err)
 	}
 	defer vs.Close()
 	// Verify the store is functional
@@ -3008,15 +2949,13 @@ func TestNewVectorStore_HNSW(t *testing.T) {
 	if !vector.HasVectorStore("hnsw") {
 		t.Skip("hnsw backend not compiled in")
 	}
-	d := &Daemon{
-		cfg: types.Config{
-			VectorBackend: "hnsw",
-			EmbeddingDims: 4,
-		},
+	cfg := vector.VectorStoreConfig{
+		Backend: "hnsw",
+		Dims:    4,
 	}
-	vs, err := d.newVectorStore()
+	vs, err := vector.NewVectorStore(cfg)
 	if err != nil {
-		t.Fatalf("newVectorStore: %v", err)
+		t.Fatalf("NewVectorStore: %v", err)
 	}
 	defer vs.Close()
 	ctx := context.Background()
@@ -3030,15 +2969,13 @@ func TestNewVectorStore_EmptyBackendDefaultsBruteForce(t *testing.T) {
 	if !vector.HasVectorStore("brute_force") {
 		t.Skip("brute_force backend not compiled in")
 	}
-	d := &Daemon{
-		cfg: types.Config{
-			VectorBackend: "",
-			EmbeddingDims: 4,
-		},
+	cfg := vector.VectorStoreConfig{
+		Backend: "",
+		Dims:    4,
 	}
-	vs, err := d.newVectorStore()
+	vs, err := vector.NewVectorStore(cfg)
 	if err != nil {
-		t.Fatalf("newVectorStore: %v", err)
+		t.Fatalf("NewVectorStore: %v", err)
 	}
 	defer vs.Close()
 	ctx := context.Background()
@@ -3077,9 +3014,9 @@ func TestDaemon_New_WithHNSWBackend(t *testing.T) {
 	}
 
 	// Verify embeddingsPath uses .hnsw extension
-	got := d.embeddingsPath()
+	got := backends.EmbeddingsPath(d.cfg)
 	if !strings.HasSuffix(got, ".hnsw") {
-		t.Errorf("embeddingsPath() = %q, expected .hnsw suffix", got)
+		t.Errorf("EmbeddingsPath() = %q, expected .hnsw suffix", got)
 	}
 
 	d.Stop()
@@ -3122,7 +3059,7 @@ func TestEmbedProject_HNSWBackend(t *testing.T) {
 	}
 
 	// Verify persistence file uses .hnsw extension
-	hnswPath := d.embeddingsPath()
+	hnswPath := backends.EmbeddingsPath(d.cfg)
 	if _, err := os.Stat(hnswPath); os.IsNotExist(err) {
 		t.Errorf("expected HNSW persistence file at %s", hnswPath)
 	}

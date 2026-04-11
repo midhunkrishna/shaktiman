@@ -26,7 +26,7 @@ func TestQdrantCompliance(t *testing.T) {
 		safe := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
 		collection := fmt.Sprintf("shaktiman_test_%s", safe)
 
-		store, err := NewQdrantStore(client, collection, dims)
+		store, err := NewQdrantStore(client, collection, dims, 1)
 		if err != nil {
 			t.Fatalf("NewQdrantStore: %v", err)
 		}

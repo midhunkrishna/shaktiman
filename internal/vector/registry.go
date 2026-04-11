@@ -20,7 +20,7 @@ type VectorStoreConfig struct {
 	// pgvector-specific (pool shared with MetadataStore)
 	PgPool interface{} // *pgxpool.Pool, set by daemon when pgvector shares pool
 
-	// ProjectID for multi-project isolation (pgvector).
+	// ProjectID for multi-project isolation (pgvector, qdrant).
 	ProjectID int64
 
 	// Store is the MetadataStore, passed so backends like pgvector can
@@ -41,12 +41,16 @@ func VectorStoreConfigFrom(cfg types.Config, store interface{}) VectorStoreConfi
 		Store:            store,
 	}
 
-	// pgvector extracts the pool and project ID from the store.
+	// pgvector needs the shared Postgres pool.
 	if cfg.VectorBackend == "pgvector" {
 		type rawPooler interface{ RawPool() any }
 		if p, ok := store.(rawPooler); ok {
 			vsc.PgPool = p.RawPool()
 		}
+	}
+
+	// pgvector and qdrant both support multi-project isolation.
+	if cfg.VectorBackend == "pgvector" || cfg.VectorBackend == "qdrant" {
 		type projectIDer interface{ ProjectID() int64 }
 		if p, ok := store.(projectIDer); ok {
 			vsc.ProjectID = p.ProjectID()
