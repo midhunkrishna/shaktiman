@@ -929,10 +929,13 @@ func TestPgStore_PurgeAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertFile: %v", err)
 	}
-	store.UpsertChunk(ctx, types.ChunkRecord{
-		FileID: fileID, ChunkIndex: 0, Kind: "function",
-		StartLine: 1, EndLine: 10, Content: "func Foo() {}", TokenCount: 5,
+	_, err = store.InsertChunks(ctx, fileID, []types.ChunkRecord{
+		{ChunkIndex: 0, Kind: "function", StartLine: 1, EndLine: 10,
+			Content: "func Foo() {}", TokenCount: 5},
 	})
+	if err != nil {
+		t.Fatalf("InsertChunks: %v", err)
+	}
 
 	// Set parser version to verify it gets cleared
 	store.SetConfig(ctx, "parser_algorithm_version", "v1-test")
