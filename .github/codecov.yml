@@ -1,15 +1,39 @@
 coverage:
   status:
-    project: #add everything under here, more options at https://docs.codecov.com/docs/commit-status
+    project:
       default:
         target: auto
         threshold: 0%
         base: auto
         informational: true
+        after_n_builds: 4
     patch:
       default:
         informational: true
+
+flags:
+  sqlite-bruteforce:
+    paths:
+      - "internal/"
+      - "cmd/"
+    carryforward: true
+  sqlite-hnsw:
+    paths:
+      - "internal/"
+      - "cmd/"
+    carryforward: true
+  qdrant:
+    paths:
+      - "internal/"
+      - "cmd/"
+    carryforward: true
+  postgres:
+    paths:
+      - "internal/"
+      - "cmd/"
+    carryforward: true
+
 comment:
-  layout: "diff, flags, files"  # Remove items here to change the format
+  layout: "diff, flags, files"
   behavior: default
   require_changes: false

@@ -126,3 +126,62 @@ func TestIndexCmd_InvalidVectorFlag(t *testing.T) {
 		t.Fatal("expected error for invalid --vector value")
 	}
 }
+
+func TestApplyBackendFlags(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		vector       string
+		db           string
+		pgURL        string
+		qdrantURL    string
+		wantErr      bool
+		wantVector   string
+		wantDB       string
+		wantPgURL    string
+		wantQdrant   string
+	}{
+		{name: "empty_noop"},
+		{name: "valid_brute_force", vector: "brute_force", wantVector: "brute_force"},
+		{name: "valid_hnsw", vector: "hnsw", wantVector: "hnsw"},
+		{name: "valid_qdrant", vector: "qdrant", wantVector: "qdrant"},
+		{name: "valid_pgvector", vector: "pgvector", wantVector: "pgvector"},
+		{name: "invalid_vector", vector: "invalid", wantErr: true},
+		{name: "valid_sqlite", db: "sqlite", wantDB: "sqlite"},
+		{name: "valid_postgres", db: "postgres", wantDB: "postgres"},
+		{name: "invalid_db", db: "mysql", wantErr: true},
+		{name: "postgres_url", pgURL: "postgres://localhost/test", wantPgURL: "postgres://localhost/test"},
+		{name: "qdrant_url", qdrantURL: "http://localhost:6333", wantQdrant: "http://localhost:6333"},
+		{name: "all_flags", vector: "pgvector", db: "postgres", pgURL: "pg://url",
+			wantVector: "pgvector", wantDB: "postgres", wantPgURL: "pg://url"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &types.Config{}
+			err := applyBackendFlags(cfg, tc.vector, tc.db, tc.pgURL, tc.qdrantURL)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.wantVector != "" && cfg.VectorBackend != tc.wantVector {
+				t.Errorf("VectorBackend = %q, want %q", cfg.VectorBackend, tc.wantVector)
+			}
+			if tc.wantDB != "" && cfg.DatabaseBackend != tc.wantDB {
+				t.Errorf("DatabaseBackend = %q, want %q", cfg.DatabaseBackend, tc.wantDB)
+			}
+			if tc.wantPgURL != "" && cfg.PostgresConnString != tc.wantPgURL {
+				t.Errorf("PostgresConnString = %q, want %q", cfg.PostgresConnString, tc.wantPgURL)
+			}
+			if tc.wantQdrant != "" && cfg.QdrantURL != tc.wantQdrant {
+				t.Errorf("QdrantURL = %q, want %q", cfg.QdrantURL, tc.wantQdrant)
+			}
+		})
+	}
+}
