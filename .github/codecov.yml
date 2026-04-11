@@ -1,3 +1,8 @@
+codecov:
+  notify:
+    after_n_builds: 4
+    wait_for_ci: true
+
 coverage:
   status:
     project:
@@ -6,7 +11,6 @@ coverage:
         threshold: 0%
         base: auto
         informational: true
-        after_n_builds: 4
     patch:
       default:
         informational: true
