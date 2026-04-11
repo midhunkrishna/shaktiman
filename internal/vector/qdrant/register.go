@@ -10,6 +10,6 @@ import (
 func init() {
 	vector.RegisterVectorStore("qdrant", func(cfg vector.VectorStoreConfig) (types.VectorStore, error) {
 		client := NewClient(cfg.QdrantURL, cfg.QdrantAPIKey)
-		return NewQdrantStore(client, cfg.QdrantCollection, cfg.Dims)
+		return NewQdrantStore(client, cfg.QdrantCollection, cfg.Dims, cfg.ProjectID)
 	})
 }

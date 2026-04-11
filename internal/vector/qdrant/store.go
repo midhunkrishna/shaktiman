@@ -17,6 +17,7 @@ type QdrantStore struct {
 	client     *Client
 	collection string
 	dims       int
+	projectID  int64
 
 	mu     sync.Mutex
 	closed bool
@@ -27,7 +28,7 @@ var _ types.VectorStore = (*QdrantStore)(nil)
 
 // NewQdrantStore creates a QdrantStore and ensures the collection exists
 // with the correct dimensionality.
-func NewQdrantStore(client *Client, collection string, dims int) (*QdrantStore, error) {
+func NewQdrantStore(client *Client, collection string, dims int, projectID int64) (*QdrantStore, error) {
 	ctx := context.Background()
 
 	// Try to get existing collection first.
@@ -45,11 +46,33 @@ func NewQdrantStore(client *Client, collection string, dims int) (*QdrantStore, 
 		}
 	}
 
+	// Best-effort payload index for project_id filtering.
+	if projectID != 0 {
+		if err := client.CreatePayloadIndex(ctx, collection, "project_id", "integer"); err != nil {
+			slog.Warn("qdrant: could not create project_id payload index",
+				"collection", collection, "err", err)
+		}
+	}
+
 	return &QdrantStore{
 		client:     client,
 		collection: collection,
 		dims:       dims,
+		projectID:  projectID,
 	}, nil
+}
+
+// projectFilter returns a Filter scoped to this store's projectID,
+// or nil if projectID is 0 (unscoped).
+func (s *QdrantStore) projectFilter() *Filter {
+	if s.projectID == 0 {
+		return nil
+	}
+	return &Filter{
+		Must: []FilterCondition{
+			{Key: "project_id", Match: &MatchValue{Value: s.projectID}},
+		},
+	}
 }
 
 // Search returns the topK most similar vectors by cosine similarity.
@@ -61,6 +84,7 @@ func (s *QdrantStore) Search(ctx context.Context, query []float32, topK int) ([]
 	results, err := s.client.SearchPoints(ctx, s.collection, SearchRequest{
 		Vector: query,
 		Limit:  topK,
+		Filter: s.projectFilter(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("qdrant search: %w", err)
@@ -78,9 +102,11 @@ func (s *QdrantStore) Search(ctx context.Context, query []float32, topK int) ([]
 
 // Upsert inserts or replaces a single vector.
 func (s *QdrantStore) Upsert(ctx context.Context, chunkID int64, vector []float32) error {
-	return s.client.UpsertPoints(ctx, s.collection, []Point{
-		{ID: chunkID, Vector: vector},
-	})
+	p := Point{ID: chunkID, Vector: vector}
+	if s.projectID != 0 {
+		p.Payload = map[string]any{"project_id": s.projectID}
+	}
+	return s.client.UpsertPoints(ctx, s.collection, []Point{p})
 }
 
 // UpsertBatch inserts multiple vectors, chunked to maxBatchSize per request.
@@ -97,7 +123,11 @@ func (s *QdrantStore) UpsertBatch(ctx context.Context, chunkIDs []int64, vectors
 
 		points := make([]Point, end-i)
 		for j := i; j < end; j++ {
-			points[j-i] = Point{ID: chunkIDs[j], Vector: vectors[j]}
+			p := Point{ID: chunkIDs[j], Vector: vectors[j]}
+			if s.projectID != 0 {
+				p.Payload = map[string]any{"project_id": s.projectID}
+			}
+			points[j-i] = p
 		}
 
 		if err := s.client.UpsertPoints(ctx, s.collection, points); err != nil {
@@ -126,14 +156,19 @@ func (s *QdrantStore) Delete(ctx context.Context, chunkIDs []int64) error {
 	return nil
 }
 
-// PurgeAll deletes the entire Qdrant collection and recreates it empty.
-// WARNING: Qdrant has no project_id scoping. If multiple projects share
-// the same collection name, this deletes ALL projects' vectors.
+// PurgeAll deletes all vectors for this project. When projectID is set,
+// only this project's points are removed via filter-based delete.
+// When unscoped (projectID=0), falls back to collection drop+recreate.
 func (s *QdrantStore) PurgeAll(ctx context.Context) error {
-	if err := s.client.DeleteCollection(ctx, s.collection); err != nil {
-		return fmt.Errorf("delete collection: %w", err)
+	f := s.projectFilter()
+	if f == nil {
+		// Unscoped: drop and recreate collection (original behavior).
+		if err := s.client.DeleteCollection(ctx, s.collection); err != nil {
+			return fmt.Errorf("delete collection: %w", err)
+		}
+		return s.client.CreateCollection(ctx, s.collection, s.dims)
 	}
-	return s.client.CreateCollection(ctx, s.collection, s.dims)
+	return s.client.DeletePointsByFilter(ctx, s.collection, *f)
 }
 
 // Has returns true if a vector exists for the given chunk ID.
@@ -145,9 +180,9 @@ func (s *QdrantStore) Has(ctx context.Context, chunkID int64) (bool, error) {
 	return len(points) > 0, nil
 }
 
-// Count returns the exact number of points in the collection.
+// Count returns the exact number of points for this project.
 func (s *QdrantStore) Count(ctx context.Context) (int, error) {
-	return s.client.CountPoints(ctx, s.collection)
+	return s.client.CountPoints(ctx, s.collection, s.projectFilter())
 }
 
 // Close marks the store as closed. The underlying HTTP client is not pooled
@@ -159,7 +194,7 @@ func (s *QdrantStore) Close() error {
 		return nil
 	}
 	s.closed = true
-	slog.Info("qdrant store closed", "collection", s.collection)
+	slog.Info("qdrant store closed", "collection", s.collection, "project_id", s.projectID)
 	return nil
 }
 

@@ -263,7 +263,7 @@ func TestClient_CountPoints(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(srv.URL, "")
-	count, err := c.CountPoints(context.Background(), "col")
+	count, err := c.CountPoints(context.Background(), "col", nil)
 	if err != nil {
 		t.Fatalf("CountPoints: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestClient_NonOKStatus(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(srv.URL, "")
-	_, err := c.CountPoints(context.Background(), "col")
+	_, err := c.CountPoints(context.Background(), "col", nil)
 	if err == nil {
 		t.Fatal("expected error for non-ok status")
 	}

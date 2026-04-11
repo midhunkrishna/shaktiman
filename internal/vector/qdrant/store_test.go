@@ -3,6 +3,7 @@ package qdrant
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -17,9 +18,14 @@ type fakeQdrant struct {
 	collections map[string]*fakeCollection
 }
 
+type fakePoint struct {
+	vector  []float32
+	payload map[string]any
+}
+
 type fakeCollection struct {
 	dims   int
-	points map[int64][]float32
+	points map[int64]fakePoint
 }
 
 func newFakeQdrant() *fakeQdrant {
@@ -40,13 +46,13 @@ func (fq *fakeQdrant) handler(t *testing.T) http.Handler {
 		case r.Method == "GET" && path == "/":
 			w.Write([]byte(`{"title":"qdrant","version":"1.8.0"}`))
 
-		case r.Method == "PUT" && len(path) > len("/collections/") && !contains(path, "/points"):
+		case r.Method == "PUT" && len(path) > len("/collections/") && !contains(path, "/points") && !contains(path, "/index"):
 			name := path[len("/collections/"):]
 			var body CollectionConfig
 			json.NewDecoder(r.Body).Decode(&body)
 			fq.collections[name] = &fakeCollection{
 				dims:   body.Vectors.Size,
-				points: make(map[int64][]float32),
+				points: make(map[int64]fakePoint),
 			}
 			writeOK(w, true)
 
@@ -69,6 +75,10 @@ func (fq *fakeQdrant) handler(t *testing.T) http.Handler {
 				},
 			})
 
+		case r.Method == "PUT" && contains(path, "/index"):
+			// CreatePayloadIndex — no-op in fake server.
+			writeOK(w, struct{ Status string }{Status: "completed"})
+
 		case r.Method == "PUT" && contains(path, "/points"):
 			colName := extractCollection(path)
 			col := fq.collections[colName]
@@ -82,7 +92,7 @@ func (fq *fakeQdrant) handler(t *testing.T) http.Handler {
 			}
 			json.NewDecoder(r.Body).Decode(&body)
 			for _, p := range body.Points {
-				col.points[p.ID] = p.Vector
+				col.points[p.ID] = fakePoint{vector: p.Vector, payload: p.Payload}
 			}
 			writeOK(w, struct{ Status string }{Status: "completed"})
 
@@ -95,7 +105,7 @@ func (fq *fakeQdrant) handler(t *testing.T) http.Handler {
 			}
 			var req SearchRequest
 			json.NewDecoder(r.Body).Decode(&req)
-			results := fq.searchCollection(col, req.Vector, req.Limit)
+			results := fq.searchCollection(col, req.Vector, req.Limit, req.Filter)
 			writeOK(w, results)
 
 		case r.Method == "POST" && contains(path, "/points/delete"):
@@ -107,10 +117,19 @@ func (fq *fakeQdrant) handler(t *testing.T) http.Handler {
 			}
 			var body struct {
 				Points []int64 `json:"points"`
+				Filter *Filter `json:"filter"`
 			}
 			json.NewDecoder(r.Body).Decode(&body)
-			for _, id := range body.Points {
-				delete(col.points, id)
+			if body.Filter != nil {
+				for id, pt := range col.points {
+					if matchesFilter(pt, body.Filter) {
+						delete(col.points, id)
+					}
+				}
+			} else {
+				for _, id := range body.Points {
+					delete(col.points, id)
+				}
 			}
 			writeOK(w, struct{ Status string }{Status: "completed"})
 
@@ -119,7 +138,15 @@ func (fq *fakeQdrant) handler(t *testing.T) http.Handler {
 			col := fq.collections[colName]
 			count := 0
 			if col != nil {
-				count = len(col.points)
+				var body struct {
+					Filter *Filter `json:"filter"`
+				}
+				json.NewDecoder(r.Body).Decode(&body)
+				for _, pt := range col.points {
+					if matchesFilter(pt, body.Filter) {
+						count++
+					}
+				}
 			}
 			writeOK(w, struct{ Count int `json:"count"` }{Count: count})
 
@@ -164,14 +191,65 @@ func (fq *fakeQdrant) handler(t *testing.T) http.Handler {
 	})
 }
 
-func (fq *fakeQdrant) searchCollection(col *fakeCollection, query []float32, limit int) []SearchResult {
+// matchesFilter returns true if the point satisfies all must conditions.
+// A nil filter matches everything.
+func matchesFilter(pt fakePoint, filter *Filter) bool {
+	if filter == nil {
+		return true
+	}
+	for _, cond := range filter.Must {
+		if cond.Key != "" && cond.Match != nil {
+			val, ok := pt.payload[cond.Key]
+			if !ok {
+				return false
+			}
+			if !valuesEqual(val, cond.Match.Value) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// valuesEqual compares values handling JSON number type coercion.
+// JSON numbers decode as float64; int64 values from Go code need matching.
+func valuesEqual(a, b any) bool {
+	af, aIsFloat := toFloat64(a)
+	bf, bIsFloat := toFloat64(b)
+	if aIsFloat && bIsFloat {
+		return math.Abs(af-bf) < 1e-9
+	}
+	return a == b
+}
+
+func toFloat64(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	}
+	return 0, false
+}
+
+func (fq *fakeQdrant) searchCollection(col *fakeCollection, query []float32, limit int, filter *Filter) []SearchResult {
 	type scored struct {
 		id    int64
 		score float64
 	}
 	var all []scored
-	for id, vec := range col.points {
-		s := cosine(query, vec)
+	for id, pt := range col.points {
+		if !matchesFilter(pt, filter) {
+			continue
+		}
+		s := cosine(query, pt.vector)
 		all = append(all, scored{id, s})
 	}
 	// Sort descending by score (simple bubble sort for small N)
@@ -247,18 +325,34 @@ func writeOK(w http.ResponseWriter, result any) {
 	json.NewEncoder(w).Encode(apiResponse{Status: "ok", Result: data})
 }
 
-// newTestStore creates a QdrantStore backed by a fake Qdrant server.
+// newTestStore creates a QdrantStore backed by a fake Qdrant server (unscoped).
 func newTestStore(t *testing.T, dims int) (*QdrantStore, *httptest.Server) {
+	return newTestStoreWithProject(t, dims, 0)
+}
+
+// newTestStoreWithProject creates a QdrantStore with a specific projectID.
+func newTestStoreWithProject(t *testing.T, dims int, projectID int64) (*QdrantStore, *httptest.Server) {
 	t.Helper()
 	fq := newFakeQdrant()
 	srv := httptest.NewServer(fq.handler(t))
 	client := NewClient(srv.URL, "")
-	store, err := NewQdrantStore(client, "test", dims)
+	store, err := NewQdrantStore(client, "test", dims, projectID)
 	if err != nil {
 		srv.Close()
 		t.Fatalf("NewQdrantStore: %v", err)
 	}
 	return store, srv
+}
+
+// newTestStoreOnServer creates a QdrantStore sharing an existing fake server.
+func newTestStoreOnServer(t *testing.T, srv *httptest.Server, collection string, dims int, projectID int64) *QdrantStore {
+	t.Helper()
+	client := NewClient(srv.URL, "")
+	store, err := NewQdrantStore(client, collection, dims, projectID)
+	if err != nil {
+		t.Fatalf("NewQdrantStore: %v", err)
+	}
+	return store
 }
 
 // ── Store tests ──
@@ -520,7 +614,7 @@ func TestNewQdrantStore_ExistingCollection_DimsMismatch(t *testing.T) {
 	client.CreateCollection(context.Background(), "test", 4)
 
 	// Try to open with dims=8 — should fail
-	_, err := NewQdrantStore(client, "test", 8)
+	_, err := NewQdrantStore(client, "test", 8, 0)
 	if err == nil {
 		t.Fatal("expected error for dims mismatch")
 	}
@@ -532,7 +626,7 @@ func TestNewQdrantStore_CreatesCollection(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient(srv.URL, "")
-	store, err := NewQdrantStore(client, "new_col", 128)
+	store, err := NewQdrantStore(client, "new_col", 128, 0)
 	if err != nil {
 		t.Fatalf("NewQdrantStore: %v", err)
 	}
@@ -556,7 +650,7 @@ func TestNewQdrantStore_ExistingCollection_DimsMatch(t *testing.T) {
 	client := NewClient(srv.URL, "")
 	client.CreateCollection(context.Background(), "existing", 64)
 
-	store, err := NewQdrantStore(client, "existing", 64)
+	store, err := NewQdrantStore(client, "existing", 64, 0)
 	if err != nil {
 		t.Fatalf("NewQdrantStore: %v", err)
 	}
@@ -602,14 +696,13 @@ func TestQdrantStore_Search_ScoreOrder(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_PurgeAll(t *testing.T) {
-	store, srv := newTestStore(t, 4)
+func TestQdrantStore_PurgeAll_Unscoped(t *testing.T) {
+	store, srv := newTestStore(t, 4) // projectID=0
 	defer srv.Close()
 	defer store.Close()
 
 	ctx := context.Background()
 
-	// Seed data
 	store.Upsert(ctx, 1, []float32{1, 0, 0, 0})
 	store.Upsert(ctx, 2, []float32{0, 1, 0, 0})
 	store.Upsert(ctx, 3, []float32{0, 0, 1, 0})
@@ -619,12 +712,10 @@ func TestQdrantStore_PurgeAll(t *testing.T) {
 		t.Fatalf("pre-purge count = %d, want 3", count)
 	}
 
-	// Purge
 	if err := store.PurgeAll(ctx); err != nil {
 		t.Fatalf("PurgeAll: %v", err)
 	}
 
-	// Collection should exist but be empty
 	count, err := store.Count(ctx)
 	if err != nil {
 		t.Fatalf("Count after purge: %v", err)
@@ -640,5 +731,127 @@ func TestQdrantStore_PurgeAll(t *testing.T) {
 	count, _ = store.Count(ctx)
 	if count != 1 {
 		t.Errorf("count after re-upsert = %d, want 1", count)
+	}
+}
+
+// ── Project isolation tests ──
+
+func TestQdrantStore_SearchIsolation(t *testing.T) {
+	fq := newFakeQdrant()
+	srv := httptest.NewServer(fq.handler(t))
+	defer srv.Close()
+
+	storeA := newTestStoreOnServer(t, srv, "shared", 4, 1)
+	defer storeA.Close()
+	storeB := newTestStoreOnServer(t, srv, "shared", 4, 2)
+	defer storeB.Close()
+
+	ctx := context.Background()
+
+	// Project A vectors
+	storeA.Upsert(ctx, 1, []float32{1, 0, 0, 0})
+	storeA.Upsert(ctx, 2, []float32{0.9, 0.1, 0, 0})
+
+	// Project B vectors
+	storeB.Upsert(ctx, 3, []float32{0, 1, 0, 0})
+	storeB.Upsert(ctx, 4, []float32{0, 0.9, 0.1, 0})
+
+	// Search from A should only return A's vectors
+	results, err := storeA.Search(ctx, []float32{1, 0, 0, 0}, 10)
+	if err != nil {
+		t.Fatalf("Search A: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("Search A returned %d results, want 2", len(results))
+	}
+	for _, r := range results {
+		if r.ChunkID != 1 && r.ChunkID != 2 {
+			t.Errorf("Search A returned unexpected chunk %d", r.ChunkID)
+		}
+	}
+
+	// Search from B should only return B's vectors
+	results, err = storeB.Search(ctx, []float32{0, 1, 0, 0}, 10)
+	if err != nil {
+		t.Fatalf("Search B: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("Search B returned %d results, want 2", len(results))
+	}
+	for _, r := range results {
+		if r.ChunkID != 3 && r.ChunkID != 4 {
+			t.Errorf("Search B returned unexpected chunk %d", r.ChunkID)
+		}
+	}
+}
+
+func TestQdrantStore_CountIsolation(t *testing.T) {
+	fq := newFakeQdrant()
+	srv := httptest.NewServer(fq.handler(t))
+	defer srv.Close()
+
+	storeA := newTestStoreOnServer(t, srv, "shared", 4, 1)
+	defer storeA.Close()
+	storeB := newTestStoreOnServer(t, srv, "shared", 4, 2)
+	defer storeB.Close()
+
+	ctx := context.Background()
+
+	storeA.Upsert(ctx, 1, []float32{1, 0, 0, 0})
+	storeA.Upsert(ctx, 2, []float32{0, 1, 0, 0})
+	storeB.Upsert(ctx, 3, []float32{0, 0, 1, 0})
+
+	countA, _ := storeA.Count(ctx)
+	if countA != 2 {
+		t.Errorf("Count A = %d, want 2", countA)
+	}
+
+	countB, _ := storeB.Count(ctx)
+	if countB != 1 {
+		t.Errorf("Count B = %d, want 1", countB)
+	}
+}
+
+func TestQdrantStore_PurgeAll_Isolation(t *testing.T) {
+	fq := newFakeQdrant()
+	srv := httptest.NewServer(fq.handler(t))
+	defer srv.Close()
+
+	storeA := newTestStoreOnServer(t, srv, "shared", 4, 1)
+	defer storeA.Close()
+	storeB := newTestStoreOnServer(t, srv, "shared", 4, 2)
+	defer storeB.Close()
+
+	ctx := context.Background()
+
+	storeA.Upsert(ctx, 1, []float32{1, 0, 0, 0})
+	storeA.Upsert(ctx, 2, []float32{0, 1, 0, 0})
+	storeB.Upsert(ctx, 3, []float32{0, 0, 1, 0})
+	storeB.Upsert(ctx, 4, []float32{0, 0, 0, 1})
+
+	// Purge A
+	if err := storeA.PurgeAll(ctx); err != nil {
+		t.Fatalf("PurgeAll A: %v", err)
+	}
+
+	// A should be empty
+	countA, _ := storeA.Count(ctx)
+	if countA != 0 {
+		t.Errorf("Count A after purge = %d, want 0", countA)
+	}
+
+	// B should be untouched
+	countB, _ := storeB.Count(ctx)
+	if countB != 2 {
+		t.Errorf("Count B after purge A = %d, want 2", countB)
+	}
+
+	// A should still be usable
+	if err := storeA.Upsert(ctx, 10, []float32{1, 0, 0, 0}); err != nil {
+		t.Fatalf("Upsert after purge: %v", err)
+	}
+	countA, _ = storeA.Count(ctx)
+	if countA != 1 {
+		t.Errorf("Count A after re-upsert = %d, want 1", countA)
 	}
 }
