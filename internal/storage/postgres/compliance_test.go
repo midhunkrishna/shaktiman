@@ -54,6 +54,18 @@ func TestPostgresMetadataStoreCompliance(t *testing.T) {
 	})
 }
 
+func TestPostgresWriterStoreCompliance(t *testing.T) {
+	storetest.RunWriterStoreTests(t, func(t *testing.T) types.WriterStore {
+		return newTestStore(t)
+	})
+}
+
+func TestPostgresGraphMutatorCompliance(t *testing.T) {
+	storetest.RunGraphMutatorTests(t, func(t *testing.T) types.WriterStore {
+		return newTestStore(t)
+	})
+}
+
 func TestPostgres_WithWriteTx_CommitAndRollback(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

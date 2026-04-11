@@ -23,3 +23,28 @@ func TestSQLiteMetadataStoreCompliance(t *testing.T) {
 		return sqlite.NewStore(db)
 	})
 }
+
+func newSQLiteWriterStore(t *testing.T) types.WriterStore {
+	t.Helper()
+	db, err := sqlite.Open(sqlite.OpenInput{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := sqlite.Migrate(db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return sqlite.NewStore(db)
+}
+
+func TestSQLiteWriterStoreCompliance(t *testing.T) {
+	RunWriterStoreTests(t, func(t *testing.T) types.WriterStore {
+		return newSQLiteWriterStore(t)
+	})
+}
+
+func TestSQLiteGraphMutatorCompliance(t *testing.T) {
+	RunGraphMutatorTests(t, func(t *testing.T) types.WriterStore {
+		return newSQLiteWriterStore(t)
+	})
+}

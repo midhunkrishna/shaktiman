@@ -6,6 +6,7 @@ package storetest
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
@@ -373,6 +374,402 @@ func RunMetadataStoreTests(t *testing.T, factory MetadataStoreFactory) {
 		syms, _ := store.GetSymbolsByFile(ctx, fileID)
 		if len(syms) != 0 {
 			t.Error("expected 0 symbols after delete")
+		}
+	})
+}
+
+// WriterStoreFactory creates a fresh WriterStore for each test.
+type WriterStoreFactory func(t *testing.T) types.WriterStore
+
+// RunWriterStoreTests runs compliance tests for WriterStore-specific methods
+// that are not covered by RunMetadataStoreTests.
+func RunWriterStoreTests(t *testing.T, factory WriterStoreFactory) {
+	t.Run("DeleteFileByPath", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+
+		fileID, _ := store.UpsertFile(ctx, &types.FileRecord{
+			Path: "bypath.go", ContentHash: "h1", Mtime: 1.0,
+			Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		})
+		store.InsertChunks(ctx, fileID, []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: "F",
+				StartLine: 1, EndLine: 5, Content: "func F() {}", TokenCount: 3},
+		})
+
+		deletedID, err := store.DeleteFileByPath(ctx, "bypath.go")
+		if err != nil {
+			t.Fatalf("DeleteFileByPath: %v", err)
+		}
+		if deletedID != fileID {
+			t.Errorf("deleted ID = %d, want %d", deletedID, fileID)
+		}
+
+		chunks, _ := store.GetChunksByFile(ctx, fileID)
+		if len(chunks) != 0 {
+			t.Error("expected chunks to be cascade-deleted")
+		}
+	})
+
+	t.Run("DeleteFileByPath_NotFound", func(t *testing.T) {
+		store := factory(t)
+		deletedID, err := store.DeleteFileByPath(context.Background(), "nonexistent.go")
+		if err != nil {
+			t.Fatalf("DeleteFileByPath not found: %v", err)
+		}
+		if deletedID != 0 {
+			t.Errorf("expected 0 for missing file, got %d", deletedID)
+		}
+	})
+
+	t.Run("GetEmbeddedChunkIDsByFile", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+
+		fileID, _ := store.UpsertFile(ctx, &types.FileRecord{
+			Path: "embed.go", ContentHash: "h1", Mtime: 1.0,
+			Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		})
+		chunkIDs, _ := store.InsertChunks(ctx, fileID, []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: "A",
+				StartLine: 1, EndLine: 5, Content: "func A() {}", TokenCount: 3},
+			{ChunkIndex: 1, Kind: "function", SymbolName: "B",
+				StartLine: 6, EndLine: 10, Content: "func B() {}", TokenCount: 3},
+			{ChunkIndex: 2, Kind: "function", SymbolName: "C",
+				StartLine: 11, EndLine: 15, Content: "func C() {}", TokenCount: 3},
+		})
+
+		// Mark only first two chunks as embedded.
+		if err := store.MarkChunksEmbedded(ctx, chunkIDs[:2]); err != nil {
+			t.Fatalf("MarkChunksEmbedded: %v", err)
+		}
+
+		got, err := store.GetEmbeddedChunkIDsByFile(ctx, fileID)
+		if err != nil {
+			t.Fatalf("GetEmbeddedChunkIDsByFile: %v", err)
+		}
+		if len(got) != 2 {
+			t.Errorf("expected 2 embedded chunk IDs, got %d", len(got))
+		}
+	})
+
+	t.Run("GetEmbeddedChunkIDsByFile_NoneEmbedded", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+
+		fileID, _ := store.UpsertFile(ctx, &types.FileRecord{
+			Path: "noembed.go", ContentHash: "h1", Mtime: 1.0,
+			Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		})
+		store.InsertChunks(ctx, fileID, []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: "X",
+				StartLine: 1, EndLine: 5, Content: "func X() {}", TokenCount: 3},
+		})
+
+		got, err := store.GetEmbeddedChunkIDsByFile(ctx, fileID)
+		if err != nil {
+			t.Fatalf("GetEmbeddedChunkIDsByFile: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("expected 0 embedded chunk IDs, got %d", len(got))
+		}
+	})
+
+	t.Run("UpdateChunkParents", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+
+		fileID, _ := store.UpsertFile(ctx, &types.FileRecord{
+			Path: "parents.go", ContentHash: "h1", Mtime: 1.0,
+			Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		})
+		chunkIDs, _ := store.InsertChunks(ctx, fileID, []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: "Parent",
+				StartLine: 1, EndLine: 20, Content: "func Parent() {}", TokenCount: 5},
+			{ChunkIndex: 1, Kind: "function", SymbolName: "Child",
+				StartLine: 5, EndLine: 10, Content: "func Child() {}", TokenCount: 3},
+		})
+
+		updates := map[int64]int64{chunkIDs[1]: chunkIDs[0]}
+		if err := store.UpdateChunkParents(ctx, updates); err != nil {
+			t.Fatalf("UpdateChunkParents: %v", err)
+		}
+
+		chunks, _ := store.GetChunksByFile(ctx, fileID)
+		found := false
+		for _, c := range chunks {
+			if c.ID == chunkIDs[1] && c.ParentChunkID != nil && *c.ParentChunkID == chunkIDs[0] {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("expected child chunk to have parent set")
+		}
+	})
+
+	t.Run("UpdateChunkParents_EmptyMap", func(t *testing.T) {
+		store := factory(t)
+		if err := store.UpdateChunkParents(context.Background(), map[int64]int64{}); err != nil {
+			t.Fatalf("UpdateChunkParents empty: %v", err)
+		}
+	})
+
+	t.Run("RecordToolCalls", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+
+		records := []types.ToolCallRecord{
+			{
+				SessionID: "sess-1", Timestamp: time.Now(),
+				ToolName: "search", ArgsJSON: `{"q":"test"}`,
+				ArgsBytes: 12, ResponseBytes: 256, ResponseTokensEst: 64,
+				ResultCount: 3, DurationMs: 42, IsError: false,
+			},
+			{
+				SessionID: "sess-1", Timestamp: time.Now(),
+				ToolName: "context", ArgsJSON: `{"q":"auth"}`,
+				ArgsBytes: 10, ResponseBytes: 512, ResponseTokensEst: 128,
+				ResultCount: 5, DurationMs: 100, IsError: true,
+			},
+		}
+		if err := store.RecordToolCalls(ctx, records); err != nil {
+			t.Fatalf("RecordToolCalls: %v", err)
+		}
+	})
+
+	t.Run("RecordToolCalls_Empty", func(t *testing.T) {
+		store := factory(t)
+		if err := store.RecordToolCalls(context.Background(), nil); err != nil {
+			t.Fatalf("RecordToolCalls empty: %v", err)
+		}
+	})
+
+	t.Run("GetConfig_Missing", func(t *testing.T) {
+		store := factory(t)
+		val, err := store.GetConfig(context.Background(), "nonexistent_key")
+		if err != nil {
+			t.Fatalf("GetConfig missing key: %v", err)
+		}
+		if val != "" {
+			t.Errorf("expected empty string for missing key, got %q", val)
+		}
+	})
+
+	t.Run("SetConfig_And_GetConfig", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+
+		if err := store.SetConfig(ctx, "parser_version", "v2"); err != nil {
+			t.Fatalf("SetConfig: %v", err)
+		}
+		val, err := store.GetConfig(ctx, "parser_version")
+		if err != nil {
+			t.Fatalf("GetConfig: %v", err)
+		}
+		if val != "v2" {
+			t.Errorf("GetConfig = %q, want v2", val)
+		}
+	})
+
+	t.Run("SetConfig_Overwrite", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+
+		store.SetConfig(ctx, "key", "old")
+		store.SetConfig(ctx, "key", "new")
+
+		val, _ := store.GetConfig(ctx, "key")
+		if val != "new" {
+			t.Errorf("GetConfig after overwrite = %q, want new", val)
+		}
+	})
+}
+
+// RunGraphMutatorTests runs compliance tests for graph mutation operations.
+func RunGraphMutatorTests(t *testing.T, factory WriterStoreFactory) {
+	// helper: creates a file with one chunk and one symbol, returns IDs.
+	insertFCS := func(t *testing.T, store types.WriterStore, path, symbolName string) (fileID, chunkID, symbolID int64) {
+		t.Helper()
+		ctx := context.Background()
+		fileID, _ = store.UpsertFile(ctx, &types.FileRecord{
+			Path: path, ContentHash: "h_" + path, Mtime: 1.0,
+			Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		})
+		chunkIDs, _ := store.InsertChunks(ctx, fileID, []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: symbolName,
+				StartLine: 1, EndLine: 10, Content: "func " + symbolName + "() {}", TokenCount: 5},
+		})
+		symIDs, _ := store.InsertSymbols(ctx, fileID, []types.SymbolRecord{
+			{ChunkID: chunkIDs[0], Name: symbolName, Kind: "function", Line: 1,
+				Visibility: "exported", IsExported: true},
+		})
+		return fileID, chunkIDs[0], symIDs[0]
+	}
+
+	t.Run("InsertEdges_Resolved", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+
+		fileA, _, symA := insertFCS(t, store, "a.go", "FuncA")
+		_, _, symB := insertFCS(t, store, "b.go", "FuncB")
+
+		edges := []types.EdgeRecord{
+			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
+		}
+		symbolIDs := map[string]int64{"FuncA": symA, "FuncB": symB}
+
+		err := store.WithWriteTx(ctx, func(tx types.TxHandle) error {
+			return store.InsertEdges(ctx, tx, fileA, edges, symbolIDs, "go")
+		})
+		if err != nil {
+			t.Fatalf("InsertEdges: %v", err)
+		}
+
+		// Verify via Neighbors.
+		neighbors, err := store.Neighbors(ctx, symA, 1, "outgoing")
+		if err != nil {
+			t.Fatalf("Neighbors: %v", err)
+		}
+		if len(neighbors) == 0 {
+			t.Error("expected FuncB as neighbor of FuncA")
+		}
+	})
+
+	t.Run("InsertEdges_Pending", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+
+		fileA, _, symA := insertFCS(t, store, "a.go", "Caller")
+
+		// Edge to unknown symbol — should become pending.
+		edges := []types.EdgeRecord{
+			{SrcSymbolName: "Caller", DstSymbolName: "Unknown", Kind: "calls"},
+		}
+		symbolIDs := map[string]int64{"Caller": symA}
+
+		err := store.WithWriteTx(ctx, func(tx types.TxHandle) error {
+			return store.InsertEdges(ctx, tx, fileA, edges, symbolIDs, "go")
+		})
+		if err != nil {
+			t.Fatalf("InsertEdges pending: %v", err)
+		}
+
+		// Verify pending edge exists.
+		callers, err := store.PendingEdgeCallers(ctx, "Unknown")
+		if err != nil {
+			t.Fatalf("PendingEdgeCallers: %v", err)
+		}
+		if len(callers) != 1 || callers[0] != symA {
+			t.Errorf("PendingEdgeCallers = %v, want [%d]", callers, symA)
+		}
+	})
+
+	t.Run("PendingEdgeCallers_NoMatch", func(t *testing.T) {
+		store := factory(t)
+		callers, err := store.PendingEdgeCallers(context.Background(), "NothingHere")
+		if err != nil {
+			t.Fatalf("PendingEdgeCallers no match: %v", err)
+		}
+		if len(callers) != 0 {
+			t.Errorf("expected empty, got %v", callers)
+		}
+	})
+
+	t.Run("PendingEdgeCallersWithKind", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+
+		fileA, _, symA := insertFCS(t, store, "a.go", "Src")
+
+		edges := []types.EdgeRecord{
+			{SrcSymbolName: "Src", DstSymbolName: "ExtLib", DstQualifiedName: "github.com/ext/lib.ExtLib", Kind: "calls"},
+		}
+		symbolIDs := map[string]int64{"Src": symA}
+
+		err := store.WithWriteTx(ctx, func(tx types.TxHandle) error {
+			return store.InsertEdges(ctx, tx, fileA, edges, symbolIDs, "go")
+		})
+		if err != nil {
+			t.Fatalf("InsertEdges: %v", err)
+		}
+
+		results, err := store.PendingEdgeCallersWithKind(ctx, "ExtLib")
+		if err != nil {
+			t.Fatalf("PendingEdgeCallersWithKind: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].SrcSymbolID != symA {
+			t.Errorf("SrcSymbolID = %d, want %d", results[0].SrcSymbolID, symA)
+		}
+		if results[0].Kind != "calls" {
+			t.Errorf("Kind = %q, want calls", results[0].Kind)
+		}
+	})
+
+	t.Run("DeleteEdgesByFile", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+
+		fileA, _, symA := insertFCS(t, store, "a.go", "FuncA")
+		_, _, symB := insertFCS(t, store, "b.go", "FuncB")
+
+		edges := []types.EdgeRecord{
+			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
+		}
+		symbolIDs := map[string]int64{"FuncA": symA, "FuncB": symB}
+
+		store.WithWriteTx(ctx, func(tx types.TxHandle) error {
+			return store.InsertEdges(ctx, tx, fileA, edges, symbolIDs, "go")
+		})
+
+		// Delete edges for fileA.
+		err := store.WithWriteTx(ctx, func(tx types.TxHandle) error {
+			return store.DeleteEdgesByFile(ctx, tx, fileA)
+		})
+		if err != nil {
+			t.Fatalf("DeleteEdgesByFile: %v", err)
+		}
+
+		neighbors, _ := store.Neighbors(ctx, symA, 1, "outgoing")
+		if len(neighbors) != 0 {
+			t.Error("expected no neighbors after edge deletion")
+		}
+	})
+
+	t.Run("ResolvePendingEdges", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+
+		// Create caller with pending edge to "Target".
+		fileA, _, symA := insertFCS(t, store, "a.go", "Caller")
+		edges := []types.EdgeRecord{
+			{SrcSymbolName: "Caller", DstSymbolName: "Target", Kind: "calls"},
+		}
+		store.WithWriteTx(ctx, func(tx types.TxHandle) error {
+			return store.InsertEdges(ctx, tx, fileA, edges, map[string]int64{"Caller": symA}, "go")
+		})
+
+		// Now define "Target" — this should resolve the pending edge.
+		_, _, _ = insertFCS(t, store, "b.go", "Target")
+
+		err := store.WithWriteTx(ctx, func(tx types.TxHandle) error {
+			return store.ResolvePendingEdges(ctx, tx, []string{"Target"})
+		})
+		if err != nil {
+			t.Fatalf("ResolvePendingEdges: %v", err)
+		}
+
+		// Verify: pending should be empty, resolved edge should exist.
+		callers, _ := store.PendingEdgeCallers(ctx, "Target")
+		if len(callers) != 0 {
+			t.Errorf("expected 0 pending callers after resolve, got %d", len(callers))
+		}
+
+		neighbors, _ := store.Neighbors(ctx, symA, 1, "outgoing")
+		if len(neighbors) == 0 {
+			t.Error("expected resolved edge to appear in Neighbors")
 		}
 	})
 }

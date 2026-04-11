@@ -51,6 +51,89 @@ func TestHydrateFTSResults_MissingChunk(t *testing.T) {
 	}
 }
 
+// nonBatchStore wraps a WriterStore but hides the BatchMetadataStore interface,
+// forcing callers to use the legacy per-item query path.
+type nonBatchStore struct {
+	types.WriterStore
+}
+
+func TestHydrateFTSResults_LegacyPath(t *testing.T) {
+	t.Parallel()
+	store := &nonBatchStore{setupTestStore(t)}
+	ctx := context.Background()
+
+	fileID, _ := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "legacy.go", ContentHash: "h1", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	chunkIDs, _ := store.InsertChunks(ctx, fileID, []types.ChunkRecord{
+		{ChunkIndex: 0, SymbolName: "LegacyFunc", Kind: "function",
+			StartLine: 1, EndLine: 10, Content: "func LegacyFunc() {}", TokenCount: 5},
+	})
+
+	ftsResults := []types.FTSResult{
+		{ChunkID: chunkIDs[0], Rank: -10.0},
+	}
+
+	results, err := hydrateFTSResults(ctx, store, ftsResults, TestFilter{})
+	if err != nil {
+		t.Fatalf("hydrateFTSResults legacy: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Path != "legacy.go" {
+		t.Errorf("Path = %q, want legacy.go", results[0].Path)
+	}
+}
+
+func TestHydrateFTSResults_LegacyPath_WithFilter(t *testing.T) {
+	t.Parallel()
+	store := &nonBatchStore{setupTestStore(t)}
+	ctx := context.Background()
+
+	testFileID, _ := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "legacy_test.go", ContentHash: "h1", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full", IsTest: true,
+	})
+	implFileID, _ := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "legacy.go", ContentHash: "h2", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full", IsTest: false,
+	})
+
+	testChunkIDs, _ := store.InsertChunks(ctx, testFileID, []types.ChunkRecord{
+		{ChunkIndex: 0, SymbolName: "TestLegacy", Kind: "function",
+			StartLine: 1, EndLine: 10, Content: "func TestLegacy() {}", TokenCount: 5},
+	})
+	implChunkIDs, _ := store.InsertChunks(ctx, implFileID, []types.ChunkRecord{
+		{ChunkIndex: 0, SymbolName: "Legacy", Kind: "function",
+			StartLine: 1, EndLine: 10, Content: "func Legacy() {}", TokenCount: 5},
+	})
+
+	ftsResults := []types.FTSResult{
+		{ChunkID: testChunkIDs[0], Rank: -10.0},
+		{ChunkID: implChunkIDs[0], Rank: -5.0},
+	}
+
+	// ExcludeTests via legacy path
+	results, err := hydrateFTSResults(ctx, store, ftsResults, TestFilter{ExcludeTests: true})
+	if err != nil {
+		t.Fatalf("legacy ExcludeTests: %v", err)
+	}
+	if len(results) != 1 || results[0].Path != "legacy.go" {
+		t.Errorf("ExcludeTests: expected only legacy.go, got %v", results)
+	}
+
+	// TestOnly via legacy path
+	results, err = hydrateFTSResults(ctx, store, ftsResults, TestFilter{TestOnly: true})
+	if err != nil {
+		t.Fatalf("legacy TestOnly: %v", err)
+	}
+	if len(results) != 1 || results[0].Path != "legacy_test.go" {
+		t.Errorf("TestOnly: expected only legacy_test.go, got %v", results)
+	}
+}
+
 func TestHydrateFTSResults_ExcludeTests(t *testing.T) {
 	t.Parallel()
 	store := setupTestStore(t)
