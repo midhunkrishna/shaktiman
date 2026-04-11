@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/shaktimanai/shaktiman/internal/backends"
 	"github.com/shaktimanai/shaktiman/internal/daemon"
 	"github.com/shaktimanai/shaktiman/internal/lockfile"
 	"github.com/shaktimanai/shaktiman/internal/types"
@@ -307,26 +308,26 @@ func reindexCmd() *cobra.Command {
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
-			// Phase 1: Purge server-based backends via open connections.
-			d, err := daemon.New(cfg)
+			// Phase 1: Open backends and purge server-based stores.
+			b, err := backends.Open(cfg)
 			if err != nil {
-				return fmt.Errorf("init for purge: %w", err)
+				return fmt.Errorf("open backends for purge: %w", err)
 			}
-			if err := d.Purge(ctx); err != nil {
-				d.Stop()
+			if err := backends.PurgeBackends(ctx, b.Store, b.VectorStore); err != nil {
+				b.Close()
 				return fmt.Errorf("purge: %w", err)
 			}
-			d.Stop()
+			b.Close()
 
 			// Phase 2: Delete local files (SQLite DB, vector persistence).
-			if err := daemon.PurgeFiles(cfg); err != nil {
+			if err := backends.PurgeFiles(cfg); err != nil {
 				return fmt.Errorf("purge files: %w", err)
 			}
 
 			fmt.Fprintln(os.Stdout, "Purged all indexed data.")
 
-			// Phase 3: Fresh index.
-			d, err = daemon.New(cfg)
+			// Phase 3: Fresh index via daemon (daemon.New calls backends.Open internally).
+			d, err := daemon.New(cfg)
 			if err != nil {
 				return fmt.Errorf("init for reindex: %w", err)
 			}
