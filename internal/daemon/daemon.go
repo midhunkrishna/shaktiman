@@ -61,7 +61,7 @@ func New(cfg types.Config) (*Daemon, error) {
 		return nil, err
 	}
 
-	engine := core.NewQueryEngine(b.Store, cfg.ProjectRoot)
+	engine := core.NewQueryEngine(b.Store, cfg.ProjectRoot, cfg.EmbedQueryPrefix)
 	writer := NewWriterManager(b.Store, cfg.WriterChannelSize, cfg.TestPatterns)
 
 	// Session-aware ranking
@@ -119,6 +119,7 @@ func (d *Daemon) wireEmbedding() {
 		Store:     d.vectorStore,
 		Embedder:  client,
 		BatchSize: d.cfg.EmbedBatchSize,
+    DocumentPrefix: d.cfg.EmbedDocumentPrefix,
 		OnBatchDone: func(chunkIDs []int64) {
 			if err := d.store.MarkChunksEmbedded(context.Background(), chunkIDs); err != nil {
 				d.logger.Warn("mark chunks embedded failed", "err", err)

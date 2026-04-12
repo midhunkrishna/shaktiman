@@ -93,7 +93,7 @@ func setupSearchHandler(t *testing.T) handlerFunc {
 		t.Fatalf("InsertChunks: %v", err)
 	}
 
-	engine := core.NewQueryEngine(store, t.TempDir())
+	engine := core.NewQueryEngine(store, t.TempDir(), "")
 	cfg := types.DefaultConfig(t.TempDir())
 	return searchHandler(engine, cfg)
 }
@@ -369,7 +369,7 @@ func setupStoreWithData(t *testing.T) types.WriterStore {
 func setupContextHandler(t *testing.T) handlerFunc {
 	t.Helper()
 	store := setupStore(t)
-	engine := core.NewQueryEngine(store, t.TempDir())
+	engine := core.NewQueryEngine(store, t.TempDir(), "")
 	cfg := types.DefaultConfig(t.TempDir())
 	return contextHandler(engine, cfg)
 }
@@ -971,7 +971,7 @@ func TestToolDefs_DoNotPanic(t *testing.T) {
 func TestNewServer_DoesNotPanic(t *testing.T) {
 	t.Parallel()
 	store := setupStore(t)
-	engine := core.NewQueryEngine(store, t.TempDir())
+	engine := core.NewQueryEngine(store, t.TempDir(), "")
 	cfg := types.DefaultConfig(t.TempDir())
 
 	srv := NewServer(NewServerInput{
@@ -1408,7 +1408,7 @@ func setupStoreWithTestFiles(t *testing.T) types.WriterStore {
 func TestSearchHandler_Scope_DefaultExcludesTests(t *testing.T) {
 	t.Parallel()
 	store := setupStoreWithTestFiles(t)
-	engine := core.NewQueryEngine(store, t.TempDir())
+	engine := core.NewQueryEngine(store, t.TempDir(), "")
 	cfg := types.DefaultConfig(t.TempDir())
 	cfg.SearchMinScore = 0 // disable score threshold for test
 	handler := searchHandler(engine, cfg)
@@ -1431,7 +1431,7 @@ func TestSearchHandler_Scope_DefaultExcludesTests(t *testing.T) {
 func TestSearchHandler_Scope_Test(t *testing.T) {
 	t.Parallel()
 	store := setupStoreWithTestFiles(t)
-	engine := core.NewQueryEngine(store, t.TempDir())
+	engine := core.NewQueryEngine(store, t.TempDir(), "")
 	cfg := types.DefaultConfig(t.TempDir())
 	cfg.SearchMinScore = 0
 	handler := searchHandler(engine, cfg)
@@ -1456,7 +1456,7 @@ func TestSearchHandler_Scope_Test(t *testing.T) {
 func TestSearchHandler_Scope_All(t *testing.T) {
 	t.Parallel()
 	store := setupStoreWithTestFiles(t)
-	engine := core.NewQueryEngine(store, t.TempDir())
+	engine := core.NewQueryEngine(store, t.TempDir(), "")
 	cfg := types.DefaultConfig(t.TempDir())
 	cfg.SearchMinScore = 0
 	handler := searchHandler(engine, cfg)

@@ -61,6 +61,14 @@ type Config struct {
 	// Embedding timeout
 	EmbedTimeout time.Duration // HTTP timeout per embedding request (default: 120s)
 
+	// EmbedQueryPrefix is prepended to query text before embedding.
+	// For nomic-embed-text use "search_query: ". Empty by default (model-agnostic).
+	EmbedQueryPrefix string
+
+	// EmbedDocumentPrefix is prepended to chunk content before embedding.
+	// For nomic-embed-text use "search_document: ". Empty by default (model-agnostic).
+	EmbedDocumentPrefix string
+
 	// Test file detection patterns (glob patterns and directory prefixes)
 	TestPatterns []string // e.g. ["*_test.go", "testdata/", "*.test.ts"]
 }
@@ -154,11 +162,13 @@ type tomlQdrant struct {
 }
 
 type tomlEmbedding struct {
-	OllamaURL *string `toml:"ollama_url"`
-	Model     *string `toml:"model"`
-	Dims      *int    `toml:"dims"`
-	BatchSize *int    `toml:"batch_size"`
-	Timeout   *string `toml:"timeout"`
+	OllamaURL      *string `toml:"ollama_url"`
+	Model          *string `toml:"model"`
+	Dims           *int    `toml:"dims"`
+	BatchSize      *int    `toml:"batch_size"`
+	Timeout        *string `toml:"timeout"`
+	QueryPrefix    *string `toml:"query_prefix"`
+	DocumentPrefix *string `toml:"document_prefix"`
 }
 
 // LoadConfigFromFile reads shaktiman.toml and merges values into cfg.
@@ -286,6 +296,12 @@ func LoadConfigFromFile(cfg Config) (Config, error) {
 		}
 		cfg.EmbedTimeout = d
 	}
+	if v := tc.Embedding.QueryPrefix; v != nil {
+		cfg.EmbedQueryPrefix = *v
+	}
+	if v := tc.Embedding.DocumentPrefix; v != nil {
+		cfg.EmbedDocumentPrefix = *v
+	}
 
 	// Environment variable overrides for secrets (highest priority after CLI flags)
 	if v := os.Getenv("SHAKTIMAN_POSTGRES_URL"); v != "" {
@@ -356,6 +372,8 @@ const sampleConfig = `# Shaktiman configuration
 # dims = 768                             # Vector dimensionality
 # batch_size = 128                       # Texts per batch request
 # timeout = "120s"                       # HTTP timeout per request
+# query_prefix = "search_query: "        # Task prefix for query embedding (nomic-embed-text)
+# document_prefix = "search_document: "  # Task prefix for document embedding (nomic-embed-text)
 
 [test]
 # patterns = ["*_test.go", "testdata/"]  # Glob patterns identifying test files

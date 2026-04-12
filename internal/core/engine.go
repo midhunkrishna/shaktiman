@@ -18,17 +18,21 @@ type QueryEngine struct {
 	vectorStore  types.VectorStore // nil if embeddings disabled
 	embedder     types.Embedder    // nil if embeddings disabled
 	embedCache   *vector.EmbedCache
-	embedReady   func() bool       // checks if embedding service is available
-	sessionStore *SessionStore     // nil if session scoring disabled
+	embedReady   func() bool   // checks if embedding service is available
+	sessionStore *SessionStore // nil if session scoring disabled
+	queryPrefix  string        // prepended to query text before embedding (e.g. "search_query: ")
 }
 
 // NewQueryEngine creates an engine backed by the given store.
-func NewQueryEngine(store types.MetadataStore, projectRoot string) *QueryEngine {
+// queryPrefix is prepended to query text before embedding; use "" for models that don't require task prefixes.
+// For nomic-embed-text use "search_query: ".
+func NewQueryEngine(store types.MetadataStore, projectRoot string, queryPrefix string) *QueryEngine {
 	return &QueryEngine{
 		store:       store,
 		projectRoot: projectRoot,
 		logger:      slog.Default().With("component", "engine"),
 		embedCache:  vector.NewEmbedCache(100),
+		queryPrefix: queryPrefix,
 	}
 }
 
@@ -275,15 +279,18 @@ func (e *QueryEngine) contextKeyword(ctx context.Context, input ContextInput) (*
 }
 
 // embedQuery produces or retrieves a cached embedding for the query text.
+// queryPrefix is prepended before embedding and used as the cache key so that
+// a prefix change (e.g. switching models) does not serve stale cached vectors.
 func (e *QueryEngine) embedQuery(ctx context.Context, query string) ([]float32, error) {
-	if vec, ok := e.embedCache.Get(query); ok {
+	prefixed := e.queryPrefix + query
+	if vec, ok := e.embedCache.Get(prefixed); ok {
 		return vec, nil
 	}
-	vec, err := e.embedder.Embed(ctx, query)
+	vec, err := e.embedder.Embed(ctx, prefixed)
 	if err != nil {
 		return nil, err
 	}
-	e.embedCache.Put(query, vec)
+	e.embedCache.Put(prefixed, vec)
 	return vec, nil
 }
 

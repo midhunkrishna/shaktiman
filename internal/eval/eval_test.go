@@ -47,7 +47,7 @@ func setupEvalEngine(t *testing.T) *core.QueryEngine {
 		t.Fatalf("InsertChunks: %v", err)
 	}
 
-	return core.NewQueryEngine(store, t.TempDir())
+	return core.NewQueryEngine(store, t.TempDir(), "")
 }
 
 func TestEvaluate_BasicMetrics(t *testing.T) {

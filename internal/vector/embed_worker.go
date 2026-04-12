@@ -20,23 +20,25 @@ type EmbedJob struct {
 
 // EmbedWorkerInput configures the EmbedWorker.
 type EmbedWorkerInput struct {
-	Store       types.VectorStore
-	Embedder    *OllamaClient
-	BatchSize   int
-	OnBatchDone func(chunkIDs []int64) // optional callback after successful upsert
+	Store          types.VectorStore
+	Embedder       *OllamaClient
+	BatchSize      int
+	OnBatchDone    func(chunkIDs []int64) // optional callback after successful upsert
+	DocumentPrefix string                 // prepended to chunk content before embedding (e.g. "search_document: ")
 }
 
 // EmbedWorker processes embedding jobs in batches with circuit breaker protection.
 type EmbedWorker struct {
-	store       types.VectorStore
-	embedder    *OllamaClient
-	cb          *CircuitBreaker
-	queue       chan EmbedJob
-	batchSz     int
-	logger      *slog.Logger
-	onBatchDone func(chunkIDs []int64)
-	dropped     atomic.Int64
-	inflight    sync.WaitGroup // tracks in-flight processBatch calls
+	store          types.VectorStore
+	embedder       *OllamaClient
+	cb             *CircuitBreaker
+	queue          chan EmbedJob
+	batchSz        int
+	logger         *slog.Logger
+	onBatchDone    func(chunkIDs []int64)
+	dropped        atomic.Int64
+	inflight       sync.WaitGroup // tracks in-flight processBatch calls
+	documentPrefix string         // prepended to chunk content before embedding
 }
 
 // NewEmbedWorker creates an embedding worker.
@@ -46,13 +48,14 @@ func NewEmbedWorker(input EmbedWorkerInput) *EmbedWorker {
 		batchSz = 128
 	}
 	return &EmbedWorker{
-		store:       input.Store,
-		embedder:    input.Embedder,
-		cb:          NewCircuitBreaker(),
-		queue:       make(chan EmbedJob, 1000),
-		batchSz:     batchSz,
-		logger:      slog.Default().With("component", "embed-worker"),
-		onBatchDone: input.OnBatchDone,
+		store:          input.Store,
+		embedder:       input.Embedder,
+		cb:             NewCircuitBreaker(),
+		queue:          make(chan EmbedJob, 1000),
+		batchSz:        batchSz,
+		logger:         slog.Default().With("component", "embed-worker"),
+		onBatchDone:    input.OnBatchDone,
+		documentPrefix: input.DocumentPrefix,
 	}
 }
 
@@ -159,7 +162,7 @@ func (w *EmbedWorker) processBatch(ctx context.Context, batch []EmbedJob) {
 
 	texts := make([]string, len(batch))
 	for i, j := range batch {
-		texts[i] = j.Content
+		texts[i] = w.documentPrefix + j.Content
 	}
 
 	vectors, err := w.embedder.EmbedBatch(ctx, texts)
@@ -332,7 +335,7 @@ func (w *EmbedWorker) reconcileAndEmbed(ctx context.Context, source types.EmbedS
 	texts := make([]string, len(needEmbed))
 	needIDs := make([]int64, len(needEmbed))
 	for j, job := range needEmbed {
-		texts[j] = job.Content
+		texts[j] = w.documentPrefix + job.Content
 		needIDs[j] = job.ChunkID
 	}
 
@@ -473,7 +476,7 @@ func (w *EmbedWorker) retryDeferred(ctx context.Context, rs *runState) error {
 				continue
 			}
 
-			vecs, err := w.embedder.EmbedBatch(ctx, []string{dc.job.Content})
+			vecs, err := w.embedder.EmbedBatch(ctx, []string{w.documentPrefix + dc.job.Content})
 			if err != nil {
 				if errors.Is(err, ErrPermanentEmbed) {
 					rs.skipped++
