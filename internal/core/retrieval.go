@@ -93,6 +93,7 @@ func hydrateFTSResultsBatch(ctx context.Context, store types.BatchMetadataStore,
 
 		results = append(results, types.ScoredResult{
 			ChunkID:    h.ChunkID,
+			FileID:     h.FileID,
 			Score:      normalizeBM25(fts.Rank),
 			Path:       h.Path,
 			SymbolName: h.SymbolName,
@@ -138,6 +139,7 @@ func hydrateFTSResultsLegacy(ctx context.Context, store types.MetadataStore, fts
 
 		results = append(results, types.ScoredResult{
 			ChunkID:    chunk.ID,
+			FileID:     chunk.FileID,
 			Score:      normalizeBM25(fts.Rank),
 			Path:       path,
 			SymbolName: chunk.SymbolName,
@@ -169,22 +171,14 @@ func ExpandSplitSiblings(ctx context.Context, store types.MetadataStore, results
 }
 
 func expandSiblingsBatch(ctx context.Context, store types.BatchMetadataStore, results []types.ScoredResult) []types.ScoredResult {
-	// Collect unique sibling keys for chunks that could be fragments.
-	// Skip header chunks and chunks without a symbol name.
+	// Collect unique sibling keys from results. FileID is carried through
+	// from hydration, so no per-chunk DB lookups are needed.
 	keySet := make(map[string]types.SiblingKey)
 	for _, r := range results {
-		if r.SymbolName == "" || r.Kind == "header" {
+		if r.SymbolName == "" || r.Kind == "header" || r.FileID == 0 {
 			continue
 		}
-		k := types.SiblingKey{FileID: r.ChunkID, SymbolName: r.SymbolName, Kind: r.Kind}
-		// We need the file ID, not chunk ID. We don't have it directly in ScoredResult,
-		// so we need to look it up. But HydratedChunk doesn't carry file_id in ScoredResult.
-		// Instead, we use a per-chunk lookup to get the file ID.
-		chunk, err := store.GetChunkByID(ctx, r.ChunkID)
-		if err != nil || chunk == nil {
-			continue
-		}
-		k.FileID = chunk.FileID
+		k := types.SiblingKey{FileID: r.FileID, SymbolName: r.SymbolName, Kind: r.Kind}
 		keySet[k.String()] = k
 	}
 
@@ -206,33 +200,28 @@ func expandSiblingsBatch(ctx context.Context, store types.BatchMetadataStore, re
 }
 
 func expandSiblingsLegacy(ctx context.Context, store types.MetadataStore, results []types.ScoredResult) []types.ScoredResult {
-	// Build sibling map using per-key queries.
+	// Build sibling map using per-key queries. FileID is carried through
+	// from hydration, so no per-chunk DB lookups are needed.
 	siblingMap := make(map[string][]types.HydratedChunk)
 
 	for _, r := range results {
-		if r.SymbolName == "" || r.Kind == "header" {
+		if r.SymbolName == "" || r.Kind == "header" || r.FileID == 0 {
 			continue
 		}
-		chunk, err := store.GetChunkByID(ctx, r.ChunkID)
-		if err != nil || chunk == nil {
-			continue
-		}
-		k := types.SiblingKey{FileID: chunk.FileID, SymbolName: r.SymbolName, Kind: r.Kind}
+		k := types.SiblingKey{FileID: r.FileID, SymbolName: r.SymbolName, Kind: r.Kind}
 		if _, seen := siblingMap[k.String()]; seen {
 			continue
 		}
-		siblings, err := store.GetSiblingChunks(ctx, chunk.FileID, r.SymbolName, r.Kind)
+		siblings, err := store.GetSiblingChunks(ctx, r.FileID, r.SymbolName, r.Kind)
 		if err != nil || len(siblings) <= 1 {
 			continue // not a split fragment
 		}
-		// Convert to HydratedChunk for mergeSiblings
-		path, _ := store.GetFilePathByID(ctx, chunk.FileID)
 		var hydrated []types.HydratedChunk
 		for _, s := range siblings {
 			hydrated = append(hydrated, types.HydratedChunk{
 				ChunkID:    s.ID,
 				FileID:     s.FileID,
-				Path:       path,
+				Path:       r.Path,
 				SymbolName: s.SymbolName,
 				Kind:       s.Kind,
 				StartLine:  s.StartLine,

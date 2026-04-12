@@ -3,6 +3,7 @@ package types
 // ScoredResult represents a chunk with its relevance score from retrieval.
 type ScoredResult struct {
 	ChunkID    int64   `json:"chunk_id"`
+	FileID     int64   `json:"file_id,omitempty"` // carried from hydration for sibling expansion
 	Score      float64 `json:"score"`
 	Path       string  `json:"path"`
 	SymbolName string  `json:"symbol_name,omitempty"`

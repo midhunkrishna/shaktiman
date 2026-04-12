@@ -371,6 +371,7 @@ func mergeResults(ctx context.Context, store types.MetadataStore, kwResults []ty
 				}
 				merged = append(merged, types.ScoredResult{
 					ChunkID:    h.ChunkID,
+					FileID:     h.FileID,
 					Score:      0, // will be set by ranker
 					Path:       h.Path,
 					SymbolName: h.SymbolName,
@@ -410,6 +411,7 @@ func mergeResults(ctx context.Context, store types.MetadataStore, kwResults []ty
 
 		merged = append(merged, types.ScoredResult{
 			ChunkID:    chunk.ID,
+			FileID:     chunk.FileID,
 			Score:      0,
 			Path:       path,
 			SymbolName: chunk.SymbolName,
