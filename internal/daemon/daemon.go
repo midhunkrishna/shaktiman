@@ -6,16 +6,15 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/shaktimanai/shaktiman/internal/backends"
 	"github.com/shaktimanai/shaktiman/internal/core"
 	"github.com/shaktimanai/shaktiman/internal/mcp"
 	"github.com/shaktimanai/shaktiman/internal/observability"
 	"github.com/shaktimanai/shaktiman/internal/parser"
-	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 	"github.com/shaktimanai/shaktiman/internal/vector"
 
@@ -31,9 +30,9 @@ const parserVersionConfigKey = "parser_algorithm_version"
 // Daemon manages the lifecycle of the Shaktiman indexing system.
 type Daemon struct {
 	cfg              types.Config
-	dbCloser         func() error             // closes the underlying database
-	store            types.WriterStore
-	lifecycle        types.StoreLifecycle     // nil if backend needs no lifecycle hooks
+	backends         *backends.Backends       // owns DB pool + vector store lifecycle
+	store            types.WriterStore        // convenience ref (== backends.Store)
+	lifecycle        types.StoreLifecycle     // convenience ref (== backends.Lifecycle)
 	writer           *WriterManager
 	engine           *core.QueryEngine
 	logger           *slog.Logger
@@ -57,42 +56,37 @@ type Daemon struct {
 
 // New creates a new Daemon, opening the database and running migrations.
 func New(cfg types.Config) (*Daemon, error) {
-	store, lifecycle, dbCloser, err := storage.NewMetadataStore(storage.MetadataStoreConfigFrom(cfg))
+	b, err := backends.Open(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("create metadata store: %w", err)
+		return nil, err
 	}
 
-	engine := core.NewQueryEngine(store, cfg.ProjectRoot, cfg.EmbedQueryPrefix)
-	writer := NewWriterManager(store, cfg.WriterChannelSize, cfg.TestPatterns)
+	engine := core.NewQueryEngine(b.Store, cfg.ProjectRoot, cfg.EmbedQueryPrefix)
+	writer := NewWriterManager(b.Store, cfg.WriterChannelSize, cfg.TestPatterns)
 
 	// Session-aware ranking
 	sessionStore := core.NewSessionStore(2000)
 	engine.SetSessionStore(sessionStore)
 
 	d := &Daemon{
-		cfg:       cfg,
-		dbCloser:  dbCloser,
-		store:     store,
-		lifecycle: lifecycle,
-		writer:    writer,
-		engine:    engine,
-		logger:    slog.Default().With("component", "daemon"),
-		sessionID: fmt.Sprintf("%d", time.Now().UnixNano()),
+		cfg:         cfg,
+		backends:    b,
+		store:       b.Store,
+		lifecycle:   b.Lifecycle,
+		vectorStore: b.VectorStore,
+		writer:      writer,
+		engine:      engine,
+		logger:      slog.Default().With("component", "daemon"),
+		sessionID:   fmt.Sprintf("%d", time.Now().UnixNano()),
 		serveFunc:          func(s *mcpserver.MCPServer) error { return mcpserver.ServeStdio(s) },
 		saveActiveInterval: 30 * time.Second,
 		saveIdleInterval:   5 * time.Minute,
 		savePollInterval:   10 * time.Second,
 	}
 
-	// Warn about Qdrant multi-project isolation gap.
-	if cfg.VectorBackend == "qdrant" && cfg.DatabaseBackend == "postgres" {
-		d.logger.Warn("Qdrant vector backend does not support multi-project isolation; " +
-			"semantic search may return results from other projects sharing this Qdrant instance")
-	}
-
-	// Initialize vector store + embedding pipeline
-	if cfg.EmbedEnabled {
-		d.initEmbedding()
+	// Embedding pipeline wiring (daemon-specific: load from disk, create worker)
+	if d.vectorStore != nil && cfg.EmbedEnabled {
+		d.wireEmbedding()
 	}
 
 	// Wire vector deleter to writer for stale embedding cleanup
@@ -103,18 +97,14 @@ func New(cfg types.Config) (*Daemon, error) {
 	return d, nil
 }
 
-func (d *Daemon) initEmbedding() {
-	vs, err := d.newVectorStore()
-	if err != nil {
-		d.logger.Error("create vector store failed", "err", err)
-		return
-	}
-	d.vectorStore = vs
-
-	if err := d.loadVectors(d.embeddingsPath()); err != nil {
+// wireEmbedding loads persisted embeddings from disk, creates the Ollama
+// client and background embed worker, and wires the vector store into the
+// query engine. Must be called after backends.Open() populates d.vectorStore.
+func (d *Daemon) wireEmbedding() {
+	if err := d.loadVectors(backends.EmbeddingsPath(d.cfg)); err != nil {
 		d.logger.Warn("load embeddings from disk failed", "err", err)
 	} else {
-		count, _ := vs.Count(context.Background())
+		count, _ := d.vectorStore.Count(context.Background())
 		if count > 0 {
 			d.logger.Info("loaded embeddings from disk", "count", count)
 		}
@@ -126,10 +116,10 @@ func (d *Daemon) initEmbedding() {
 	})
 
 	worker := vector.NewEmbedWorker(vector.EmbedWorkerInput{
-		Store:          vs,
-		Embedder:       client,
-		BatchSize:      d.cfg.EmbedBatchSize,
-		DocumentPrefix: d.cfg.EmbedDocumentPrefix,
+		Store:     d.vectorStore,
+		Embedder:  client,
+		BatchSize: d.cfg.EmbedBatchSize,
+    DocumentPrefix: d.cfg.EmbedDocumentPrefix,
 		OnBatchDone: func(chunkIDs []int64) {
 			if err := d.store.MarkChunksEmbedded(context.Background(), chunkIDs); err != nil {
 				d.logger.Warn("mark chunks embedded failed", "err", err)
@@ -138,7 +128,7 @@ func (d *Daemon) initEmbedding() {
 	})
 
 	d.embedWorker = worker
-	d.engine.SetVectorStore(vs, client, worker.EmbedReady)
+	d.engine.SetVectorStore(d.vectorStore, client, worker.EmbedReady)
 }
 
 // Start starts background services and the MCP server.
@@ -269,7 +259,7 @@ func (d *Daemon) embedFromDB(ctx context.Context, onProgress func(types.EmbedPro
 	// Trigger an immediate save checkpoint so the periodic saver switches to
 	// 30s intervals on its next tick (instead of waiting up to 5 minutes).
 	if count, _ := d.vectorStore.Count(ctx); count > 0 {
-		if err := d.saveVectors(d.embeddingsPath()); err != nil {
+		if err := d.saveVectors(backends.EmbeddingsPath(d.cfg)); err != nil {
 			d.logger.Warn("pre-embed save failed", "err", err)
 		}
 	}
@@ -327,7 +317,7 @@ func (d *Daemon) EmbedProject(ctx context.Context, onProgress func(types.EmbedPr
 
 	// Save embeddings even on partial failure (crash safety).
 	if count > 0 {
-		if saveErr := d.saveVectors(d.embeddingsPath()); saveErr != nil {
+		if saveErr := d.saveVectors(backends.EmbeddingsPath(d.cfg)); saveErr != nil {
 			d.logger.Warn("save embeddings failed", "err", saveErr)
 		}
 	}
@@ -418,7 +408,7 @@ func (d *Daemon) periodicEmbeddingSave(ctx context.Context) {
 
 			count, _ := d.vectorStore.Count(ctx)
 			if count > 0 {
-				if err := d.saveVectors(d.embeddingsPath()); err != nil {
+				if err := d.saveVectors(backends.EmbeddingsPath(d.cfg)); err != nil {
 					d.logger.Error("periodic embedding save failed", "err", err)
 				} else {
 					d.logger.Info("periodic embedding checkpoint", "count", count)
@@ -464,32 +454,29 @@ func (d *Daemon) Stop() error {
 		}
 	}
 
-	// Persist embeddings and close vector store BEFORE closing the database.
-	// pgvector borrows the Postgres pool — closing the pool first would cause errors.
+	// Persist embeddings before closing stores.
 	if d.vectorStore != nil {
 		count, _ := d.vectorStore.Count(context.Background())
 		if count > 0 {
-			if err := d.saveVectors(d.embeddingsPath()); err != nil {
+			if err := d.saveVectors(backends.EmbeddingsPath(d.cfg)); err != nil {
 				d.logger.Error("save embeddings failed", "err", err)
 			} else {
 				d.logger.Info("saved embeddings to disk", "count", count)
 			}
 		}
-		if err := d.vectorStore.Close(); err != nil {
-			d.logger.Error("close vector store failed", "err", err)
-		}
 	}
 
-	// Close database (pool) after vector store is done.
-	if d.dbCloser != nil {
-		if err := d.dbCloser(); err != nil {
-			return fmt.Errorf("close database: %w", err)
+	// Close vector store then DB pool (backends.Close enforces correct order).
+	if d.backends != nil {
+		if err := d.backends.Close(); err != nil {
+			return fmt.Errorf("close backends: %w", err)
 		}
 	}
 
 	d.logger.Info("shutdown complete", "duration_ms", time.Since(start).Milliseconds())
 	return nil
 }
+
 
 // saveVectors persists vectors if the store supports explicit persistence.
 func (d *Daemon) saveVectors(path string) error {
@@ -507,24 +494,6 @@ func (d *Daemon) loadVectors(path string) error {
 	return nil
 }
 
-// newVectorStore creates a vector store based on the configured backend.
-func (d *Daemon) newVectorStore() (types.VectorStore, error) {
-	return vector.NewVectorStore(vector.VectorStoreConfigFrom(d.cfg, d.store))
-}
-
-// embeddingsPath returns the persistence file path for the active vector backend.
-// HNSW and BruteForce use incompatible binary formats, so each gets a distinct path.
-func (d *Daemon) embeddingsPath() string {
-	if d.cfg.VectorBackend == "hnsw" {
-		base := d.cfg.EmbeddingsPath
-		ext := filepath.Ext(base)
-		if ext != "" {
-			return base[:len(base)-len(ext)] + ".hnsw"
-		}
-		return base + ".hnsw"
-	}
-	return d.cfg.EmbeddingsPath
-}
 
 // Engine returns the query engine.
 func (d *Daemon) Engine() *core.QueryEngine {

@@ -114,7 +114,13 @@ No manual setup is needed. Shaktiman initializes automatically on first run.
 ./shaktiman index /path/to/your/project --embed --vector hnsw
 ```
 
-This creates `.shaktiman/index.db` and indexes all source files. With `--embed`, it also generates vector embeddings for semantic search. Run it again at any time to re-index.
+This creates `.shaktiman/index.db` and indexes all source files. With `--embed`, it also generates vector embeddings for semantic search. Run it again at any time to re-index incrementally.
+
+To start fresh (e.g. after major refactors or parser upgrades), use `reindex` which purges all indexed data before re-indexing:
+
+```bash
+./shaktiman reindex /path/to/your/project --embed
+```
 
 The `--vector` flag selects the vector store backend (`brute_force` or `hnsw`). Config resolution order: default → TOML → `--vector` flag.
 
@@ -273,6 +279,7 @@ The `--format` flag is persistent and applies to all subcommands.
 |---------|-------------|-----------|
 | `init <root>` | Initialize `.shaktiman/` config directory | (none) |
 | `index <root>` | Index a project directory | `--embed` (generate embeddings), `--vector` (brute_force/hnsw) |
+| `reindex <root>` | Purge all indexed data and reindex from scratch | `--embed`, `--vector`, `--force` (skip confirmation) |
 | `status <root>` | Show index status | (none) |
 | `search <query>` | Search indexed code by keyword | `--root`, `--max`, `--mode` (locate/full), `--min-score`, `--explain` |
 | `context <query>` | Assemble ranked code context fitted to a token budget | `--root`, `--budget` (256-32768) |
@@ -295,6 +302,12 @@ The `--format` flag is persistent and applies to all subcommands.
 
 # Index with HNSW vector backend
 ./shaktiman index --embed --vector hnsw /path/to/project
+
+# Purge all indexed data and reindex from scratch
+./shaktiman reindex /path/to/project
+
+# Reindex with embeddings, skip confirmation prompt
+./shaktiman reindex --embed --force /path/to/project
 
 # Check index status
 ./shaktiman status /path/to/project

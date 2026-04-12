@@ -529,6 +529,31 @@ func (s *PgStore) ResetEmbeddedFlags(ctx context.Context, chunkIDs []int64) erro
 	})
 }
 
+// PurgeAll deletes all indexed data while preserving schema and migrations.
+// TRUNCATE files CASCADE cascades to: chunks, symbols, edges, pending_edges,
+// diff_log, diff_symbols, and embeddings (pgvector FK). Standalone tables
+// (access_log, working_set, tool_calls) are truncated explicitly.
+// Preserved: goose_db_version, schema_version, config.
+// PurgeAll deletes all indexed data for the current project while preserving
+// schema, migrations, and the project registry entry.
+// DELETE FROM files WHERE project_id cascades to: chunks, symbols, edges,
+// pending_edges, diff_log, diff_symbols (via ON DELETE CASCADE FKs).
+// Session-level tables (access_log, working_set, tool_calls) are not scoped
+// by project_id and are left intact.
+// Preserved: goose_db_version, projects, config (except parser_algorithm_version).
+func (s *PgStore) PurgeAll(ctx context.Context) error {
+	_, err := s.pool.Exec(ctx, "DELETE FROM files WHERE project_id = $1", s.projectID)
+	if err != nil {
+		return fmt.Errorf("purge files for project %d: %w", s.projectID, err)
+	}
+	// Clear parser version so the next index records the current version.
+	_, err = s.pool.Exec(ctx, "DELETE FROM config WHERE key = 'parser_algorithm_version'")
+	if err != nil {
+		return fmt.Errorf("purge parser version config: %w", err)
+	}
+	return nil
+}
+
 func (s *PgStore) EmbeddingReadiness(ctx context.Context, vectorCount int) (float64, error) {
 	var totalChunks int
 	if err := s.queryRow(ctx,

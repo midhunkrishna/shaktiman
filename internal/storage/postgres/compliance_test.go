@@ -54,6 +54,18 @@ func TestPostgresMetadataStoreCompliance(t *testing.T) {
 	})
 }
 
+func TestPostgresWriterStoreCompliance(t *testing.T) {
+	storetest.RunWriterStoreTests(t, func(t *testing.T) types.WriterStore {
+		return newTestStore(t)
+	})
+}
+
+func TestPostgresGraphMutatorCompliance(t *testing.T) {
+	storetest.RunGraphMutatorTests(t, func(t *testing.T) types.WriterStore {
+		return newTestStore(t)
+	})
+}
+
 func TestPostgres_WithWriteTx_CommitAndRollback(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -914,6 +926,83 @@ func TestPostgres_RegistrationFactory(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("UpsertFile via registry: %v", err)
+	}
+}
+
+func TestPgStore_PurgeAll(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	// Seed data
+	fileID, err := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "purge.go", ContentHash: "h1", Mtime: 1.0,
+		Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+	_, err = store.InsertChunks(ctx, fileID, []types.ChunkRecord{
+		{ChunkIndex: 0, Kind: "function", StartLine: 1, EndLine: 10,
+			Content: "func Foo() {}", TokenCount: 5},
+	})
+	if err != nil {
+		t.Fatalf("InsertChunks: %v", err)
+	}
+
+	// Set parser version to verify it gets cleared
+	store.SetConfig(ctx, "parser_algorithm_version", "v1-test")
+
+	stats, err := store.GetIndexStats(ctx)
+	if err != nil {
+		t.Fatalf("GetIndexStats: %v", err)
+	}
+	if stats.TotalFiles == 0 || stats.TotalChunks == 0 {
+		t.Fatal("expected seeded data before purge")
+	}
+
+	// Purge
+	if err := store.PurgeAll(ctx); err != nil {
+		t.Fatalf("PurgeAll: %v", err)
+	}
+
+	// All data tables should be empty
+	stats, err = store.GetIndexStats(ctx)
+	if err != nil {
+		t.Fatalf("GetIndexStats after purge: %v", err)
+	}
+	if stats.TotalFiles != 0 {
+		t.Errorf("TotalFiles = %d after purge, want 0", stats.TotalFiles)
+	}
+	if stats.TotalChunks != 0 {
+		t.Errorf("TotalChunks = %d after purge, want 0", stats.TotalChunks)
+	}
+
+	// goose_db_version should survive
+	var count int
+	err = store.Pool().QueryRow(ctx, "SELECT COUNT(*) FROM goose_db_version").Scan(&count)
+	if err != nil {
+		t.Fatalf("goose_db_version query: %v", err)
+	}
+	if count == 0 {
+		t.Error("goose_db_version should not be empty after purge")
+	}
+
+	// parser_algorithm_version should be cleared
+	ver, err := store.GetConfig(ctx, "parser_algorithm_version")
+	if err != nil {
+		t.Fatalf("GetConfig after purge: %v", err)
+	}
+	if ver != "" {
+		t.Errorf("parser_algorithm_version = %q after purge, want empty", ver)
+	}
+
+	// Store should still be usable
+	_, err = store.UpsertFile(ctx, &types.FileRecord{
+		Path: "after.go", ContentHash: "h2", Mtime: 2.0,
+		Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile after purge: %v", err)
 	}
 }
 

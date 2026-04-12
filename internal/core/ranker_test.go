@@ -316,6 +316,61 @@ func TestLookupChunkIDsForSymbols_UnknownID(t *testing.T) {
 	}
 }
 
+func TestComputeStructuralScores_LegacyPath(t *testing.T) {
+	t.Parallel()
+	store := setupTestStore(t)
+	ctx := context.Background()
+
+	// Create two files connected by an edge (same setup as WithGraphEdges).
+	fileID1, _ := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "leg_a.go", ContentHash: "h1", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	chunkIDs1, _ := store.InsertChunks(ctx, fileID1, []types.ChunkRecord{
+		{ChunkIndex: 0, SymbolName: "LegA", Kind: "function",
+			StartLine: 1, EndLine: 10, Content: "func LegA() {}", TokenCount: 5},
+	})
+	symIDs1, _ := store.InsertSymbols(ctx, fileID1, []types.SymbolRecord{
+		{ChunkID: chunkIDs1[0], Name: "LegA", Kind: "function", Line: 1, Visibility: "exported"},
+	})
+
+	fileID2, _ := store.UpsertFile(ctx, &types.FileRecord{
+		Path: "leg_b.go", ContentHash: "h2", Mtime: 1.0,
+		EmbeddingStatus: "pending", ParseQuality: "full",
+	})
+	chunkIDs2, _ := store.InsertChunks(ctx, fileID2, []types.ChunkRecord{
+		{ChunkIndex: 0, SymbolName: "LegB", Kind: "function",
+			StartLine: 1, EndLine: 10, Content: "func LegB() {}", TokenCount: 5},
+	})
+	symIDs2, _ := store.InsertSymbols(ctx, fileID2, []types.SymbolRecord{
+		{ChunkID: chunkIDs2[0], Name: "LegB", Kind: "function", Line: 1, Visibility: "exported"},
+	})
+
+	store.WithWriteTx(ctx, func(txh types.TxHandle) error {
+		return store.InsertEdges(ctx, txh, fileID1, []types.EdgeRecord{
+			{SrcSymbolName: "LegA", DstSymbolName: "LegB", Kind: "calls"},
+		}, map[string]int64{"LegA": symIDs1[0], "LegB": symIDs2[0]}, "")
+	})
+
+	candidates := []types.ScoredResult{
+		{ChunkID: chunkIDs1[0], Score: 0.9, Path: "leg_a.go", SymbolName: "LegA",
+			Kind: "function", StartLine: 1, EndLine: 10},
+		{ChunkID: chunkIDs2[0], Score: 0.8, Path: "leg_b.go", SymbolName: "LegB",
+			Kind: "function", StartLine: 1, EndLine: 10},
+	}
+
+	// Wrap in nonBatchStore to force legacy path.
+	wrapped := &nonBatchStore{store}
+	scores := computeStructuralScores(ctx, wrapped, candidates)
+
+	if scores[chunkIDs1[0]] == 0 {
+		t.Error("legacy: expected non-zero structural score for LegA")
+	}
+	if scores[chunkIDs2[0]] == 0 {
+		t.Error("legacy: expected non-zero structural score for LegB")
+	}
+}
+
 func TestComputeStructuralScores_WithGraphEdges(t *testing.T) {
 	t.Parallel()
 	store := setupTestStore(t)

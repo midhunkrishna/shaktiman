@@ -5,27 +5,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/shaktimanai/shaktiman/internal/backends"
 	"github.com/shaktimanai/shaktiman/internal/core"
 	"github.com/shaktimanai/shaktiman/internal/format"
-	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 	"github.com/shaktimanai/shaktiman/internal/vector"
 )
 
-// openStore creates a WriterStore using the registry for the given config.
+// openStore creates a WriterStore using the backends package.
 // The returned closer must be deferred by the caller.
 func openStore(cfg types.Config) (types.WriterStore, func() error, error) {
-	store, _, closer, err := storage.NewMetadataStore(storage.MetadataStoreConfigFrom(cfg))
+	b, err := backends.OpenMetadataOnly(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
-	return store, closer, nil
+	return b.Store, b.Close, nil
 }
 
 // openEngine creates a QueryEngine with vector store + embedder when available.
@@ -46,8 +45,8 @@ func openEngine(cfg types.Config, store types.WriterStore, root string) (*core.Q
 
 	// Load persisted embeddings (brute_force/hnsw use disk files)
 	if p, ok := vs.(types.VectorPersister); ok {
-		if err := p.LoadFromDisk(embeddingsPath(cfg)); err != nil {
-			slog.Info("no embeddings on disk, using keyword search", "path", embeddingsPath(cfg))
+		if err := p.LoadFromDisk(backends.EmbeddingsPath(cfg)); err != nil {
+			slog.Info("no embeddings on disk, using keyword search", "path", backends.EmbeddingsPath(cfg))
 			return engine, vs
 		}
 	}
@@ -67,19 +66,6 @@ func openEngine(cfg types.Config, store types.WriterStore, root string) (*core.Q
 
 	engine.SetVectorStore(vs, client, func() bool { return true })
 	return engine, vs
-}
-
-// embeddingsPath returns the persistence file path, matching daemon.embeddingsPath.
-func embeddingsPath(cfg types.Config) string {
-	if cfg.VectorBackend == "hnsw" {
-		base := cfg.EmbeddingsPath
-		ext := filepath.Ext(base)
-		if ext != "" {
-			return base[:len(base)-len(ext)] + ".hnsw"
-		}
-		return base + ".hnsw"
-	}
-	return cfg.EmbeddingsPath
 }
 
 func searchCmd() *cobra.Command {

@@ -202,3 +202,23 @@ func TestVectorStoreConfigFrom_NonPgVector_IgnoresPool(t *testing.T) {
 		t.Error("PgPool should be nil for non-pgvector backend")
 	}
 }
+
+// fakeProjectStore simulates a MetadataStore with ProjectID().
+type fakeProjectStore struct{ id int64 }
+
+func (f *fakeProjectStore) ProjectID() int64 { return f.id }
+
+func TestVectorStoreConfigFrom_Qdrant_ExtractsProjectID(t *testing.T) {
+	t.Parallel()
+	cfg := types.Config{
+		VectorBackend: "qdrant",
+		EmbeddingDims: 768,
+	}
+	vsc := vector.VectorStoreConfigFrom(cfg, &fakeProjectStore{id: 42})
+	if vsc.ProjectID != 42 {
+		t.Errorf("ProjectID = %d, want 42", vsc.ProjectID)
+	}
+	if vsc.PgPool != nil {
+		t.Error("PgPool should be nil for qdrant backend")
+	}
+}

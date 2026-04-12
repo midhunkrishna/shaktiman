@@ -357,3 +357,494 @@ func TestWriterManager_UnknownJobType(t *testing.T) {
 	cancel()
 	<-wm.Done()
 }
+
+// ── processEnrichmentJob direct unit tests ──
+
+func TestProcessEnrichmentJob_NilFile(t *testing.T) {
+	t.Parallel()
+	store := testutil.NewTestWriterStore(t)
+	logger := slog.Default()
+
+	_, err := processEnrichmentJob(context.Background(), store, logger,
+		types.WriteJob{Type: types.WriteJobEnrichment, FilePath: "test.go"},
+		nil)
+	if err == nil {
+		t.Fatal("expected error for nil file")
+	}
+}
+
+func TestProcessEnrichmentJob_ContentHashGuard(t *testing.T) {
+	t.Parallel()
+	store := testutil.NewTestWriterStore(t)
+	ctx := context.Background()
+	logger := slog.Default()
+
+	// Seed a file with hash "abc".
+	store.UpsertFile(ctx, &types.FileRecord{
+		Path: "guard.go", ContentHash: "abc", Mtime: 1.0,
+		Language: "go", EmbeddingStatus: "done", ParseQuality: "full",
+		IndexedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	})
+
+	// Submit job with same hash — should be a no-op.
+	stale, err := processEnrichmentJob(ctx, store, logger, types.WriteJob{
+		Type:        types.WriteJobEnrichment,
+		FilePath:    "guard.go",
+		ContentHash: "abc",
+		Timestamp:   time.Now(),
+		File: &types.FileRecord{
+			Path: "guard.go", ContentHash: "abc", Mtime: 1.0,
+			Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stale != nil {
+		t.Errorf("expected nil stale IDs for same-hash skip, got %v", stale)
+	}
+}
+
+func TestProcessEnrichmentJob_StaleJobSkipped(t *testing.T) {
+	t.Parallel()
+	store := testutil.NewTestWriterStore(t)
+	ctx := context.Background()
+	logger := slog.Default()
+
+	// Seed file with recent IndexedAt.
+	recentTime := time.Now().UTC()
+	store.UpsertFile(ctx, &types.FileRecord{
+		Path: "stale.go", ContentHash: "v1", Mtime: 1.0,
+		Language: "go", EmbeddingStatus: "done", ParseQuality: "full",
+		IndexedAt: recentTime.Format(time.RFC3339Nano),
+	})
+
+	// Submit job with older timestamp and different hash.
+	stale, err := processEnrichmentJob(ctx, store, logger, types.WriteJob{
+		Type:        types.WriteJobEnrichment,
+		FilePath:    "stale.go",
+		ContentHash: "v2",
+		Timestamp:   recentTime.Add(-time.Hour), // older than DB
+		File: &types.FileRecord{
+			Path: "stale.go", ContentHash: "v2", Mtime: 2.0,
+			Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stale != nil {
+		t.Errorf("expected nil stale IDs for stale job skip, got %v", stale)
+	}
+}
+
+func TestProcessEnrichmentJob_NewFile(t *testing.T) {
+	t.Parallel()
+	store := testutil.NewTestWriterStore(t)
+	ctx := context.Background()
+	logger := slog.Default()
+
+	job := types.WriteJob{
+		Type:        types.WriteJobEnrichment,
+		FilePath:    "new.go",
+		ContentHash: "h1",
+		Timestamp:   time.Now(),
+		File: &types.FileRecord{
+			Path: "new.go", ContentHash: "h1", Mtime: 1.0,
+			Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		},
+		Chunks: []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: "Hello",
+				StartLine: 1, EndLine: 5, Content: "func Hello() {}", TokenCount: 3},
+		},
+		Symbols: []types.SymbolRecord{
+			{ChunkID: 0, Name: "Hello", Kind: "function", Line: 1, Visibility: "exported", IsExported: true},
+		},
+	}
+
+	stale, err := processEnrichmentJob(ctx, store, logger, job, nil)
+	if err != nil {
+		t.Fatalf("processEnrichmentJob: %v", err)
+	}
+	if len(stale) != 0 {
+		t.Errorf("expected no stale chunks for new file, got %v", stale)
+	}
+
+	// Verify file was created.
+	f, _ := store.GetFileByPath(ctx, "new.go")
+	if f == nil {
+		t.Fatal("expected file to exist")
+	}
+	if f.ContentHash != "h1" {
+		t.Errorf("ContentHash = %q, want h1", f.ContentHash)
+	}
+
+	// Verify chunks.
+	chunks, _ := store.GetChunksByFile(ctx, f.ID)
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(chunks))
+	}
+
+	// Verify symbols.
+	syms, _ := store.GetSymbolByName(ctx, "Hello")
+	if len(syms) != 1 {
+		t.Fatalf("expected 1 symbol, got %d", len(syms))
+	}
+
+	// Verify diff log (add).
+	diffs, _ := store.GetRecentDiffs(ctx, types.RecentDiffsInput{FileID: f.ID, Limit: 10})
+	if len(diffs) == 0 {
+		t.Error("expected add diff log entry")
+	} else if diffs[0].ChangeType != "add" {
+		t.Errorf("diff ChangeType = %q, want add", diffs[0].ChangeType)
+	}
+}
+
+func TestProcessEnrichmentJob_ReIndex_RecordsDiff(t *testing.T) {
+	t.Parallel()
+	store := testutil.NewTestWriterStore(t)
+	ctx := context.Background()
+	logger := slog.Default()
+
+	// Index v1.
+	jobV1 := types.WriteJob{
+		Type:        types.WriteJobEnrichment,
+		FilePath:    "reindex.go",
+		ContentHash: "v1",
+		Timestamp:   time.Now(),
+		File: &types.FileRecord{
+			Path: "reindex.go", ContentHash: "v1", Mtime: 1.0,
+			Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		},
+		Chunks: []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: "OldFunc",
+				StartLine: 1, EndLine: 5, Content: "func OldFunc() {}", TokenCount: 3},
+		},
+		Symbols: []types.SymbolRecord{
+			{ChunkID: 0, Name: "OldFunc", Kind: "function", Line: 1, Visibility: "exported"},
+		},
+	}
+	if _, err := processEnrichmentJob(ctx, store, logger, jobV1, nil); err != nil {
+		t.Fatalf("v1: %v", err)
+	}
+
+	// Index v2 with different symbols.
+	jobV2 := types.WriteJob{
+		Type:        types.WriteJobEnrichment,
+		FilePath:    "reindex.go",
+		ContentHash: "v2",
+		Timestamp:   time.Now(),
+		File: &types.FileRecord{
+			Path: "reindex.go", ContentHash: "v2", Mtime: 2.0,
+			Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		},
+		Chunks: []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: "NewFunc",
+				StartLine: 1, EndLine: 8, Content: "func NewFunc() { /* more */ }", TokenCount: 5},
+		},
+		Symbols: []types.SymbolRecord{
+			{ChunkID: 0, Name: "NewFunc", Kind: "function", Line: 1, Visibility: "exported"},
+		},
+	}
+	if _, err := processEnrichmentJob(ctx, store, logger, jobV2, nil); err != nil {
+		t.Fatalf("v2: %v", err)
+	}
+
+	// Verify diff log has "modify" entry.
+	f, _ := store.GetFileByPath(ctx, "reindex.go")
+	diffs, _ := store.GetRecentDiffs(ctx, types.RecentDiffsInput{FileID: f.ID, Limit: 10})
+
+	foundModify := false
+	for _, d := range diffs {
+		if d.ChangeType == "modify" {
+			foundModify = true
+			// Check diff symbols.
+			diffSyms, _ := store.GetDiffSymbols(ctx, d.ID)
+			if len(diffSyms) == 0 {
+				t.Error("expected diff symbols for modify")
+			}
+		}
+	}
+	if !foundModify {
+		t.Error("expected 'modify' diff log entry for re-index")
+	}
+}
+
+func TestProcessEnrichmentJob_ParentChunkResolution(t *testing.T) {
+	t.Parallel()
+	store := testutil.NewTestWriterStore(t)
+	ctx := context.Background()
+	logger := slog.Default()
+
+	parentIdx := 0
+	job := types.WriteJob{
+		Type:        types.WriteJobEnrichment,
+		FilePath:    "parent.go",
+		ContentHash: "h1",
+		Timestamp:   time.Now(),
+		File: &types.FileRecord{
+			Path: "parent.go", ContentHash: "h1", Mtime: 1.0,
+			Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		},
+		Chunks: []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: "Outer",
+				StartLine: 1, EndLine: 20, Content: "func Outer() {}", TokenCount: 5},
+			{ChunkIndex: 1, Kind: "function", SymbolName: "Inner",
+				StartLine: 5, EndLine: 10, Content: "func Inner() {}", TokenCount: 3,
+				ParentIndex: &parentIdx},
+		},
+		Symbols: []types.SymbolRecord{
+			{ChunkID: 0, Name: "Outer", Kind: "function", Line: 1, Visibility: "exported"},
+			{ChunkID: 1, Name: "Inner", Kind: "function", Line: 5, Visibility: "exported"},
+		},
+	}
+
+	if _, err := processEnrichmentJob(ctx, store, logger, job, nil); err != nil {
+		t.Fatalf("processEnrichmentJob: %v", err)
+	}
+
+	f, _ := store.GetFileByPath(ctx, "parent.go")
+	chunks, _ := store.GetChunksByFile(ctx, f.ID)
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d", len(chunks))
+	}
+
+	// Find the Inner chunk and check its parent.
+	for _, c := range chunks {
+		if c.SymbolName == "Inner" {
+			if c.ParentChunkID == nil {
+				t.Error("Inner chunk should have a parent")
+			}
+		}
+	}
+}
+
+func TestProcessEnrichmentJob_EdgeInsertionAndResolution(t *testing.T) {
+	t.Parallel()
+	store := testutil.NewTestWriterStore(t)
+	ctx := context.Background()
+	logger := slog.Default()
+
+	// Index file A with a call to unknown "Target".
+	jobA := types.WriteJob{
+		Type:        types.WriteJobEnrichment,
+		FilePath:    "caller.go",
+		ContentHash: "h1",
+		Timestamp:   time.Now(),
+		File: &types.FileRecord{
+			Path: "caller.go", ContentHash: "h1", Mtime: 1.0,
+			Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		},
+		Chunks: []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: "Caller",
+				StartLine: 1, EndLine: 5, Content: "func Caller() { Target() }", TokenCount: 5},
+		},
+		Symbols: []types.SymbolRecord{
+			{ChunkID: 0, Name: "Caller", Kind: "function", Line: 1, Visibility: "exported"},
+		},
+		Edges: []types.EdgeRecord{
+			{SrcSymbolName: "Caller", DstSymbolName: "Target", Kind: "calls"},
+		},
+	}
+	if _, err := processEnrichmentJob(ctx, store, logger, jobA, nil); err != nil {
+		t.Fatalf("jobA: %v", err)
+	}
+
+	// Target should be pending.
+	callers, _ := store.PendingEdgeCallers(ctx, "Target")
+	if len(callers) == 0 {
+		t.Error("expected pending edge caller for Target")
+	}
+
+	// Now index file B that defines "Target" — should resolve.
+	jobB := types.WriteJob{
+		Type:        types.WriteJobEnrichment,
+		FilePath:    "target.go",
+		ContentHash: "h2",
+		Timestamp:   time.Now(),
+		File: &types.FileRecord{
+			Path: "target.go", ContentHash: "h2", Mtime: 1.0,
+			Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		},
+		Chunks: []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: "Target",
+				StartLine: 1, EndLine: 5, Content: "func Target() {}", TokenCount: 3},
+		},
+		Symbols: []types.SymbolRecord{
+			{ChunkID: 0, Name: "Target", Kind: "function", Line: 1, Visibility: "exported"},
+		},
+	}
+	if _, err := processEnrichmentJob(ctx, store, logger, jobB, nil); err != nil {
+		t.Fatalf("jobB: %v", err)
+	}
+
+	// Pending should be resolved.
+	callers, _ = store.PendingEdgeCallers(ctx, "Target")
+	if len(callers) != 0 {
+		t.Errorf("expected 0 pending callers after resolve, got %d", len(callers))
+	}
+}
+
+func TestProcessEnrichmentJob_ReturnsStaleChunkIDs(t *testing.T) {
+	t.Parallel()
+	store := testutil.NewTestWriterStore(t)
+	ctx := context.Background()
+	logger := slog.Default()
+
+	// Index v1.
+	jobV1 := types.WriteJob{
+		Type:        types.WriteJobEnrichment,
+		FilePath:    "stale_chunks.go",
+		ContentHash: "v1",
+		Timestamp:   time.Now(),
+		File: &types.FileRecord{
+			Path: "stale_chunks.go", ContentHash: "v1", Mtime: 1.0,
+			Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		},
+		Chunks: []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: "F1",
+				StartLine: 1, EndLine: 5, Content: "func F1() {}", TokenCount: 3},
+		},
+		Symbols: []types.SymbolRecord{
+			{ChunkID: 0, Name: "F1", Kind: "function", Line: 1, Visibility: "exported"},
+		},
+	}
+	if _, err := processEnrichmentJob(ctx, store, logger, jobV1, nil); err != nil {
+		t.Fatalf("v1: %v", err)
+	}
+
+	// Mark chunks as embedded.
+	f, _ := store.GetFileByPath(ctx, "stale_chunks.go")
+	chunks, _ := store.GetChunksByFile(ctx, f.ID)
+	chunkIDs := make([]int64, len(chunks))
+	for i, c := range chunks {
+		chunkIDs[i] = c.ID
+	}
+	store.MarkChunksEmbedded(ctx, chunkIDs)
+
+	// Re-index with different content.
+	jobV2 := types.WriteJob{
+		Type:        types.WriteJobEnrichment,
+		FilePath:    "stale_chunks.go",
+		ContentHash: "v2",
+		Timestamp:   time.Now(),
+		File: &types.FileRecord{
+			Path: "stale_chunks.go", ContentHash: "v2", Mtime: 2.0,
+			Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		},
+		Chunks: []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: "F2",
+				StartLine: 1, EndLine: 5, Content: "func F2() {}", TokenCount: 3},
+		},
+		Symbols: []types.SymbolRecord{
+			{ChunkID: 0, Name: "F2", Kind: "function", Line: 1, Visibility: "exported"},
+		},
+	}
+	stale, err := processEnrichmentJob(ctx, store, logger, jobV2, nil)
+	if err != nil {
+		t.Fatalf("v2: %v", err)
+	}
+	if len(stale) == 0 {
+		t.Error("expected stale chunk IDs from re-index of embedded file")
+	}
+}
+
+func TestProcessEnrichmentJob_IsTestFile(t *testing.T) {
+	t.Parallel()
+	store := testutil.NewTestWriterStore(t)
+	ctx := context.Background()
+	logger := slog.Default()
+
+	job := types.WriteJob{
+		Type:        types.WriteJobEnrichment,
+		FilePath:    "foo_test.go",
+		ContentHash: "h1",
+		Timestamp:   time.Now(),
+		File: &types.FileRecord{
+			Path: "foo_test.go", ContentHash: "h1", Mtime: 1.0,
+			Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		},
+		Chunks: []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: "TestFoo",
+				StartLine: 1, EndLine: 5, Content: "func TestFoo(t *testing.T) {}", TokenCount: 5},
+		},
+		Symbols: []types.SymbolRecord{
+			{ChunkID: 0, Name: "TestFoo", Kind: "function", Line: 1, Visibility: "exported"},
+		},
+	}
+
+	if _, err := processEnrichmentJob(ctx, store, logger, job, []string{"*_test.go"}); err != nil {
+		t.Fatalf("processEnrichmentJob: %v", err)
+	}
+
+	f, _ := store.GetFileByPath(ctx, "foo_test.go")
+	if f == nil {
+		t.Fatal("expected file to exist")
+	}
+	if !f.IsTest {
+		t.Error("expected IsTest=true for foo_test.go")
+	}
+}
+
+func TestProcessWriteJob_FileDelete(t *testing.T) {
+	t.Parallel()
+	store := testutil.NewTestWriterStore(t)
+	ctx := context.Background()
+	logger := slog.Default()
+
+	// Index a file first.
+	job := types.WriteJob{
+		Type:        types.WriteJobEnrichment,
+		FilePath:    "delete_me.go",
+		ContentHash: "h1",
+		Timestamp:   time.Now(),
+		File: &types.FileRecord{
+			Path: "delete_me.go", ContentHash: "h1", Mtime: 1.0,
+			Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		},
+		Chunks: []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: "Del",
+				StartLine: 1, EndLine: 5, Content: "func Del() {}", TokenCount: 3},
+		},
+		Symbols: []types.SymbolRecord{
+			{ChunkID: 0, Name: "Del", Kind: "function", Line: 1, Visibility: "exported"},
+		},
+	}
+	processEnrichmentJob(ctx, store, logger, job, nil)
+
+	// Mark chunks as embedded.
+	f, _ := store.GetFileByPath(ctx, "delete_me.go")
+	chunks, _ := store.GetChunksByFile(ctx, f.ID)
+	ids := make([]int64, len(chunks))
+	for i, c := range chunks {
+		ids[i] = c.ID
+	}
+	store.MarkChunksEmbedded(ctx, ids)
+
+	// Delete via processWriteJob.
+	stale, err := processWriteJob(ctx, store, logger, types.WriteJob{
+		Type:     types.WriteJobFileDelete,
+		FilePath: "delete_me.go",
+	}, nil)
+	if err != nil {
+		t.Fatalf("processWriteJob delete: %v", err)
+	}
+	if len(stale) == 0 {
+		t.Error("expected stale chunk IDs from delete")
+	}
+
+	f, _ = store.GetFileByPath(ctx, "delete_me.go")
+	if f != nil {
+		t.Error("file should be deleted")
+	}
+}
+
+func TestCoalesce(t *testing.T) {
+	t.Parallel()
+	if got := coalesce("", "fallback"); got != "fallback" {
+		t.Errorf("coalesce empty = %q, want fallback", got)
+	}
+	if got := coalesce("value", "fallback"); got != "value" {
+		t.Errorf("coalesce non-empty = %q, want value", got)
+	}
+}

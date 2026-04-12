@@ -30,7 +30,7 @@ jobs:
 
       - run: go vet -tags "sqlite_fts5 sqlite bruteforce hnsw" ./...
 
-      - run: go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw" -coverprofile=coverage.out ./...
+      - run: go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw" -coverpkg=./... -coverprofile=coverage.out ./...
 
       - run: go tool cover -func=coverage.out
 
@@ -67,7 +67,7 @@ jobs:
           done
           echo "Qdrant failed to start" && exit 1
 
-      - run: go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw qdrant" -coverprofile=coverage.out ./...
+      - run: go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw qdrant" -coverpkg=./... -coverprofile=coverage.out ./...
 
       - run: go tool cover -func=coverage.out
 
@@ -105,7 +105,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - run: go test -race -p 1 -tags "sqlite_fts5 sqlite bruteforce hnsw postgres pgvector" -coverprofile=coverage.out ./...
+      - run: go test -race -p 1 -tags "sqlite_fts5 sqlite bruteforce hnsw postgres pgvector" -coverpkg=./... -coverprofile=coverage.out ./...
 
       - run: go tool cover -func=coverage.out
 
