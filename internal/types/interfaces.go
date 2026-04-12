@@ -64,6 +64,11 @@ type MetadataStore interface {
 	// UpdateChunkParents sets parent_chunk_id for the given chunk→parent mappings.
 	UpdateChunkParents(ctx context.Context, updates map[int64]int64) error
 
+	// GetSiblingChunks returns all chunks in the same file with the same
+	// symbol_name and kind as the given chunk, ordered by chunk_index.
+	// Used to reconstitute split method fragments at retrieval time.
+	GetSiblingChunks(ctx context.Context, fileID int64, symbolName string, kind string) ([]ChunkRecord, error)
+
 	// GetConfig returns the value for a config key. Returns empty string and nil
 	// error if the key is absent. Backed by the shared `config` key-value table.
 	GetConfig(ctx context.Context, key string) (string, error)
@@ -92,6 +97,10 @@ type BatchMetadataStore interface {
 
 	// BatchGetFileHashes returns path → contentHash for existing files.
 	BatchGetFileHashes(ctx context.Context, paths []string) (map[string]string, error)
+
+	// BatchGetSiblingChunks returns all sibling chunks for the given
+	// (fileID, symbolName, kind) tuples. Keyed by "fileID:symbolName:kind".
+	BatchGetSiblingChunks(ctx context.Context, keys []SiblingKey) (map[string][]HydratedChunk, error)
 }
 
 // VectorResult holds a single vector similarity match.

@@ -213,6 +213,20 @@ func (s *PgStore) GetChunkByID(ctx context.Context, id int64) (*types.ChunkRecor
 	return &c, nil
 }
 
+func (s *PgStore) GetSiblingChunks(ctx context.Context, fileID int64, symbolName string, kind string) ([]types.ChunkRecord, error) {
+	rows, err := s.query(ctx, `
+		SELECT id, file_id, parent_chunk_id, chunk_index, symbol_name, kind,
+		       start_line, end_line, content, token_count, signature, parse_quality
+		FROM chunks
+		WHERE file_id = $1 AND symbol_name = $2 AND kind = $3
+		ORDER BY chunk_index`, fileID, symbolName, kind)
+	if err != nil {
+		return nil, fmt.Errorf("get sibling chunks: %w", err)
+	}
+	defer rows.Close()
+	return scanChunks(rows)
+}
+
 func (s *PgStore) DeleteChunksByFile(ctx context.Context, fileID int64) error {
 	return s.WithWriteTx(ctx, func(txh types.TxHandle) error {
 		tx := txh.(PgTxHandle).Tx
@@ -661,6 +675,42 @@ func (s *PgStore) BatchHydrateChunks(ctx context.Context, chunkIDs []int64) ([]t
 		results = append(results, h)
 	}
 	return results, rows.Err()
+}
+
+func (s *PgStore) BatchGetSiblingChunks(ctx context.Context, keys []types.SiblingKey) (map[string][]types.HydratedChunk, error) {
+	result := make(map[string][]types.HydratedChunk, len(keys))
+	for _, k := range keys {
+		rows, err := s.query(ctx, `
+			SELECT c.id, c.file_id, c.symbol_name, c.kind,
+			       c.start_line, c.end_line, c.content, c.token_count,
+			       f.path, f.is_test
+			FROM chunks c
+			JOIN files f ON c.file_id = f.id
+			WHERE f.project_id = $4 AND c.file_id = $1 AND c.symbol_name = $2 AND c.kind = $3
+			ORDER BY c.chunk_index`, k.FileID, k.SymbolName, k.Kind, s.projectID)
+		if err != nil {
+			return nil, fmt.Errorf("batch sibling chunks: %w", err)
+		}
+		var chunks []types.HydratedChunk
+		for rows.Next() {
+			var h types.HydratedChunk
+			if err := rows.Scan(&h.ChunkID, &h.FileID, &h.SymbolName, &h.Kind,
+				&h.StartLine, &h.EndLine, &h.Content, &h.TokenCount,
+				&h.Path, &h.IsTest); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan sibling chunk: %w", err)
+			}
+			chunks = append(chunks, h)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		if len(chunks) > 1 {
+			result[k.String()] = chunks
+		}
+	}
+	return result, nil
 }
 
 func (s *PgStore) BatchGetFileHashes(ctx context.Context, paths []string) (map[string]string, error) {

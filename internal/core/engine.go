@@ -176,6 +176,9 @@ func (e *QueryEngine) searchSemantic(ctx context.Context, input SearchInput, lev
 	// Merge keyword + semantic candidates (union)
 	merged := mergeResults(ctx, e.store, kwResults, semResults, filter)
 
+	// Expand split method fragments into complete methods
+	merged = ExpandSplitSiblings(ctx, e.store, merged)
+
 	// Apply hybrid ranking
 	ranked := HybridRank(ctx, HybridRankInput{
 		Candidates:     merged,
@@ -211,6 +214,9 @@ func (e *QueryEngine) searchKeyword(ctx context.Context, input SearchInput) ([]t
 		}
 		return pkg.Chunks, nil
 	}
+
+	// Expand split method fragments into complete methods
+	results = ExpandSplitSiblings(ctx, e.store, results)
 
 	results = HybridRank(ctx, HybridRankInput{
 		Candidates:    results,
