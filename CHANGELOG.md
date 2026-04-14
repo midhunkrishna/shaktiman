@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.4] — 2026-04-13
+
+### Added
+
+- **`reindex` CLI command** — purge all indexed data and re-index from scratch.
+  Useful after major refactors or parser upgrades. Supports `--embed`,
+  `--vector`, and `--force` (skip confirmation) flags.
+- **Task prefix support for embedding models** — new `query_prefix` and
+  `document_prefix` TOML keys under `[embedding]` allow configuring task
+  prefixes required by models like `nomic-embed-text`
+  (`"search_query: "` / `"search_document: "`). Prefixes are applied before
+  batching (documents) and before query embedding + caching (queries). The
+  prefixed text is used as the cache key to prevent stale vectors after a
+  model switch.
+- **Qdrant payload-based project isolation** — `project_id` is stored as a
+  payload field on each Qdrant point and used to filter search, count, and
+  purge operations. Matches the pgvector isolation model. `PurgeAll` uses
+  filter-based delete when scoped, falls back to collection drop+recreate
+  when unscoped.
+- **Shared `internal/backends` package** — extracted store opening, closing,
+  and purge logic out of daemon into a shared package used by both daemon
+  and CLI (`backends.Open`, `Close`, `PurgeBackends`, `PurgeFiles`,
+  `EmbeddingsPath`).
+
+### Fixed
+
+- **Split chunk siblings merged at retrieval time** — when large methods
+  exceed 1024 tokens, the chunker splits them into fragments for embedding
+  quality. Previously these fragments were returned independently, causing
+  consumers to see incomplete methods. Now sibling fragments sharing the
+  same `file_id`, `symbol_name`, and `kind` are reconstituted into complete
+  methods before ranking. New `GetSiblingChunks` / `BatchGetSiblingChunks`
+  methods on MetadataStore (SQLite + Postgres).
+- **Assembler budget changed to best-effort spill-over** — the context
+  assembler now includes one extra chunk beyond the token budget rather than
+  dropping it, preventing truncation of the last relevant result.
+- **Send-on-closed-channel race in WriterManager shutdown** — replaced bare
+  blocking send with a `sync.Cond` wait loop. The channel is never closed;
+  `drain()` sets a `closed` flag and broadcasts to wake blocked submitters.
+  Eliminates the TOCTOU gap between releasing `mu` and entering `select`.
+- **FileID carried in ScoredResult** — eliminates per-result `GetChunkByID`
+  DB round trips during sibling expansion. 37% faster, 47% fewer
+  allocations on benchmarks.
+
+### Changed
+
+- Codecov config updated; internal refactoring to improve testability.
+
 ## [0.9.3] — 2026-04-09
 
 ### Added
