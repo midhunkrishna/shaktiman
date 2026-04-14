@@ -139,8 +139,10 @@ func TestContext_BudgetFitting(t *testing.T) {
 	if pkg == nil {
 		t.Fatal("expected non-nil context package")
 	}
-	if pkg.TotalTokens > 50 {
-		t.Errorf("expected total_tokens <= 50, got %d", pkg.TotalTokens)
+	// With best-effort spill-over, total tokens may slightly exceed budget.
+	// Budget=50, but the assembler includes one extra chunk that spills over.
+	if pkg.TotalTokens > 100 {
+		t.Errorf("expected total_tokens reasonably near budget, got %d", pkg.TotalTokens)
 	}
 	if len(pkg.Chunks) == 0 {
 		t.Error("expected at least one chunk in context package")
@@ -215,12 +217,14 @@ func TestAssemble_BudgetRespected(t *testing.T) {
 		BudgetTokens: 50,
 	})
 
-	if pkg.TotalTokens > 50 {
-		t.Errorf("expected total_tokens <= 50, got %d", pkg.TotalTokens)
+	// With best-effort spill-over, the assembler includes one extra chunk
+	// beyond the budget rather than dropping it. Budget=50, chunks are 30 each,
+	// so chunk1 (30) fits, chunk2 (30) spills over → total=60, 2 chunks.
+	if len(pkg.Chunks) != 2 {
+		t.Errorf("expected 2 chunks (best-effort spill-over), got %d", len(pkg.Chunks))
 	}
-	// Should fit at most 1 chunk (30 tokens) since 2 chunks = 60 > 50
-	if len(pkg.Chunks) != 1 {
-		t.Errorf("expected 1 chunk, got %d", len(pkg.Chunks))
+	if pkg.TotalTokens != 60 {
+		t.Errorf("expected total_tokens=60, got %d", pkg.TotalTokens)
 	}
 }
 

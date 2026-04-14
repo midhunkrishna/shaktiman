@@ -277,6 +277,23 @@ func (s *Store) GetChunkByID(ctx context.Context, id int64) (*types.ChunkRecord,
 	return &c, nil
 }
 
+// GetSiblingChunks returns all chunks in the same file with the same
+// symbol_name and kind, ordered by chunk_index. Used to reconstitute
+// split method fragments at retrieval time.
+func (s *Store) GetSiblingChunks(ctx context.Context, fileID int64, symbolName string, kind string) ([]types.ChunkRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, file_id, parent_chunk_id, chunk_index, symbol_name, kind,
+		       start_line, end_line, content, token_count, signature, parse_quality
+		FROM chunks
+		WHERE file_id = ? AND symbol_name = ? AND kind = ?
+		ORDER BY chunk_index`, fileID, symbolName, kind)
+	if err != nil {
+		return nil, fmt.Errorf("get sibling chunks file=%d sym=%s kind=%s: %w", fileID, symbolName, kind, err)
+	}
+	defer rows.Close()
+	return scanChunks(rows)
+}
+
 // DeleteChunksByFile removes all chunks for a file.
 func (s *Store) DeleteChunksByFile(ctx context.Context, fileID int64) error {
 	return s.db.WithWriteTx(func(tx *sql.Tx) error {
@@ -944,6 +961,48 @@ func (s *Store) BatchHydrateChunks(ctx context.Context, chunkIDs []int64) ([]typ
 		}
 	}
 	return results, nil
+}
+
+// BatchGetSiblingChunks returns all sibling chunks for the given keys.
+// Each key is (fileID, symbolName, kind). Results are keyed by SiblingKey.String().
+func (s *Store) BatchGetSiblingChunks(ctx context.Context, keys []types.SiblingKey) (map[string][]types.HydratedChunk, error) {
+	result := make(map[string][]types.HydratedChunk, len(keys))
+	for _, k := range keys {
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT c.id, c.file_id, c.symbol_name, c.kind,
+			       c.start_line, c.end_line, c.content, c.token_count,
+			       f.path, f.is_test
+			FROM chunks c
+			JOIN files f ON c.file_id = f.id
+			WHERE c.file_id = ? AND c.symbol_name = ? AND c.kind = ?
+			ORDER BY c.chunk_index`, k.FileID, k.SymbolName, k.Kind)
+		if err != nil {
+			return nil, fmt.Errorf("batch sibling chunks: %w", err)
+		}
+		var chunks []types.HydratedChunk
+		for rows.Next() {
+			var h types.HydratedChunk
+			var isTest int
+			if err := rows.Scan(
+				&h.ChunkID, &h.FileID, &h.SymbolName, &h.Kind,
+				&h.StartLine, &h.EndLine, &h.Content, &h.TokenCount,
+				&h.Path, &isTest,
+			); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan sibling chunk: %w", err)
+			}
+			h.IsTest = isTest != 0
+			chunks = append(chunks, h)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		if len(chunks) > 1 {
+			result[k.String()] = chunks
+		}
+	}
+	return result, nil
 }
 
 // BatchGetFileHashes returns path → contentHash for existing files.

@@ -269,3 +269,34 @@ func TestStructuralExpand_WithEdges(t *testing.T) {
 		t.Errorf("expected expanded chunk to be Serve, got %q", expanded[0].SymbolName)
 	}
 }
+
+func TestAssemble_BestEffortSpillOver(t *testing.T) {
+	t.Parallel()
+
+	// Budget = 50 tokens. Two chunks: 30 and 40 tokens.
+	// Old behavior: only first chunk (30) fits, second (40) skipped.
+	// New behavior: both included — second spills over budget.
+	candidates := []types.ScoredResult{
+		{ChunkID: 1, Score: 0.9, Path: "a.go", SymbolName: "FuncA",
+			Kind: "function", StartLine: 1, EndLine: 10,
+			Content: strings.Repeat("x", 120), TokenCount: 30},
+		{ChunkID: 2, Score: 0.7, Path: "b.go", SymbolName: "FuncB",
+			Kind: "function", StartLine: 1, EndLine: 15,
+			Content: strings.Repeat("y", 160), TokenCount: 40},
+	}
+
+	pkg := Assemble(AssemblerInput{
+		Candidates:   candidates,
+		BudgetTokens: 50,
+	})
+
+	if pkg == nil {
+		t.Fatal("expected non-nil context package")
+	}
+	if len(pkg.Chunks) != 2 {
+		t.Errorf("expected 2 chunks (spill-over), got %d", len(pkg.Chunks))
+	}
+	if pkg.TotalTokens != 70 {
+		t.Errorf("expected TotalTokens=70, got %d", pkg.TotalTokens)
+	}
+}

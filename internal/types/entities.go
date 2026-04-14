@@ -2,7 +2,10 @@
 // used across all internal packages to prevent import cycles (IP-11).
 package types
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // FileRecord represents a source file tracked by the index.
 type FileRecord struct {
@@ -78,6 +81,18 @@ type HydratedChunk struct {
 	EndLine    int
 	Content    string
 	TokenCount int
+}
+
+// SiblingKey identifies a group of split sibling chunks by their shared attributes.
+type SiblingKey struct {
+	FileID     int64
+	SymbolName string
+	Kind       string
+}
+
+// String returns a map key for this SiblingKey.
+func (k SiblingKey) String() string {
+	return fmt.Sprintf("%d:%s:%s", k.FileID, k.SymbolName, k.Kind)
 }
 
 // WriteJobType distinguishes the kind of write operation.

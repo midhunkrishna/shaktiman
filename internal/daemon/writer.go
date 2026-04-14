@@ -27,7 +27,8 @@ type WriterManager struct {
 	closed        atomic.Bool
 	started       atomic.Bool         // true after Run() is called
 	draining      atomic.Bool         // true once drain() begins
-	mu            sync.Mutex          // protects close sequence and draining flag
+	mu            sync.Mutex          // protects close sequence, draining flag, and channel sends
+	notFull       *sync.Cond          // signaled when a job is processed (channel has space)
 	vectorDeleter types.VectorDeleter // nil if embeddings disabled
 	testPatterns  []string            // glob patterns for test file detection
 }
@@ -40,33 +41,38 @@ func (wm *WriterManager) SetVectorDeleter(vd types.VectorDeleter) {
 
 // NewWriterManager creates a writer with the given channel capacity (IP-5: 500).
 func NewWriterManager(store types.WriterStore, chanSize int, testPatterns []string) *WriterManager {
-	return &WriterManager{
+	wm := &WriterManager{
 		ch:           make(chan types.WriteJob, chanSize),
 		done:         make(chan struct{}),
 		store:        store,
 		logger:       slog.Default().With("component", "writer"),
 		testPatterns: testPatterns,
 	}
+	wm.notFull = sync.NewCond(&wm.mu)
+	return wm
 }
 
 // Run processes write jobs until ctx is cancelled, then drains remaining jobs.
 // This method blocks — run it in a goroutine.
 func (wm *WriterManager) Run(ctx context.Context) {
 	wm.started.Store(true)
-	defer close(wm.done)
 
 	for {
 		select {
 		case job := <-wm.ch:
 			wm.processJob(ctx, job)
+			wm.notFull.Signal() // wake one blocked Submit
 		case <-ctx.Done():
 			wm.drain()
+			close(wm.done) // signal callers waiting on Done()
 			return
 		}
 	}
 }
 
 // drain waits for all producers to stop, then processes remaining jobs.
+// The channel is never closed — Submit uses the closed flag and notFull
+// condition to detect shutdown, eliminating send-on-closed-channel races.
 func (wm *WriterManager) drain() {
 	wm.mu.Lock()
 	wm.draining.Store(true)
@@ -75,57 +81,65 @@ func (wm *WriterManager) drain() {
 	wm.logger.Info("writer draining: waiting for producers")
 	wm.producers.Wait()
 
+	// Set closed and wake all blocked Submits. They will re-check
+	// closed under the lock and return ErrWriterClosed.
 	wm.mu.Lock()
 	wm.closed.Store(true)
-	close(wm.ch)
+	wm.notFull.Broadcast()
 	wm.mu.Unlock()
 
+	// Drain remaining buffered jobs via non-blocking receive.
 	deadline := time.After(10 * time.Second)
-	for job := range wm.ch {
+	for {
 		select {
+		case job := <-wm.ch:
+			wm.processJob(context.Background(), job)
 		case <-deadline:
 			wm.logger.Warn("writer drain timeout, dropping remaining jobs")
 			return
 		default:
-			wm.processJob(context.Background(), job)
+			wm.logger.Info("writer drain complete")
+			return
 		}
 	}
-	wm.logger.Info("writer drain complete")
 }
 
 // Submit sends a write job to the writer goroutine.
 // Blocks if the channel is full (back-pressure).
 // Returns ErrWriterClosed if the writer has been shut down.
+//
+// The closed check and channel send are always under the same lock hold,
+// with notFull.Wait() for back-pressure. This eliminates the TOCTOU gap
+// that previously allowed send-on-closed-channel panics.
 func (wm *WriterManager) Submit(job types.WriteJob) error {
-	if wm.closed.Load() {
-		return ErrWriterClosed
-	}
 	wm.mu.Lock()
-	if wm.closed.Load() {
-		wm.mu.Unlock()
-		return ErrWriterClosed
-	}
-	// Non-blocking attempt under lock
-	select {
-	case wm.ch <- job:
-		wm.mu.Unlock()
-		return nil
-	default:
-		// Channel full — release lock before blocking so drain() can proceed
-		wm.mu.Unlock()
-	}
+	defer wm.mu.Unlock()
 
-	wm.logger.Debug("writer channel full, blocking",
-		"queue_len", len(wm.ch),
-		"queue_cap", cap(wm.ch),
-		"file", job.FilePath)
+	logged := false
+	for {
+		if wm.closed.Load() {
+			return ErrWriterClosed
+		}
 
-	// Block outside the lock; also listen for shutdown to avoid deadlock
-	select {
-	case wm.ch <- job:
-		return nil
-	case <-wm.done:
-		return ErrWriterClosed
+		// Non-blocking send attempt under lock.
+		select {
+		case wm.ch <- job:
+			return nil
+		default:
+		}
+
+		// Channel full — log once, then wait for space.
+		if !logged {
+			wm.logger.Debug("writer channel full, blocking",
+				"queue_len", len(wm.ch),
+				"queue_cap", cap(wm.ch),
+				"file", job.FilePath)
+			logged = true
+		}
+
+		// Wait releases mu, allowing Run to process jobs and signal notFull.
+		// On wake, mu is re-acquired and the loop re-checks closed + retries send.
+		wm.notFull.Wait()
 	}
 }
 

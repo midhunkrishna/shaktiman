@@ -51,8 +51,13 @@ func Assemble(input AssemblerInput) *types.ContextPackage {
 			truncated := truncateChunk(c, input.BudgetTokens)
 			selected = append(selected, truncated)
 			remaining = 0
+		} else {
+			// Chunk exceeds remaining budget — include it anyway (best-effort
+			// spill-over) to avoid returning incomplete methods. We prefer
+			// correctness over strict budget adherence.
+			selected = append(selected, c)
+			remaining -= c.TokenCount // goes negative, stopping the loop
 		}
-		// Otherwise skip oversized chunk
 	}
 
 	// Structural expansion: allocate 30% of remaining budget for BFS neighbors

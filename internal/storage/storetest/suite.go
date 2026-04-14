@@ -376,6 +376,72 @@ func RunMetadataStoreTests(t *testing.T, factory MetadataStoreFactory) {
 			t.Error("expected 0 symbols after delete")
 		}
 	})
+
+	t.Run("GetSiblingChunks_ReturnsSplitFragments", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+
+		fileID, _ := store.UpsertFile(ctx, &types.FileRecord{
+			Path: "big.java", ContentHash: "h1", Mtime: 1.0,
+			Language: "java", EmbeddingStatus: "pending", ParseQuality: "full",
+		})
+		// Simulate a method split into 3 fragments by splitLargeChunks
+		store.InsertChunks(ctx, fileID, []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "header", SymbolName: "",
+				StartLine: 1, EndLine: 5, Content: "package foo;", TokenCount: 5},
+			{ChunkIndex: 1, Kind: "method", SymbolName: "processWild",
+				StartLine: 10, EndLine: 50, Content: "part1", TokenCount: 500},
+			{ChunkIndex: 2, Kind: "method", SymbolName: "processWild",
+				StartLine: 51, EndLine: 100, Content: "part2", TokenCount: 500},
+			{ChunkIndex: 3, Kind: "method", SymbolName: "processWild",
+				StartLine: 101, EndLine: 130, Content: "part3", TokenCount: 300},
+			{ChunkIndex: 4, Kind: "method", SymbolName: "otherMethod",
+				StartLine: 135, EndLine: 150, Content: "other", TokenCount: 100},
+		})
+
+		siblings, err := store.GetSiblingChunks(ctx, fileID, "processWild", "method")
+		if err != nil {
+			t.Fatalf("GetSiblingChunks: %v", err)
+		}
+		if len(siblings) != 3 {
+			t.Errorf("expected 3 sibling fragments, got %d", len(siblings))
+		}
+		// Verify ordering
+		if len(siblings) >= 3 {
+			if siblings[0].StartLine != 10 || siblings[2].StartLine != 101 {
+				t.Error("siblings not ordered by chunk_index")
+			}
+		}
+
+		// otherMethod should NOT be included
+		for _, s := range siblings {
+			if s.SymbolName != "processWild" {
+				t.Errorf("unexpected symbol %q in siblings", s.SymbolName)
+			}
+		}
+	})
+
+	t.Run("GetSiblingChunks_SingleChunkNoSiblings", func(t *testing.T) {
+		store := factory(t)
+		ctx := context.Background()
+
+		fileID, _ := store.UpsertFile(ctx, &types.FileRecord{
+			Path: "small.go", ContentHash: "h1", Mtime: 1.0,
+			Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		})
+		store.InsertChunks(ctx, fileID, []types.ChunkRecord{
+			{ChunkIndex: 0, Kind: "function", SymbolName: "SmallFunc",
+				StartLine: 1, EndLine: 10, Content: "func SmallFunc() {}", TokenCount: 20},
+		})
+
+		siblings, err := store.GetSiblingChunks(ctx, fileID, "SmallFunc", "function")
+		if err != nil {
+			t.Fatalf("GetSiblingChunks: %v", err)
+		}
+		if len(siblings) != 1 {
+			t.Errorf("expected 1 chunk (not split), got %d", len(siblings))
+		}
+	})
 }
 
 // WriterStoreFactory creates a fresh WriterStore for each test.
