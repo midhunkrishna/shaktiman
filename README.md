@@ -401,6 +401,10 @@ All configuration uses sensible defaults. Optionally create `.shaktiman/shaktima
 # enabled = true           # Set false to disable the context tool entirely
 # budget_tokens = 4096     # Default token budget for context assembly (256-32768)
 
+[embedding]
+# query_prefix = "search_query: "        # Task prefix for query embedding (nomic-embed-text)
+# document_prefix = "search_document: "  # Task prefix for document embedding (nomic-embed-text)
+
 [vector]
 # backend = "brute_force"  # "brute_force" (default) or "hnsw"
 ```
@@ -421,6 +425,8 @@ All configuration uses sensible defaults. Optionally create `.shaktiman/shaktima
 | Ollama URL | `http://localhost:11434` | Embedding service endpoint |
 | Embedding model | `nomic-embed-text` | Ollama model for embeddings |
 | Embedding dims | 768 | Vector dimensionality |
+| `embedding.query_prefix` | `""` | Task prefix prepended to queries before embedding (e.g. `"search_query: "` for nomic-embed-text) |
+| `embedding.document_prefix` | `""` | Task prefix prepended to documents before embedding (e.g. `"search_document: "` for nomic-embed-text) |
 | Embeddings | enabled | Set to false to disable vector search |
 | Enrichment workers | 4 | Parallel parsing workers |
 
