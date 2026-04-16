@@ -78,6 +78,21 @@ Check the state with
 [`enrichment_status`](/reference/mcp-tools/enrichment-status). When it's not
 `closed`, semantic search automatically falls back to keyword ranking.
 
+## Daemon vs CLI indexing
+
+Shaktiman has two code paths that populate the index, and they handle
+embeddings differently — worth knowing so the defaults don't surprise you.
+
+| Path | What it is | Embedding behaviour |
+|---|---|---|
+| **Daemon** (`shaktimand`) | Launched automatically by your MCP client (Claude Code, Cursor, Zed, …). Owns the watcher and runs incremental re-indexes on file saves. | Honors `embedding.enabled` — **default `true`**. Starts the embedding worker on launch; new/changed chunks are embedded continuously in the background. |
+| **CLI** (`shaktiman index`) | You run it by hand, e.g. in CI, scripting, or one-shot cold-indexing. | **Opt-in** — embedding is off unless you pass `--embed` (and have Ollama reachable). The `enabled` flag in the TOML is ignored here; the CLI flag wins. |
+
+Both paths write to the same metadata store and vector store, so a CLI cold-index
+without `--embed` followed by a daemon start is a valid sequence — the daemon
+will embed the pending chunks on startup. Check progress with
+[`enrichment_status`](/reference/mcp-tools/enrichment-status).
+
 ## Disabling embedding
 
 If you don't have Ollama installed or want the keyword-only path (faster cold
@@ -87,6 +102,8 @@ index, no GPU required), disable embedding entirely:
 [embedding]
 enabled = false
 ```
+
+This only affects the daemon path. For the CLI, simply don't pass `--embed`.
 
 Keyword search, symbol lookup, dependencies, and `diff` all work without
 embeddings. Only semantic ranking and the vector-based facets of `context` need
