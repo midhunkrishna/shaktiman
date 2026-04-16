@@ -109,9 +109,5 @@ reindex — incompatible vectors can't be converted.
 
 ## See also
 
-- [Backends](/configuration/backends) — the full allowed / disallowed
-  combination matrix.
-- [Embeddings](/configuration/embeddings) — what produces the vectors in
-  the first place.
 - [Performance → Backend selection](/performance/backend-selection) —
   latency / throughput / memory trade-offs.
