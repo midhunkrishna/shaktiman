@@ -54,6 +54,11 @@ Add `--embed` to also generate vector embeddings. This requires Ollama running
 locally with a compatible embedding model (`ollama pull nomic-embed-text`). Without
 it, search falls back to keyword mode — still fast, still useful.
 
+The CLI (`shaktiman index`) is opt-in for embeddings. The daemon-launched indexer
+that Claude Code triggers honors `embedding.enabled` (default `true`) instead, so
+once you wire up Claude Code your index will start embedding automatically. See
+[Embeddings](/configuration/embeddings) for the full story.
+
 :::
 
 ## 4. Confirm the index
@@ -62,8 +67,17 @@ it, search falls back to keyword mode — still fast, still useful.
 shaktiman status .
 ```
 
-Prints file, chunk, symbol, and parse-error counts plus per-language file counts. If
-numbers look right, move on.
+Prints file, chunk, symbol, and parse-error counts plus per-language file counts.
+A healthy first-index looks like:
+
+- **Files, chunks, symbols** all non-zero.
+- **Parse errors** a small fraction of total files (ideally zero; a handful is
+  normal for mixed-language repos with exotic constructs).
+- **Languages** list matches what you actually have in the repo.
+
+If any of those look off, see
+[Troubleshooting → Empty or bad results](/troubleshooting/empty-or-bad-results).
+Otherwise, move on.
 
 ## 5. Run a search
 
@@ -78,7 +92,7 @@ You should see ranked pointers: file path, line range, symbol name, score — on
 line. That's the `locate` mode output the MCP server returns by default.
 
 If the search returns nothing, see
-[Troubleshooting → Empty or bad results](/troubleshooting/overview).
+[Troubleshooting → Empty or bad results](/troubleshooting/empty-or-bad-results).
 
 ## 6. You're done
 
