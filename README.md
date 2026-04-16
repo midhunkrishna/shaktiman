@@ -1,6 +1,12 @@
-# Shaktiman
+<p align="center">
+  <img src="website/static/img/logo.png" alt="Shaktiman" width="200">
+</p>
 
-[![codecov](https://codecov.io/gh/midhunkrishna/shaktiman/branch/master/graph/badge.svg?token=BZ7NUTRX30)](https://codecov.io/gh/midhunkrishna/shaktiman)
+<h1 align="center">Shaktiman</h1>
+
+<p align="center">
+  <a href="https://codecov.io/gh/midhunkrishna/shaktiman"><img src="https://codecov.io/gh/midhunkrishna/shaktiman/branch/master/graph/badge.svg?token=BZ7NUTRX30" alt="codecov"></a>
+</p>
 
 Local-first code context engine for coding agents.
 
@@ -287,6 +293,7 @@ The `--format` flag is persistent and applies to all subcommands.
 | `deps <symbol>` | Show callers/callees of a symbol | `--root`, `--direction`, `--depth` (1-5) |
 | `diff` | Show recent file changes and affected symbols | `--root`, `--since`, `--limit` |
 | `enrichment-status` | Check indexing and embedding progress | `--root` |
+| `summary` | Show workspace overview (files, languages, symbols, index health) | `--root` |
 
 ### Examples
 

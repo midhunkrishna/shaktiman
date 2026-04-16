@@ -1,0 +1,99 @@
+---
+title: Changelog
+sidebar_position: 13
+---
+
+# Changelog
+
+:::note
+
+This page summarises recent releases. Every release — including every bug-fix and
+dependency change — is catalogued in
+[`CHANGELOG.md`](https://github.com/midhunkrishna/shaktiman/blob/master/CHANGELOG.md)
+at the repo root. The file follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and Shaktiman
+adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+:::
+
+## Recent releases
+
+### 0.9.4 — 2026-04-13
+
+- **`reindex` CLI command** — purge every indexed artifact and rebuild from scratch.
+  Supports `--embed`, `--vector`, `--db`, and `--force` (skip confirmation on
+  non-TTYs). See [Re-indexing](/guides/reindexing) for the two-phase purge flow.
+- **Task-prefix support for embedding models** — new `[embedding].query_prefix`
+  and `[embedding].document_prefix` TOML keys allow configuring the prefixes
+  required by models like `nomic-embed-text` (`"search_query: "` /
+  `"search_document: "`). Prefixed text is used as the cache key to prevent stale
+  vectors after a model switch. See
+  [Embeddings](/configuration/embeddings).
+- **Qdrant payload-based project isolation** — `project_id` is stored as a
+  payload field on each Qdrant point and used to filter search, count, and purge
+  operations, matching the pgvector isolation model.
+- **Split-chunk siblings merged at retrieval time** — when large methods exceed
+  1024 tokens the chunker splits them for embedding quality; sibling fragments
+  are now reconstituted into complete methods before ranking so consumers never
+  see partial methods.
+- **Shared `internal/backends` package** — store opening, closing, and purge
+  logic extracted out of daemon into a package used by both the daemon and CLI.
+
+### 0.9.3 — 2026-04-09
+
+- **Multi-instance concurrency via single-daemon + socket proxy**
+  ([ADR-002](/design/adr-002-multi-instance) Amendment 4). The first
+  `shaktimand` for a project acquires a `flock` on `.shaktiman/daemon.pid` and
+  owns the DB / vectors / watcher; subsequent invocations become stateless
+  proxies bridging their Claude Code client's stdio to the leader via
+  `/tmp/shaktiman-<hash>.sock`. Zero stale reads, zero double-enrichment, zero
+  races. Proxies detect leader exit and promote automatically. See
+  [Multi-instance concurrency](/guides/multi-instance).
+- **New packages:** `internal/lockfile/` (flock + socket-path derivation) and
+  `internal/proxy/` (stdio → HTTP bridge).
+- **CLI `shaktiman index` checks the lock** — refuses to run if a daemon owns
+  the project, since both writers touching SQLite would race.
+- **ADR-003 A12 constraint enforced** — `ValidateBackendConfig` now rejects
+  `postgres + brute_force` and `postgres + hnsw`. File-backed vector stores
+  race on `embeddings.bin` when multiple daemons share a Postgres database;
+  use `pgvector` or `qdrant` instead. See
+  [ADR-003](/design/adr-003-pluggable-backends).
+
+### 0.9.2 — 2026-04-08
+
+- **Recursive AST-driven chunking** ([ADR-004](/design/adr-004-recursive-chunking))
+  replaces the whitelist-driven two-level chunker (file → class → method) with a
+  recursive, size-gated AST traversal guided by `ChunkableTypes`. Fixes silent
+  drops of nested modules, decorated methods, inner classes, trait methods, and
+  namespaces. Comments are excluded from chunking entirely.
+- **11 new `ChunkableTypes` across 5 languages** — Ruby `singleton_class`;
+  Python `type_alias_statement`; Rust `function_signature_item`,
+  `foreign_mod_item`, `union_item`; Java `compact_constructor_declaration`,
+  `static_initializer`; TypeScript `internal_module`, `ambient_declaration`,
+  `function_signature`, `generator_function_declaration`.
+- **Chunk-algorithm version tracking** — `parser.ChunkAlgorithmVersion` +
+  `MetadataStore.GetConfig` / `SetConfig`. On version mismatch, the daemon
+  purges every file so a cold re-index uses the new algorithm.
+- **Multi-project isolation for PostgreSQL backend** — when multiple projects
+  share one Postgres database, each project's data is now scoped by
+  `project_id` (files, embeddings, and ~26 query sites across
+  `metadata.go`, `graph.go`, `diff.go`, `pgvector/store.go`). Migration
+  `006_add_project_id.sql` handles backward compatibility for existing
+  single-project databases.
+- **13 documented parser-bug fixes** — `extractName` priority on Java fields,
+  multi-declarator symbol emission, `walkForSymbols` kind switch,
+  `findDeclarationChild` hard-coding, multi-line signature truncation, depth-
+  guard observability, receiver loss on member calls, self-recursive edges,
+  generic-type-argument descent, eager small-container decomposition,
+  depth-guard off-by-one, and the `namespace` CHECK-constraint drop. See the
+  repo CHANGELOG for each one's root cause.
+
+## Older releases
+
+For 0.9.1, 0.9.0, and every release back to 0.1.0 — including performance
+passes, language additions (TypeScript, Python, Go, Rust, Java, Ruby, ERB,
+Bash, JavaScript), and the shift to the official tree-sitter Go bindings — see
+the canonical
+[`CHANGELOG.md`](https://github.com/midhunkrishna/shaktiman/blob/master/CHANGELOG.md)
+on GitHub. It's the single source of truth; this page is a snapshot of the
+recent surface worth calling out.

@@ -1,16 +1,23 @@
+---
+title: Architecture (v3)
+sidebar_position: 2
+---
+
 # Shaktiman: Architecture v3 (Final)
+
+> **This is a design record, not user documentation.** It captures v3 design intent.
+> The shipped system has diverged — tool surface, storage backends, vector backends,
+> graph traversal strategy, config format — and has gained capabilities not in v3
+> (ADR-002 multi-instance, ADR-003 pluggable storage, ADR-004 recursive chunking).
+> For the shipped-vs-designed reconciliation, see the
+> [architecture status note](https://github.com/midhunkrishna/shaktiman/blob/master/docs/architecture/03-architecture-v3-status.md).
+> Where that file and this one disagree, **the code is canonical**.
+
+---
 
 > Local-first, high-performance code context system for coding agents.
 > Supersedes v2. Incorporates all critique findings (MF-1→8, SF-1→10).
 > Designed for codebases up to 1M+ lines.
-
-> **Status (2026-04-16):** This document captures v3 design intent. The shipped system
-> has diverged in several places (tool surface, storage backends, vector backends, graph
-> traversal strategy, config format) and has gained capabilities not in v3 (ADR-002
-> multi-instance, ADR-003 pluggable storage, ADR-004 recursive chunking). Before citing
-> anything here as current behavior, consult
-> [`03-architecture-v3-status.md`](./03-architecture-v3-status.md) — the code is
-> canonical where the two disagree.
 
 ---
 

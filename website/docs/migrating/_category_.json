@@ -1,0 +1,8 @@
+{
+  "label": "Migrating",
+  "position": 8,
+  "link": {
+    "type": "generated-index",
+    "description": "Coming from grep/ripgrep, ctags/LSP, Sourcegraph/Cody, or Claude's default tools? Start here."
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "label": "Reference",
+  "position": 9,
+  "link": {
+    "type": "generated-index",
+    "description": "Authoritative references for every CLI command, MCP tool, language grammar, and known limitation."
+  }
+}

@@ -1,3 +1,8 @@
+---
+title: ADR-002 — Multi-Instance Concurrency
+sidebar_position: 3
+---
+
 # ADR-002: Multi-Instance Concurrency Support for Shaktiman
 
 **Status:** AMENDED — see Amendment 4 (2026-04-09). The original plan (D2–D5, D11–D14, D15) is **SUPERSEDED**. D1 survives as D1″: single-daemon + socket proxy.

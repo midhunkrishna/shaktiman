@@ -18,6 +18,11 @@ dist/
 build/
 .output/
 
+# Docusaurus website
+website/node_modules/
+website/build/
+website/.docusaurus/
+
 # IDE/Tools
 .DS_Store
 .vscode/

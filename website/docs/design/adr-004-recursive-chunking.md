@@ -1,3 +1,8 @@
+---
+title: ADR-004 — Recursive AST-Driven Chunking
+sidebar_position: 5
+---
+
 # ADR-004: Recursive AST-Driven Chunking
 
 **Status:** PROPOSED

@@ -1,0 +1,8 @@
+{
+  "label": "MCP Tools",
+  "position": 2,
+  "link": {
+    "type": "doc",
+    "id": "reference/mcp-tools/overview"
+  }
+}
