@@ -7,21 +7,24 @@ lives in [`docs/`](./docs/). The deploy target is Cloudflare Pages
 ## Prerequisites
 
 - **Node 20+** (a `.nvmrc` in this directory pins the recommended version).
-- **npm** (or any package manager compatible with the committed `package-lock.json`).
+- **pnpm 10+** — the `packageManager` field in `package.json` pins the exact
+  version. If you have [corepack](https://nodejs.org/api/corepack.html) enabled
+  (`corepack enable`), it'll pick the right pnpm automatically; otherwise install
+  pnpm globally (`npm i -g pnpm`).
 
 ## Local development
 
 ```bash
 cd website
-npm install
-npm start         # dev server at http://localhost:3000 with hot reload
+pnpm install
+pnpm start        # dev server at http://localhost:3000 with hot reload
 ```
 
 ## Build
 
 ```bash
-npm run build     # produces build/ — the directory Cloudflare Pages serves
-npm run serve     # optional: preview the built site locally
+pnpm run build    # produces build/ — the directory Cloudflare Pages serves
+pnpm run serve    # optional: preview the built site locally
 ```
 
 The build enforces `onBrokenLinks: 'throw'`, so any internal link rot fails the build.
@@ -48,10 +51,12 @@ plugin scans only `docs/`.
 
 Cloudflare Pages Git integration watches `master`:
 
-- Build command: `npm run build`
+- Build command: `pnpm run build`
 - Build output directory: `website/build`
 - Root directory: `website`
 - Env: `NODE_VERSION=20`
+
+Cloudflare Pages detects `pnpm-lock.yaml` and uses pnpm (via corepack) automatically.
 
 PRs get preview deployments automatically; merges to `master` publish to
 production. See [`docs/`](./docs/) and the rollout plan in `plans/` for details.

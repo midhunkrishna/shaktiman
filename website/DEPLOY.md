@@ -14,9 +14,13 @@ this repo for the site — the Pages build system invokes `npm run build` on eve
 
    | Setting | Value |
    |---|---|
-   | Build command | `npm run build` |
+   | Build command | `pnpm run build` |
    | Build output directory | `website/build` |
    | Root directory (advanced) | `website` |
+
+   Cloudflare Pages detects `pnpm-lock.yaml` at `website/` and installs with pnpm
+   (via corepack) automatically — no install command override needed. The
+   `packageManager` field in `package.json` pins the exact pnpm version.
 
 5. **Environment variables** (Settings → Environment variables):
 
@@ -48,10 +52,12 @@ at it — this matters for canonical URLs, sitemap, and (future) Algolia DocSear
   Cloudflare's build system flag it as an infinite loop and ignore it.
 - **`baseUrl: '/'`** in `docusaurus.config.ts` — keep it as-is for a root-domain
   deploy. If you later host under a path (`/docs/`, etc.), change it to match.
-- **Yarn build cache** on Cloudflare is Yarn-1-only. We use npm, so this doesn't apply
-  here — but don't switch to Yarn Berry / pnpm without expecting cold-build latency.
+- **Build cache.** Cloudflare Pages' build-cache integration is Yarn-1-only. We use
+  pnpm, so cold builds won't benefit from the cache. Typical full build is still
+  ~30-60s at current site size — acceptable. If cold-build latency becomes painful,
+  revisit build-cache options in the Pages settings.
 - **`onBrokenLinks: 'throw'`** is set in `docusaurus.config.ts` — any broken internal
-  link fails the Pages build. Fix locally with `npm run build` before pushing.
+  link fails the Pages build. Fix locally with `pnpm run build` before pushing.
 
 ## Verifying a deployment
 
