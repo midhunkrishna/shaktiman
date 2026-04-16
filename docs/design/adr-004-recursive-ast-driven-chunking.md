@@ -4,6 +4,13 @@
 **Date:** 2026-04-07
 **Deciders:** Shaktiman maintainers
 
+> **Status (Today, 2026-04-16):** **SHIPPED** (status field above predates merge).
+> Recursive AST-driven chunking is implemented in `internal/parser/` with container/
+> leaf node handling per-language. Language configs in `internal/parser/languages.go`
+> declare `NodeMeta{Kind, IsContainer}` for each chunkable node type. See also
+> `impl-004-recursive-ast-driven-chunking.md` and
+> `docs/review-findings/parser-bugs-from-recursive-chunking.md` for follow-up work.
+
 ---
 
 ## Context

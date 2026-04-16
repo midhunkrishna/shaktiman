@@ -4,6 +4,14 @@
 > Supersedes v2. Incorporates all critique findings (MF-1→8, SF-1→10).
 > Designed for codebases up to 1M+ lines.
 
+> **Status (2026-04-16):** This document captures v3 design intent. The shipped system
+> has diverged in several places (tool surface, storage backends, vector backends, graph
+> traversal strategy, config format) and has gained capabilities not in v3 (ADR-002
+> multi-instance, ADR-003 pluggable storage, ADR-004 recursive chunking). Before citing
+> anything here as current behavior, consult
+> [`03-architecture-v3-status.md`](./03-architecture-v3-status.md) — the code is
+> canonical where the two disagree.
+
 ---
 
 ## 1. Design Decisions (Resolved)
@@ -1181,7 +1189,7 @@ System is queryable progressively (every 200 files committed).
 | **FR-16** Session tracking | Session Store (access_log + working_set + exploration decay) |
 | **FR-17** Edit history | Diff Store (diff_log + diff_symbols) |
 | **FR-18** Ignore patterns | Change Detector (.gitignore + .shaktimanignore) |
-| **FR-19** Config | .shaktiman/config.json (per-project) |
+| **FR-19** Config | `.shaktiman/shaktiman.toml` (per-project; ships as TOML, not JSON) |
 | **NFR-1** Cold <60s (100K) | Progressive cold index: <45s for 100K lines |
 | **NFR-2** Incr <500ms | Enrichment pipeline: 40-95ms measured |
 | **NFR-3** Query <200ms | Hot path: 50-104ms measured |

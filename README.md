@@ -287,6 +287,7 @@ The `--format` flag is persistent and applies to all subcommands.
 | `deps <symbol>` | Show callers/callees of a symbol | `--root`, `--direction`, `--depth` (1-5) |
 | `diff` | Show recent file changes and affected symbols | `--root`, `--since`, `--limit` |
 | `enrichment-status` | Check indexing and embedding progress | `--root` |
+| `summary` | Show workspace overview (files, languages, symbols, index health) | `--root` |
 
 ### Examples
 

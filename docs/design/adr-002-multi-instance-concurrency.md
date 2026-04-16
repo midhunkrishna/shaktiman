@@ -4,6 +4,12 @@
 **Date:** 2026-03-31
 **Deciders:** Shaktiman maintainers
 
+> **Status (Today, 2026-04-16):** **SHIPPED** as the single-daemon + socket-proxy
+> variant. `flock` acquisition on `.shaktiman/daemon.pid` in `internal/lockfile/`;
+> proxy bridge in `internal/proxy/` (see `cmd/shaktimand/main.go`); leader re-exec on
+> promotion. The superseded sections (D2–D5, D11–D14, D15) describe paths that were
+> evaluated and rejected.
+
 ---
 
 ## Context
