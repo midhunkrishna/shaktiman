@@ -24,6 +24,13 @@ const config: Config = {
   onBrokenLinks: 'throw',
   onBrokenMarkdownLinks: 'warn',
 
+  // Treat .md as CommonMark and .mdx as MDX. Without this, imported design docs
+  // (which contain angle-bracket content like "<1ms" and inline HTML-ish tokens)
+  // fail MDX parsing.
+  markdown: {
+    format: 'detect',
+  },
+
   i18n: {
     defaultLocale: 'en',
     locales: ['en'],
