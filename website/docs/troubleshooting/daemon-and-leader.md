@@ -22,7 +22,7 @@ Covers startup failures, lock contention, and leader/proxy confusion.
 
 ```bash
 ls -la /path/to/project/.shaktiman/daemon.pid
-lsof /path/to/project/.shaktiman/daemon.pid    # who holds the lock?
+lsof /path/to/project/.shaktiman/daemon.pid    # who holds the lock? (macOS may need sudo)
 tail -n 50 /path/to/project/.shaktiman/shaktimand.log
 ```
 
@@ -41,8 +41,8 @@ tail -n 50 /path/to/project/.shaktiman/shaktimand.log
 
 1. The leader is alive but stuck (e.g. a long-running bulk write, stuck in a
    parse loop, or waiting on an unreachable Ollama).
-2. The Unix socket was removed out from under the leader (someone `rm`'d
-   `/tmp/shaktiman-*.sock`).
+2. The Unix socket was removed out from under the leader (someone `rm`'d the
+   `shaktiman-*.sock` in the OS temp dir).
 
 ### Diagnostic
 
@@ -52,16 +52,40 @@ cat /path/to/project/.shaktiman/daemon.pid
 
 # Is it alive?
 ps -p <pid>
+```
 
-# What's it doing?
-# macOS:
-sample <pid> 3
+#### What is it doing? (platform-specific)
 
-# Linux:
-py-spy dump --pid <pid>    # or gdb, or just strace
+`shaktimand` is a Go binary — Python-targeted tools like `py-spy` don't produce
+useful output. Use the tools below instead:
 
-# Socket still there?
-ls -la /tmp/shaktiman-*.sock
+**macOS**
+
+```bash
+sample <pid> 3                       # user-space stack sample
+sudo dtrace -n 'profile-97 /pid == <pid>/ { @[ustack()] = count(); }'  # optional deeper profile
+```
+
+**Linux**
+
+```bash
+# Dump a goroutine stack — works without attaching a debugger.
+# SIGQUIT is caught by the Go runtime and prints all goroutines to stderr,
+# which Shaktiman logs via shaktimand.log.
+kill -QUIT <pid>
+tail -n 200 /path/to/project/.shaktiman/shaktimand.log
+
+# Or attach a debugger for a live stack:
+dlv attach <pid>        # https://github.com/go-delve/delve
+
+# Blocked on a syscall?
+cat /proc/<pid>/status
+cat /proc/<pid>/stack   # requires root on most distros
+```
+
+```bash
+# Socket still there? (OS temp dir, usually $TMPDIR)
+ls -la "${TMPDIR:-/tmp}"/shaktiman-*.sock
 ```
 
 ### Fix
@@ -91,12 +115,20 @@ Either:
 - Or **stop the daemon** (close the Claude Code session or `kill` the leader),
   then run `shaktiman index` from the CLI.
 
-## Symptom: multiple sockets in `/tmp/shaktiman-*.sock` after a crash
+## Symptom: multiple `shaktiman-*.sock` files in the temp dir after a crash
 
 Leftover sockets from crashed `shaktimand` processes don't hurt anything —
 subsequent leaders create their own at a deterministic path based on
-`SHA256(canonical_project_root)[:16]`. You can `rm /tmp/shaktiman-*.sock` to tidy
-up; the next run creates fresh sockets.
+`SHA256(canonical_project_root)[:16]`. You can tidy them up; the next run creates
+fresh sockets. Scope the wildcard to the shaktiman prefix so you don't nuke
+another program's sockets:
+
+```bash
+rm "${TMPDIR:-/tmp}"/shaktiman-*.sock
+```
+
+If you have more than one Shaktiman project in flight, only delete the stale
+sockets — `lsof | grep shaktiman` tells you which ones are still in use.
 
 ## See also
 
