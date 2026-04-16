@@ -54,8 +54,9 @@ root. The watcher:
 
 - **Watches directories, not individual files** — conserves file descriptors on
   large repos.
-- **Debounces events by `watcher.debounce_ms`** (default 200 ms). Rapid saves of the
-  same file collapse into one re-index.
+- **Debounces events with a 200 ms window.** Rapid saves of the same file collapse
+  into one re-index. The window is a Go default (`WatcherDebounceMs` in
+  `internal/types/config.go`) and isn't tunable via TOML today.
 - **Respects `.gitignore`** via the same glob logic the indexer uses. It also
   honours `.shaktimanignore` for Shaktiman-specific exclusions (e.g. generated
   protobuf files you want off the index without adding them to `.gitignore`).
