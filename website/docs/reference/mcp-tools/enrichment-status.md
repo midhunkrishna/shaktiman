@@ -28,11 +28,13 @@ Returns a JSON object with:
   | `open` | Embedding paused after repeated failures; will retry after the cooldown. |
   | `half_open` | A probe batch is in flight to see if the backend recovered. |
   | `disabled` | Embedding is off — either by config (`embedding.enabled = false`) or because the backend was unavailable for too long. |
+  | `n/a` | Returned on the CLI path (`shaktiman enrichment-status`) where no embed worker is attached to the process — the tool can still report chunk counts and pending jobs, but circuit-breaker state is unknowable from outside the daemon. |
 
 Result counts come from `core.GetEnrichmentStatus` and the embedding worker's
-`Pending()` / `CircuitBreaker().State()` accessors in `internal/vector/`. If no
-embedding worker is running (e.g. `EmbedEnabled = false`), pending is reported as 0 and
-state as `disabled`.
+`Pending()` / `CircuitBreaker().State()` accessors in `internal/vector/`. From the MCP
+handler, if no embedding worker is running (e.g. `EmbedEnabled = false`), pending is
+reported as 0 and state as `disabled`. From the CLI handler (no worker process
+attached), state is reported as `n/a`.
 
 ## When to use
 
