@@ -86,6 +86,11 @@ a periodic save can leave the file partially written.
 
 ### Fix
 
+`reindex` refuses to run while a `shaktimand` daemon holds the project lock,
+so stop the daemon first (close the MCP client, or `kill "$(cat
+.shaktiman/daemon.pid)"`). See
+[Re-indexing → Daemon must be stopped first](/guides/reindexing#daemon-must-be-stopped-first).
+
 ```bash
 # Delete the HNSW file and reindex vectors
 rm /path/to/project/.shaktiman/embeddings.bin    # brute_force
@@ -120,7 +125,20 @@ remote store still has vectors with the old dimensionality.
 ### Fix
 
 `shaktiman reindex --embed` purges remote store contents and rebuilds with the
-new dimensions.
+new dimensions. Stop the daemon first — `reindex` won't run while the project
+lock is held.
+
+If your backends differ from the daemon defaults, pass them explicitly so
+`reindex` talks to the same store that errored:
+
+```bash
+shaktiman reindex /path/to/project --embed \
+  --db postgres --vector pgvector \
+  --postgres-url "$SHAKTIMAN_POSTGRES_URL"
+```
+
+See [`reindex` flags](/reference/cli#shaktiman-reindex-project-root) for the full
+list.
 
 ## See also
 
