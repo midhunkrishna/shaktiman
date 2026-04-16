@@ -1,4 +1,5 @@
 ---
+title: Introduction
 slug: /
 sidebar_position: 1
 ---
@@ -7,7 +8,27 @@ sidebar_position: 1
 
 Local-first code context engine for coding agents.
 
-> This page is a placeholder. The full introduction, getting-started recipe,
-> CLI and MCP reference, and design documents land in subsequent commits of
-> the documentation-site rollout. Track progress in
-> [`website/plans/docusaurus-site-setup.md`](https://github.com/midhunkrishna/shaktiman/blob/chore/documentation-website/website/plans/docusaurus-site-setup.md).
+Shaktiman indexes your codebase with tree-sitter and exposes it to Claude Code (or any
+MCP client) as a set of tools that search, navigate, and assemble budget-fitted code
+context — so your agent does its job in fewer tokens, with better recall.
+
+- **Indexes code** using tree-sitter: functions, classes, symbols, imports, call graphs.
+- **Hybrid search** — keyword (FTS5) + semantic (vector) + structural + change signals.
+- **Budget-fitted context** — ask for 4K tokens, get exactly 4K tokens of the most
+  relevant code.
+- **Live updates** — a file watcher re-indexes on save.
+
+:::note
+
+The rest of this site is being authored as part of the initial rollout. Follow along in
+[`website/plans/docusaurus-site-setup.md`](https://github.com/midhunkrishna/shaktiman/blob/master/website/plans/docusaurus-site-setup.md).
+
+:::
+
+## Where to next
+
+- [Getting Started → Installation](/getting-started/installation) — build the binary and
+  verify it runs.
+- [Reference → MCP Tools](/reference/mcp-tools/overview) — what each tool does and how
+  to call it.
+- [Design & ADRs](/design/overview) — architectural context for contributors.

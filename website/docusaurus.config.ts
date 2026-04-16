@@ -74,14 +74,23 @@ const config: Config = {
       style: 'light',
       links: [
         {
+          title: 'Docs',
+          items: [
+            {label: 'Getting Started', to: '/getting-started/installation'},
+            {label: 'MCP Tools', to: '/reference/mcp-tools/overview'},
+            {label: 'Configuration', to: '/configuration/config-file'},
+            {label: 'Troubleshooting', to: '/troubleshooting/overview'},
+          ],
+        },
+        {
           title: 'Project',
           items: [
             {label: 'GitHub', href: GITHUB_REPO},
+            {label: 'Changelog', to: '/changelog'},
             {label: 'License (MIT)', href: `${GITHUB_REPO}/blob/master/LICENSE`},
           ],
         },
       ],
-      // Step 4 restores the "Docs" footer column pointing to the IA pages once they exist.
       copyright: `MIT licensed. © ${new Date().getFullYear()} Shaktiman contributors.`,
     },
     prism: {

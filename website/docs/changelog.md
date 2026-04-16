@@ -1,0 +1,12 @@
+---
+title: Changelog
+sidebar_position: 13
+---
+
+# Changelog
+
+:::note Placeholder
+
+The public changelog mirrors the repo's [`CHANGELOG.md`](https://github.com/midhunkrishna/shaktiman/blob/master/CHANGELOG.md). Inline rendering ships in Step 5b.
+
+:::

@@ -1,0 +1,8 @@
+{
+  "label": "Design & ADRs",
+  "position": 11,
+  "link": {
+    "type": "generated-index",
+    "description": "Architecture and decision records. Historical design intent — see the Status note on each page before citing."
+  }
+}
