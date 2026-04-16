@@ -20,7 +20,7 @@ The design is captured in
 ┌─── Claude Code window A ───┐       ┌─── Claude Code window B ───┐
 │      shaktimand (leader)   │       │       shaktimand (proxy)   │
 │      holds .shaktiman/     │◄──────┤  connects via unix socket  │
-│      daemon.pid flock      │  MCP  │  /tmp/shaktiman-<hash>.sock│
+│      daemon.pid flock      │  MCP  │  $TMPDIR/shaktiman-*.sock  │
 └────────────────────────────┘       └────────────────────────────┘
          │                                         ▲
          │ owns: SQLite, vector store,             │
@@ -40,17 +40,25 @@ Implementation: `internal/lockfile/`, `internal/proxy/`, `cmd/shaktimand/main.go
 
 ## Socket location
 
-The leader's socket lives at `/tmp/shaktiman-<hash>.sock`, where `<hash>` is the
-first 16 hex characters of `SHA256(canonical_project_root)`. The SHA-of-the-path
-trick keeps sockets unique per project without tripping macOS's 104-character
-socket-path limit.
+The leader's socket lives in the OS temp directory — `os.TempDir()` in Go, i.e.
+`$TMPDIR` — at `shaktiman-<hash>.sock`, where `<hash>` is the first 16 hex
+characters of `SHA256(canonical_project_root)`. The SHA-of-the-path trick keeps
+sockets unique per project without tripping macOS's 104-character socket-path
+limit.
 
-You can inspect it:
+Concretely, the temp directory is platform-dependent:
+
+- **Linux:** usually `/tmp` (unless `$TMPDIR` is set).
+- **macOS:** typically `/var/folders/<hash>/T/` per user; rarely `/tmp`.
+
+You can inspect the socket:
 
 ```bash
-ls -la /tmp/shaktiman-*.sock
-# srwxrwxr-x  1 you  staff  0 Apr 16 12:00 /tmp/shaktiman-ab12cd34ef567890.sock
+ls -la "${TMPDIR:-/tmp}"/shaktiman-*.sock
+# srwxrwxr-x  1 you  staff  0 Apr 16 12:00 …/shaktiman-ab12cd34ef567890.sock
 ```
+
+Implementation: `internal/lockfile/lockfile.go` (`socketPathFromRoot`).
 
 ## Leader promotion
 
