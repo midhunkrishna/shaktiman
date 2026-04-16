@@ -71,30 +71,6 @@ Claude is trained to prefer the most specific tool for the job. You'll see:
 This is the right behaviour — don't override it. The `CLAUDE.md` above lists the
 decision rule.
 
-## Env vars worth setting
-
-In your `.mcp.json`:
-
-```jsonc
-{
-  "mcpServers": {
-    "shaktiman": {
-      "command": "/absolute/path/to/shaktimand",
-      "args": ["/absolute/path/to/project"],
-      "env": {
-        "SHAKTIMAN_LOG_LEVEL": "WARN",
-        "SHAKTIMAN_POSTGRES_URL": "postgres://...",     // only if using postgres
-        "SHAKTIMAN_QDRANT_API_KEY": "..."              // only if using qdrant
-      }
-    }
-  }
-}
-```
-
-`SHAKTIMAN_LOG_LEVEL` controls structured-log verbosity in
-`.shaktiman/shaktimand.log` (not what Claude Code sees). Drop to `DEBUG` when
-wiring things up; go back to `WARN` once it's stable.
-
 ## Multiple Claude Code windows
 
 Open as many sessions as you like. Each spawns its own `shaktimand`; they
@@ -102,19 +78,14 @@ coordinate via the leader/proxy mechanism described in
 [Multi-instance concurrency](/guides/multi-instance). No manual coordination
 needed.
 
-## Troubleshooting the connection
+## Where the setup and config details live
 
-If tools don't appear under `/mcp`:
+This page deliberately doesn't duplicate the install recipe or the config
+reference. Head to:
 
-- Check the `command` path resolves to an executable (`ls -l /absolute/path/to/shaktimand`).
-- Check `.shaktiman/shaktimand.log` in the project root — startup errors land there.
-- Confirm the project path in `args` exists and is a directory.
-
-For deeper issues, see [Troubleshooting → Daemon & leader](/troubleshooting/daemon-and-leader).
-
-## See also
-
-- [Getting Started → Claude Code Setup](/getting-started/claude-code-setup) — the
-  four-step install recipe.
-- [Reference → MCP Tools](/reference/mcp-tools/overview) — what each tool does.
-- [Guides → Searching & navigating](/guides/searching) — picking the right tool.
+- [Claude Code Setup](/getting-started/claude-code-setup) for the `.mcp.json`
+  shape, the smoke test, and the Claude Code restart sequence.
+- [Config file reference](/configuration/config-file#environment-variables)
+  for env vars like `SHAKTIMAN_POSTGRES_URL` and `SHAKTIMAN_QDRANT_API_KEY`.
+- [Troubleshooting → Daemon & leader](/troubleshooting/daemon-and-leader) if
+  tools don't appear under `/mcp` or the connection is flaky.
