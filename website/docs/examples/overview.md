@@ -6,12 +6,8 @@ sidebar_position: 1
 # Examples
 
 Concrete, end-to-end walkthroughs that use Shaktiman's MCP tools against a real
-repo. Each example follows the same shape:
-
-1. The task you're trying to do.
-2. The tool sequence that gets you there (with actual invocations).
-3. What you learn from the output.
-4. How this saves tokens vs. the naive approach.
+repo. Each page shows the task, the tool sequence, what the output tells you,
+and the token savings versus a naive Grep/Read approach.
 
 ## When to read which
 
@@ -23,18 +19,12 @@ repo. Each example follows the same shape:
 | Pull budget-fitted context across files for an LLM prompt | [Cross-file feature tracing](./cross-file-feature-tracing) |
 | Measure the blast radius of an API change | [API change blast radius](./api-change-blast-radius) |
 
-## Conventions used in these examples
+:::note
 
-- Tool names are the **MCP** names (`mcp__shaktiman__search`), which is what Claude
-  Code sees. The CLI equivalents (`shaktiman search`) also work — substitute as
-  you prefer.
-- Example outputs are illustrative, not literal — the exact numbers depend on
-  your repo.
-- `scope:"impl"` is the default and is usually what you want. Flip to
-  `scope:"test"` or `scope:"all"` when the task requires it.
+Tool names below use the **MCP** names (e.g. `mcp__shaktiman__search`) that
+Claude Code sees; the CLI equivalents (`shaktiman search`) work the same way.
+Example outputs are illustrative, not literal — numbers depend on your repo.
+`scope:"impl"` is the default; flip to `"test"` or `"all"` when the task calls
+for it.
 
-## Reading order
-
-If you're new to Shaktiman, read
-[Onboarding to a new repo](./onboarding-to-a-new-repo) first. The others are
-self-contained.
+:::
