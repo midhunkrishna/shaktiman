@@ -1,0 +1,90 @@
+---
+title: Quickstart
+sidebar_position: 2
+---
+
+# Quickstart
+
+After [installation](./installation), the fastest way to confirm Shaktiman is working
+is to index one of your own projects and run a query. This path does **not** require
+Claude Code — it talks to the index directly. Once this works end-to-end, hooking up
+Claude Code is a three-step [setup](./claude-code-setup).
+
+The commands below assume `shaktiman` and `shaktimand` are on your `PATH`. If they
+aren't, use `./shaktiman` and `./shaktimand` from where you built them.
+
+## 1. Pick a project
+
+```bash
+cd /path/to/your/project
+```
+
+Your project should contain source files in one of the
+[supported languages](/reference/supported-languages).
+
+## 2. Initialize the config directory
+
+```bash
+shaktiman init .
+```
+
+Creates `.shaktiman/shaktiman.toml` (a commented sample) in your project root. Every
+value is optional — the defaults are good.
+
+## 3. Index the project
+
+```bash
+shaktiman index .
+```
+
+Progress streams to stdout: `Indexing: N/M files (X%)`. On a modest repo (a few
+thousand files) this completes in under a minute. When it's done you'll see the
+per-language breakdown:
+
+```
+Indexed: 4213 files | 58104 chunks | 41220 symbols
+  typescript: 3210 files
+  python: 102 files
+  go: 901 files
+```
+
+:::tip Embeddings (optional)
+
+Add `--embed` to also generate vector embeddings. This requires Ollama running
+locally with a compatible embedding model (`ollama pull nomic-embed-text`). Without
+it, search falls back to keyword mode — still fast, still useful.
+
+:::
+
+## 4. Confirm the index
+
+```bash
+shaktiman status .
+```
+
+Prints file, chunk, symbol, and parse-error counts plus per-language file counts. If
+numbers look right, move on.
+
+## 5. Run a search
+
+Pick a term you'd expect to find in your project — a function name, a concept, a
+filename. For example:
+
+```bash
+shaktiman search "error handling" --root . --format text
+```
+
+You should see ranked pointers: file path, line range, symbol name, score — one per
+line. That's the `locate` mode output the MCP server returns by default.
+
+If the search returns nothing, see
+[Troubleshooting → Empty or bad results](/troubleshooting/overview).
+
+## 6. You're done
+
+The index is ready. You can:
+
+- Run more CLI queries — see the [CLI Reference](/reference/cli) for every
+  subcommand.
+- Wire Shaktiman into Claude Code — see [Claude Code Setup](./claude-code-setup).
+- Tune the index and backends — see [Configuration](/configuration/config-file).
