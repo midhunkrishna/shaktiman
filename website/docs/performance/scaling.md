@@ -50,17 +50,32 @@ around 50k–100k chunks.
 When multiple developers want a common index (or a team CI pipeline wants
 state that persists across runs):
 
-```toml
-[database]
-backend = "postgres"
+1. **Create the schema once, up front.** Shaktiman's migrations create
+   tables and indexes inside a schema — they do **not** create the schema
+   itself. If you point Shaktiman at a non-existent schema, the first
+   migration fails with `schema "..." does not exist`. Run this once against
+   your Postgres (substitute your own schema name):
 
-[postgres]
-connection_string = "postgres://..."
-schema = "shaktiman_myproject"       # one schema per project
+   ```sql
+   CREATE SCHEMA IF NOT EXISTS shaktiman_myproject;
+   ```
 
-[vector]
-backend = "pgvector"                  # or "qdrant"
-```
+   The default `public` schema exists on a fresh Postgres, so you can skip
+   this step if you're keeping the default.
+
+2. **Point Shaktiman at it:**
+
+   ```toml
+   [database]
+   backend = "postgres"
+
+   [postgres]
+   connection_string = "postgres://..."
+   schema = "shaktiman_myproject"       # one schema per project
+
+   [vector]
+   backend = "pgvector"                  # or "qdrant"
+   ```
 
 **Constraint from [ADR-003](/design/adr-003-pluggable-backends) A12:**
 Postgres metadata forbids `brute_force` / `hnsw` vector backends. The
