@@ -5,10 +5,266 @@ sidebar_position: 12
 
 # Contributing
 
-:::note[Placeholder]
+Shaktiman is a small, focused codebase — tree-sitter parsing, SQLite/Postgres
+metadata, pluggable vector stores, and an MCP stdio server tying them together. This
+page covers what you need to know to make changes safely.
 
-Contributor onboarding (repo layout, build/test commands, adding a language, code-review
-norms) is authored in Step 5. Sourced from `docs/reference/contributing_guide.md` and
-verified against the current `Makefile` / build tags.
+If you're wiring Shaktiman into your own Claude Code project (not contributing code),
+see [Getting Started → Claude Code Setup](/getting-started/claude-code-setup) and the
+[sample CLAUDE.md template](https://github.com/midhunkrishna/shaktiman/blob/master/docs/reference/sample_claude.md).
+
+## Repo layout
+
+```
+cmd/
+  shaktiman/           CLI (init, index, reindex, status, search, context,
+                       symbols, deps, diff, enrichment-status, summary)
+  shaktimand/          MCP stdio daemon + leader/proxy dispatcher
+
+internal/
+  types/               Shared types, Config, interface definitions
+  storage/             Backend registry + MetadataStore interface
+    sqlite/              SQLite backend (schema, migrations, FTS5, graph, diff)
+    postgres/            PostgreSQL backend (build tag: postgres)
+  parser/              Tree-sitter parsing, recursive chunking, symbol + edge extraction
+  core/                Query engine, ranker, assembler, fallback chain
+  format/              Shared text formatters for CLI and MCP output
+  daemon/              Lifecycle, writer, file watcher, enrichment pipeline
+  lockfile/            flock-based singleton + socket path derivation
+  proxy/               stdio → unix-socket MCP bridge (proxy-mode daemon)
+  vector/              Vector backend registry, Ollama client, circuit breaker
+    bruteforce/          In-memory O(n) cosine search
+    hnsw/                HNSW via hnswlib CGo bindings
+    pgvector/            pgvector Postgres extension (build tag: pgvector)
+    qdrant/              Qdrant HTTP client (build tag: qdrant)
+  mcp/                 MCP server + tool handlers
+  backends/            Shared open/close/purge helpers used by CLI and daemon
+  eval/                Evaluation harness (recall@K, precision@K, MRR)
+
+docs/                  Architecture docs, ADRs, and planning artifacts
+testdata/              Per-language test fixtures (typescript, python, go, rust, java, ...)
+website/               The docs site you're reading
+```
+
+## Build & test
+
+All commands require at least the `sqlite_fts5` build tag. The `-race` flag enables
+Go's race detector for concurrency safety. Include the backend tags for whichever
+backends you want to exercise.
+
+### Default build
+
+```bash
+go build -tags "sqlite_fts5 sqlite bruteforce hnsw" ./...
+```
+
+### Full test suite (default backends)
+
+```bash
+go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw" ./...
+```
+
+### Backend matrix
+
+CI runs three backend configurations. To reproduce locally:
+
+```bash
+# 1. SQLite + brute_force / hnsw (default)
+go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw" ./...
+
+# 2. SQLite + Qdrant (needs a running Qdrant)
+SHAKTIMAN_TEST_VECTOR_BACKEND=qdrant \
+SHAKTIMAN_TEST_QDRANT_URL=http://localhost:6333 \
+  go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw qdrant" ./...
+
+# 3. PostgreSQL + pgvector (needs Postgres with pgvector extension)
+SHAKTIMAN_TEST_DB_BACKEND=postgres \
+SHAKTIMAN_TEST_VECTOR_BACKEND=pgvector \
+SHAKTIMAN_TEST_POSTGRES_URL=postgres://user:pass@localhost:5432/testdb?sslmode=disable \
+  go test -race -p 1 -tags "sqlite_fts5 sqlite bruteforce hnsw postgres pgvector" ./...
+```
+
+Tests that target a specific backend skip gracefully when that backend isn't compiled
+in — e.g. running with only `postgres pgvector` tags will skip all SQLite-specific
+tests instead of failing.
+
+:::tip[CI runs the same matrix]
+
+`.github/workflows/ci.yml` runs three jobs on every push and pull request:
+`test-sqlite-bruteforce`/`test-sqlite-hnsw` (matrix on vector backend),
+`test-sqlite-qdrant` (with a Qdrant service container), and `test-postgres-pgvector`
+(with a pgvector service container). Coverage is reported to Codecov with per-backend
+flags.
 
 :::
+
+### Single package
+
+```bash
+go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw" ./internal/storage/
+go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw" ./internal/storage/sqlite/
+go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw" ./internal/vector/
+go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw" ./internal/daemon/
+go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw" ./internal/parser/
+go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw" ./internal/core/
+go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw" ./internal/mcp/
+```
+
+### Single test
+
+```bash
+go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw" \
+  -run TestEmbedProject_LargeChunkCount ./internal/daemon/
+```
+
+### Verbose output
+
+```bash
+go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw" \
+  -v -run TestIntegration_IndexAndSearch ./internal/daemon/
+```
+
+### Integration tests
+
+Integration tests use the `TestIntegration_` prefix and exercise the full pipeline
+(scan → parse → index → search → context assembly) against real source files in
+`testdata/`. They create temporary databases and are safe to run in parallel.
+
+```bash
+go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw" \
+  -run 'TestIntegration_' ./internal/daemon/
+```
+
+### Embedding integration tests
+
+These exercise the end-to-end embedding pipeline against mock Ollama servers. They
+cover large chunk counts, crash recovery, Ollama failure handling, and incremental
+re-embedding.
+
+```bash
+go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw" \
+  -run 'TestEmbedProject_' ./internal/daemon/
+```
+
+### Benchmarks
+
+```bash
+# All benchmarks
+go test -tags "sqlite_fts5 sqlite bruteforce hnsw" \
+  -run='^$' -bench=Benchmark -benchmem \
+  ./internal/storage/sqlite/ ./internal/vector/
+
+# Storage benchmarks (GetEmbedPage, MarkChunksEmbedded, etc.)
+go test -tags "sqlite_fts5 sqlite bruteforce hnsw" \
+  -run='^$' -bench=Benchmark -benchmem ./internal/storage/sqlite/
+
+# Vector / embedding benchmarks (RunFromDB throughput and memory)
+go test -tags "sqlite_fts5 sqlite bruteforce hnsw" \
+  -run='^$' -bench=Benchmark -benchmem ./internal/vector/
+```
+
+### Test coverage
+
+```bash
+go test -race -tags "sqlite_fts5 sqlite bruteforce hnsw" \
+  -coverprofile=cover.out ./...
+go tool cover -html=cover.out
+```
+
+### Build and vet
+
+```bash
+go build -tags "sqlite_fts5 sqlite bruteforce hnsw" ./...
+go vet -tags "sqlite_fts5 sqlite bruteforce hnsw" ./...
+
+# Postgres-only (no CGo, pure-Go binary)
+go build -tags "postgres pgvector" ./cmd/shaktimand/
+```
+
+See [Configuration → Backends](/configuration/backends) for the full build-tag matrix.
+
+## Adding a language
+
+Shaktiman parses code via tree-sitter. Adding a new language takes five steps:
+
+1. **Add a `LanguageConfig`** in `internal/parser/languages.go` with the tree-sitter
+   grammar and `NodeMeta{Kind, IsContainer}` entries for every chunkable node type.
+   `IsContainer: true` means the chunker recurses into the node's body
+   (classes, traits, modules, namespaces); `IsContainer: false` stops at the
+   declaration.
+2. **Import the tree-sitter grammar package**
+   (e.g. `github.com/tree-sitter/tree-sitter-<lang>/bindings/go`). Prefer the
+   official `tree-sitter/` orgs repos — the community forks have been stale.
+3. **Register file extensions** in `internal/daemon/scan.go` (for indexing) and
+   `internal/core/fallback.go` (for the filesystem-passthrough fallback).
+4. **Add testdata fixtures** under `testdata/<lang>_project/` — a handful of
+   realistic files exercising the chunkable constructs.
+5. **Run the test suite**. Add parser tests (`internal/parser/parser_test.go`)
+   and an integration test (`internal/daemon/daemon_test.go`
+   `TestIntegration_LanguageCompatibility` table) for the new language.
+
+Optionally: add default test-file glob patterns to `langTestPatterns` in
+`internal/types/config.go` so `scope: "impl"` correctly excludes the new language's
+tests by default.
+
+See [Supported Languages](/reference/supported-languages) for the current list and
+[ADR-004 — Recursive AST-Driven Chunking](/design/adr-004-recursive-chunking) for the
+chunking algorithm's contract.
+
+## Reporting issues & proposing changes
+
+Before writing code, the GitHub issue tracker is the place to go.
+
+- **Search existing issues first.** Open and closed. Somebody may already have
+  filed the bug you hit, or be mid-discussion about the feature you're planning:
+  [github.com/midhunkrishna/shaktiman/issues](https://github.com/midhunkrishna/shaktiman/issues).
+- **If an issue already exists, comment on it** rather than opening a duplicate.
+  Thread activity helps maintainers see what's being worked on.
+- **If nothing matches, open a new issue** before starting anything non-trivial.
+  Getting alignment up front saves re-work.
+  - **Bugs:** repro steps, expected vs. actual behaviour, environment (OS, Go
+    version, backend combination from
+    [Configuration → Backends](/configuration/backends), relevant lines from
+    `.shaktiman/shaktimand.log`).
+  - **Features:** describe the user problem before the proposed solution — an
+    issue that explains *why* is easier to review than a PR that assumes the
+    "why" is obvious.
+- **Small fixes** (typos, obvious one-line bugs, a missing nil check) can skip
+  straight to a PR. Link the issue or the observed behaviour in the PR
+  description with `Fixes #N` / `Closes #N` so the tracker stays tidy and the
+  issue auto-closes on merge.
+
+## PR & review norms
+
+- **Tests required for new code.** The team target is >90% coverage on changed
+  lines; new features land with their tests in the same PR, not as a follow-up.
+- **Don't skip pre-commit hooks** (`--no-verify`). If a hook fails, fix the
+  underlying issue — the hook exists because the failure it catches used to
+  ship.
+- **Prefer new commits over `--amend`** on shared branches. Amending rewrites
+  history that reviewers (and Cloudflare Pages PR previews) have already
+  referenced.
+- **Structural changes warrant an ADR.** If you're changing an interface, swapping
+  a backend, or altering the enrichment pipeline's shape, add a new ADR under
+  `docs/design/` following the style of ADR-001..004. Cross-link it from the PR
+  description; see the [Design & ADRs section](/design/overview) for how the
+  existing ones are structured.
+- **Commit messages are imperative and reasoned.** The repo's recent `git log`
+  sets the bar — a single-line summary, then a body explaining the *why* of the
+  change (not the *what* — the diff shows the what). The
+  [DEPLOY.md](https://github.com/midhunkrishna/shaktiman/blob/master/website/DEPLOY.md)
+  commit, the npm → pnpm migration, and the ADR-002 amendment are good examples.
+- **One PR, one logical change.** Keep refactors separate from feature work when
+  possible. Reviewers can spot bugs faster in a focused diff.
+
+## Useful references while developing
+
+- [Architecture v3](/design/architecture) — the shipped system's shape (with the
+  [status note](https://github.com/midhunkrishna/shaktiman/blob/master/docs/architecture/03-architecture-v3-status.md)
+  marking drift since v3 was written).
+- [ADR index](/design/overview) — decisions you'll want context on before making
+  structural changes.
+- [Known Limitations](/reference/limitations) — issues that are *designed*, not
+  bugs. Don't submit a PR "fixing" A12 without reading ADR-003.
+- [Troubleshooting](/troubleshooting/overview) — symptom → diagnosis map that
+  doubles as a guide to where error paths live in code.
