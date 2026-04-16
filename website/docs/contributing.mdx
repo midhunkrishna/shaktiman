@@ -247,8 +247,8 @@ Before writing code, the GitHub issue tracker is the place to go.
 - **Structural changes warrant an ADR.** If you're changing an interface, swapping
   a backend, or altering the enrichment pipeline's shape, add a new ADR under
   `docs/design/` following the style of ADR-001..004. Cross-link it from the PR
-  description; see the [Design & ADRs section](/design/overview) for how the
-  existing ones are structured.
+  description; see the [existing ADRs](/design/adr-001-code-review) for how they're
+  structured.
 - **Commit messages are imperative and reasoned.** The repo's recent `git log`
   sets the bar — a single-line summary, then a body explaining the *why* of the
   change (not the *what* — the diff shows the what). The
@@ -262,8 +262,9 @@ Before writing code, the GitHub issue tracker is the place to go.
 - [Architecture v3](/design/architecture) — the shipped system's shape (with the
   [status note](https://github.com/midhunkrishna/shaktiman/blob/master/docs/architecture/03-architecture-v3-status.md)
   marking drift since v3 was written).
-- [ADR index](/design/overview) — decisions you'll want context on before making
-  structural changes.
+- ADR index — [ADR-001](/design/adr-001-code-review), [ADR-002](/design/adr-002-multi-instance),
+  [ADR-003](/design/adr-003-pluggable-backends), [ADR-004](/design/adr-004-recursive-chunking)
+  — decisions you'll want context on before making structural changes.
 - [Known Limitations](/reference/limitations) — issues that are *designed*, not
   bugs. Don't submit a PR "fixing" A12 without reading ADR-003.
 - [Troubleshooting](/troubleshooting/overview) — symptom → diagnosis map that

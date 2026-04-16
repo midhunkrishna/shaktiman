@@ -94,7 +94,5 @@ stores first, local files second) and what's preserved.
 
 - [Performance → Backend selection](/performance/backend-selection) —
   the trade-offs, measurements, and when to pick what.
-- [Vector stores](/configuration/vector-stores) — per-vector-backend
-  settings.
 - [ADR-003 — Pluggable Storage Backends](/design/adr-003-pluggable-backends)
   — the decision record and the A12 constraint in full.

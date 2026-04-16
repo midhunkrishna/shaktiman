@@ -5,11 +5,16 @@ sidebar_position: 2
 
 # Shaktiman: Architecture v3 (Final)
 
-> **This is a design record, not user documentation.** It captures v3 design intent.
-> The shipped system has diverged — tool surface, storage backends, vector backends,
-> graph traversal strategy, config format — and has gained capabilities not in v3
-> (ADR-002 multi-instance, ADR-003 pluggable storage, ADR-004 recursive chunking).
-> For the shipped-vs-designed reconciliation, see the
+> **Audience: contributors and curious minds, not end users.** This page captures v3
+> design intent as an architectural record. If you're trying to install, configure,
+> or use Shaktiman, start at [Getting Started](/getting-started/installation) or the
+> [Guides](/guides/indexing) — everything here is background that you do not need to
+> be productive.
+>
+> **The shipped system has diverged** from this design — tool surface, storage
+> backends, vector backends, graph traversal strategy, config format — and has
+> gained capabilities not in v3 (ADR-002 multi-instance, ADR-003 pluggable storage,
+> ADR-004 recursive chunking). For the shipped-vs-designed reconciliation, see the
 > [architecture status note](https://github.com/midhunkrishna/shaktiman/blob/master/docs/architecture/03-architecture-v3-status.md).
 > Where that file and this one disagree, **the code is canonical**.
 
@@ -1123,31 +1128,17 @@ System is queryable progressively (every 200 files committed).
 
 ## 7. Token Efficiency (SF-7: realistic ranges)
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                    TOKEN EFFICIENCY — REALISTIC ESTIMATES                 │
-│                                                                          │
-│  Metric                     │  Without Shaktiman  │  With Shaktiman     │
-│  ──────────────────────────────────────────────────────────────────────  │
-│  Tool calls per task        │  8-15 calls         │  1-3 calls          │
-│  REDUCTION:                 │                     │  70-90% fewer       │
-│                             │                     │                      │
-│  Input tokens per task      │  15K-30K tokens     │  5K-10K tokens      │
-│  REDUCTION:                 │                     │  45-65% fewer       │
-│                             │                     │                      │
-│  Irrelevant content         │  25-40% of reads    │  <5% of results    │
-│  NOISE REDUCTION:           │                     │  85-95%             │
-│                             │                     │                      │
-│  Session re-discovery       │  3K-8K tokens       │  0-2K tokens        │
-│  REDUCTION:                 │                     │  50-100%            │
-│                             │                     │                      │
-│  Metadata overhead / chunk  │  n/a                │  ~12 tokens (~4%)   │
-│  NFR-5 target: <5%         │                     │  ✓                  │
-│                             │                     │                      │
-│  OVERALL ESTIMATE:          │  ~22K tokens avg    │  ~8K tokens avg     │
-│  TOTAL REDUCTION:           │                     │  ~55-65%            │
-└──────────────────────────────────────────────────────────────────────────┘
-```
+Design estimates — measured against a typical exploration task on a mid-size
+repo. Actual numbers will vary with repo shape, task, and model.
+
+| Metric | Without Shaktiman | With Shaktiman | Reduction |
+|---|---|---|---|
+| Tool calls per task | 8–15 | 1–3 | 70–90% fewer |
+| Input tokens per task | 15K–30K | 5K–10K | 45–65% fewer |
+| Irrelevant content in reads | 25–40% | < 5% | 85–95% less noise |
+| Session re-discovery | 3K–8K | 0–2K | 50–100% |
+| Metadata overhead / chunk | n/a | ~12 tokens (~4%) | NFR-5 target: <5% ✓ |
+| **Overall per task** | **~22K** | **~8K** | **~55–65%** |
 
 ---
 
@@ -1174,44 +1165,13 @@ System is queryable progressively (every 200 files committed).
 
 ---
 
-## 9. Full Requirement Traceability
+## 9. Requirement Traceability
 
-| Req | Satisfied By |
-|---|---|
-| **FR-1** Index symbols | Metadata Store + Symbol Extractor |
-| **FR-2** Dependency graph | Graph Store (CSR) + Dep Extractor |
-| **FR-3** Incremental index | Change Detector + file mutex + Writer Thread |
-| **FR-4** Multi-language | Tree-sitter + per-language .scm queries (NFR-14) |
-| **FR-5** Semantic search | Vector Store + Retrieval Engine |
-| **FR-6** Hybrid retrieval | Hybrid Ranker (5 signals, normalized) |
-| **FR-7** Chunk-level | Chunk Splitter (symbol boundaries) |
-| **FR-8** Context assembly | Context Assembler (budget-fitted, safety margin) |
-| **FR-9** Structural context | Context Assembler expansion step (capped at 30%, max 5/chunk) |
-| **FR-10** Dedup | Context Assembler line-range overlap detection (>50%) |
-| **FR-11** Metadata | Per-chunk metadata: path, symbol, lines, score, changed, parse_quality |
-| **FR-12** MCP | MCP Server (tools + resources + prompts + notifications) |
-| **FR-13** CLI | CLI Interface (init, query, status, diff, reindex, config, inspect) |
-| **FR-14** Push mode | MCP resources (context/active, workspace/summary) + notifications + task-start prompt |
-| **FR-15** Persist | SQLite + WAL mode + crash recovery from edges/metadata |
-| **FR-16** Session tracking | Session Store (access_log + working_set + exploration decay) |
-| **FR-17** Edit history | Diff Store (diff_log + diff_symbols) |
-| **FR-18** Ignore patterns | Change Detector (.gitignore + .shaktimanignore) |
-| **FR-19** Config | `.shaktiman/shaktiman.toml` (per-project; ships as TOML, not JSON) |
-| **NFR-1** Cold <60s (100K) | Progressive cold index: <45s for 100K lines |
-| **NFR-2** Incr <500ms | Enrichment pipeline: 40-95ms measured |
-| **NFR-3** Query <200ms | Hot path: 50-104ms measured |
-| **NFR-4** Budget cap | Context Assembler hard limit + 95% safety margin |
-| **NFR-5** Meta <5% | 12 tokens / 300 avg chunk = 4% |
-| **NFR-6** 60% fewer calls | 1-3 calls vs 8-15 = 70-90% reduction |
-| **NFR-7** Memory <100MB | Budget: 23MB (100K) / 70MB (1M). See Section 6. |
-| **NFR-8** Disk <500MB | Budget: 62MB (100K) / 455MB (1M). See Section 6. |
-| **NFR-9** CPU throttled | Embedding Worker: nice +10, 100ms sleep between batches, load check |
-| **NFR-10** Reindex recovery | `shaktiman reindex` (--full or --embeddings-only). See Section 3.5. |
-| **NFR-11** Graceful degrade | 5-level fallback chain (L0 → L0.5 → L1 → L2 → L3) |
-| **NFR-12** Modular | `VectorStore` interface, `RankingStrategy` interface, layered architecture |
-| **NFR-13** Swappable model | `VectorStore.model_id()` + invalidation on change (MF-1) |
-| **NFR-14** New language | Tree-sitter grammar + .scm query file only |
-| **NFR-15** Pluggable ranking | `RankingStrategy` interface. Default: `HybridStrategy` |
+The full FR/NFR-to-component traceability matrix is internal design
+bookkeeping and lives with the source-of-truth architecture doc in the repo:
+[`docs/architecture/03-architecture-v3.md`](https://github.com/midhunkrishna/shaktiman/blob/master/docs/architecture/03-architecture-v3.md).
+Removed from the site to keep this page focused on the shape readers actually
+need to reason about the system.
 
 ---
 

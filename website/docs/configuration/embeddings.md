@@ -111,6 +111,6 @@ them.
 
 ## See also
 
-- [`[embedding]` config reference](/configuration/config-file#embedding)
-- [Backends → Vector](/configuration/backends)
+- [`[embedding]` config reference](/configuration/config-file#embedding) — the
+  exact TOML schema + defaults.
 - [Troubleshooting — Embedding failures](/troubleshooting/embedding-failures)
