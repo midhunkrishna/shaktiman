@@ -1,6 +1,12 @@
-# Shaktiman
+<p align="center">
+  <img src="website/static/img/logo.png" alt="Shaktiman" width="200">
+</p>
 
-[![codecov](https://codecov.io/gh/midhunkrishna/shaktiman/branch/master/graph/badge.svg?token=BZ7NUTRX30)](https://codecov.io/gh/midhunkrishna/shaktiman)
+<h1 align="center">Shaktiman</h1>
+
+<p align="center">
+  <a href="https://codecov.io/gh/midhunkrishna/shaktiman"><img src="https://codecov.io/gh/midhunkrishna/shaktiman/branch/master/graph/badge.svg?token=BZ7NUTRX30" alt="codecov"></a>
+</p>
 
 Local-first code context engine for coding agents.
 

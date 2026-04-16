@@ -8,7 +8,7 @@ const EDIT_URL_BASE = `${GITHUB_REPO}/tree/master/website/`;
 const config: Config = {
   title: 'Shaktiman',
   tagline: 'Local-first code context engine for coding agents',
-  favicon: 'img/favicon.ico',
+  favicon: 'img/favicon.png',
 
   future: {
     v4: true,
@@ -61,7 +61,7 @@ const config: Config = {
       title: 'Shaktiman',
       logo: {
         alt: 'Shaktiman',
-        src: 'img/logo.svg',
+        src: 'img/logo.png',
       },
       items: [
         {
