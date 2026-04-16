@@ -5,11 +5,16 @@ sidebar_position: 2
 
 # Shaktiman: Architecture v3 (Final)
 
-> **This is a design record, not user documentation.** It captures v3 design intent.
-> The shipped system has diverged — tool surface, storage backends, vector backends,
-> graph traversal strategy, config format — and has gained capabilities not in v3
-> (ADR-002 multi-instance, ADR-003 pluggable storage, ADR-004 recursive chunking).
-> For the shipped-vs-designed reconciliation, see the
+> **Audience: contributors and curious minds, not end users.** This page captures v3
+> design intent as an architectural record. If you're trying to install, configure,
+> or use Shaktiman, start at [Getting Started](/getting-started/installation) or the
+> [Guides](/guides/indexing) — everything here is background that you do not need to
+> be productive.
+>
+> **The shipped system has diverged** from this design — tool surface, storage
+> backends, vector backends, graph traversal strategy, config format — and has
+> gained capabilities not in v3 (ADR-002 multi-instance, ADR-003 pluggable storage,
+> ADR-004 recursive chunking). For the shipped-vs-designed reconciliation, see the
 > [architecture status note](https://github.com/midhunkrishna/shaktiman/blob/master/docs/architecture/03-architecture-v3-status.md).
 > Where that file and this one disagree, **the code is canonical**.
 

@@ -61,7 +61,11 @@ const config: Config = {
         // consolidated into another. Docusaurus emits a static HTML stub at
         // `from` that bounces the browser to `to`, keeping external bookmarks
         // and search-engine results working.
-        redirects: [],
+        redirects: [
+          // C.1 — design/overview placeholder deleted; point old links at
+          // the architecture page, which is the closest non-trivial target.
+          {from: '/design/overview', to: '/design/architecture'},
+        ],
       },
     ],
   ],
