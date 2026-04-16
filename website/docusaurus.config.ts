@@ -24,9 +24,9 @@ const config: Config = {
   onBrokenLinks: 'throw',
   onBrokenMarkdownLinks: 'warn',
 
-  // Treat .md as CommonMark and .mdx as MDX. Without this, imported design docs
-  // (which contain angle-bracket content like "<1ms" and inline HTML-ish tokens)
-  // fail MDX parsing.
+  // `format: 'detect'` means .mdx files are parsed as MDX (admonitions work,
+  // JSX enabled) and .md files are parsed as plain CommonMark (safer for
+  // imported design docs with ASCII diagrams, `<1ms` tokens, etc.).
   markdown: {
     format: 'detect',
   },
