@@ -12,15 +12,15 @@ recognized, and chunkable node types. The authoritative list lives in
 
 ## Languages
 
-| Language | Extensions | Import node types | Chunkable kinds |
+| Language | Extensions | Import / export / ambient wrappers | Chunkable kinds |
 |---|---|---|---|
-| **TypeScript** | `.ts`, `.tsx` | `import_statement`, `export_statement`, `ambient_declaration` | function, class, interface, type, block, method, namespace |
-| **JavaScript** | `.js`, `.jsx`, `.mjs`, `.cjs` | `import_statement` | function, class, type, block, method |
-| **Python** | `.py` | `import_statement`, `import_from_statement` | function, class, type, block |
-| **Go** | `.go` | `import_declaration` | function, method, type, block |
-| **Rust** | `.rs` | `use_declaration` | function, type, interface, block (modules / impl / traits) |
-| **Java** | `.java` | `import_declaration`, `package_declaration` | class, interface, type, method, block |
-| **Ruby** | `.rb`, `.rake`, `.gemspec` | (require / require_relative are method calls — not identified as imports) | function, class |
+| **TypeScript** | `.ts`, `.tsx` | import: `import_statement`; export: `export_statement`; ambient: `ambient_declaration` | function, class, interface, type, block, method, namespace |
+| **JavaScript** | `.js`, `.jsx`, `.mjs`, `.cjs` | import: `import_statement`; export: `export_statement` | function, class, type, block, method |
+| **Python** | `.py` | import: `import_statement`, `import_from_statement` | function, class, type, block |
+| **Go** | `.go` | import: `import_declaration` | function, method, type, block |
+| **Rust** | `.rs` | import: `use_declaration` | function, type, interface, block (modules / impl / traits / macros) |
+| **Java** | `.java` | import: `import_declaration` | class, interface, type, method, block |
+| **Ruby** | `.rb`, `.rake`, `.gemspec` | — (require / require_relative are method calls, not distinct import nodes) | function, class |
 | **ERB** | `.erb` | — | block (directive / output_directive / template) |
 | **Bash** | `.sh`, `.bash` | — | function |
 
@@ -47,7 +47,7 @@ Per the [Contributing guide](/contributing), adding a language requires:
 1. Add a `LanguageConfig` entry in `internal/parser/languages.go` with the
    tree-sitter grammar, import node types, and chunkable kinds.
 2. Import the tree-sitter grammar (`tree-sitter-<lang>`).
-3. Register file extensions in `internal/daemon/scan.go` and
+3. Register file extensions in `internal/daemon/scanner.go` and
    `internal/core/fallback.go`.
 4. Add test fixtures under `testdata/`.
 5. Optionally add test-file patterns in `langTestPatterns`
@@ -65,4 +65,4 @@ specific constructs that don't produce an expected chunk. See
 - `internal/parser/languages.go` — `GetLanguageConfig`, per-language `NodeMeta`
   mappings, grammar imports.
 - `internal/types/config.go` — `langTestPatterns` (test-file glob defaults).
-- `internal/daemon/scan.go` — file extension → language dispatch.
+- `internal/daemon/scanner.go` — file extension → language dispatch.

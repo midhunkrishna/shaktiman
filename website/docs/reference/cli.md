@@ -126,8 +126,8 @@ See [`diff` MCP tool](/reference/mcp-tools/diff).
 | Flag | Default | Purpose |
 |---|---|---|
 | `--root <path>` | `.` | Project root. |
-| `--since <duration>` | `24h` | Time window. Go duration syntax — no `"d"` or `"w"` units. |
-| `--limit <int>` | `50` | Maximum diffs (capped at 720h internally). |
+| `--since <duration>` | `24h` | Time window. Go duration syntax — no `"d"` or `"w"` units. Capped at `720h` internally. |
+| `--limit <int>` | `50` | Maximum diffs. Out-of-range values (`<1` or `>500`) silently reset to the default. |
 | `--scope <impl\|test\|all>` | `impl` | Result scope. |
 
 ### `shaktiman enrichment-status`
