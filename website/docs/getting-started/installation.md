@@ -8,11 +8,35 @@ sidebar_position: 1
 Build Shaktiman from source. The full path below takes ~1 minute on a warm cache and
 produces two binaries — `shaktiman` (CLI) and `shaktimand` (MCP daemon).
 
+:::info[Platform support]
+Shaktiman is **POSIX-only**: macOS and Linux. The daemon relies on `flock`, Unix
+domain sockets, and `os.TempDir()` semantics that don't translate cleanly to Windows.
+On Windows, use **WSL 2** and follow the Linux instructions inside the WSL shell.
+Pull requests that add native Windows support are welcome.
+:::
+
 ## 1. Prerequisites
 
-- **Go 1.25 or newer.**
-- **A C compiler** (gcc / clang). Required for the `sqlite` build tag. macOS has
-  `clang` out of the box; Linux needs `build-essential` or equivalent.
+- **Go 1.25 or newer.** Check with `go version`.
+- **Git.** For cloning the repository.
+- **A C compiler** (gcc / clang). Required for the `sqlite` build tag.
+  - **macOS:** install the Xcode Command Line Tools with `xcode-select --install`.
+    Without them, `go build` fails at cgo with a `command not found: cc` error.
+  - **Linux:** install `build-essential` (Debian/Ubuntu) or `gcc` + `make` (RHEL
+    family) or the equivalent for your distro.
+- **~500 MB free disk** for a mid-size repo (< 100k files). Larger repos scale
+  roughly linearly — see [Scaling](/performance/scaling).
+- **~1 GB free RAM** for the daemon on a mid-size repo; more if you enable the
+  `brute_force` vector backend (it holds all vectors in memory).
+
+### Optional (only for specific features)
+
+- **[Ollama](https://ollama.com)** — required if you want vector embeddings. After
+  installing, run `ollama pull nomic-embed-text` to fetch the default model.
+  Without Ollama, search falls back to keyword mode and still works.
+- **`jq`** — used by a few commands in the [Troubleshooting](/troubleshooting/overview)
+  pages to filter `shaktimand.log`. Install via `brew install jq` (macOS) or
+  `apt install jq` / `dnf install jq` (Linux).
 
 For a postgres-only deployment without CGo, see [Backends](/configuration/backends).
 

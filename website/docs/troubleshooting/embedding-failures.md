@@ -44,6 +44,26 @@ grep -i "embed" /path/to/project/.shaktiman/shaktimand.log | tail -n 20
 After fixing the root cause, restart `shaktimand` — the circuit breaker resets on
 startup. You don't need to re-index; the worker picks up where it left off.
 
+:::tip[How to actually "restart shaktimand"]
+
+The daemon is normally launched by your MCP client, so "restart it" means
+different things in different setups:
+
+- **Claude Code** — close the Claude Code session for the project and reopen it.
+  Claude Code owns the daemon's lifecycle and will spawn a fresh `shaktimand` on
+  the next start. If you have multiple Claude Code windows open on the same
+  project, close them all (any surviving window is acting as a proxy or leader).
+- **Cursor / Zed / other MCP clients** — close the editor window that launched
+  `shaktimand`. Reopen the project to spawn a new daemon.
+- **CLI-only / manual daemon** — kill the leader directly:
+  ```bash
+  kill "$(cat .shaktiman/daemon.pid)"
+  ```
+  The next MCP-client invocation (or manual `shaktimand /path/to/project`)
+  acquires the lock and becomes the new leader.
+
+:::
+
 ## Symptom: `enrichment_status` shows state `disabled`
 
 The circuit breaker has moved past `open` — it stayed unavailable for several

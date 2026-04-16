@@ -44,14 +44,29 @@ echo "$(pwd)/shaktimand" # any POSIX shell
 - `env.SHAKTIMAN_LOG_LEVEL` controls structured-log verbosity. Use `"DEBUG"` while
   wiring things up, then drop back to `"WARN"` or remove the key.
 
-## 2. Restart Claude Code
+## 2. Smoke-test the daemon before restarting Claude Code
+
+Before you restart Claude Code, confirm `shaktimand` can start with the exact
+arguments Claude Code will pass. This catches path typos and permission issues in
+seconds, instead of after a full Claude Code restart:
+
+```bash
+/absolute/path/to/shaktimand /absolute/path/to/your/project < /dev/null
+```
+
+You should see startup log lines (lock acquisition, watcher starting) and the
+process should exit cleanly when stdin closes. If it errors, fix the `.mcp.json`
+path or permissions before moving on — Claude Code will hit the same error
+silently on restart.
+
+## 3. Restart Claude Code
 
 Open a new Claude Code session in the project. On first launch, `shaktimand` starts,
 acquires the project lock, and begins cold-indexing in the background. The first
 session may experience "index warming" briefly; queries work at Level 1 (keyword +
 structural) while the index fills.
 
-## 3. Confirm the tools are registered
+## 4. Confirm the tools are registered
 
 In Claude Code, run:
 
@@ -63,7 +78,7 @@ You should see `shaktiman` listed as a connected MCP server. The seven tools
 (`summary`, `search`, `context`, `symbols`, `dependencies`, `diff`,
 `enrichment_status`) are now available to the agent.
 
-## 4. Run your first tool call
+## 5. Run your first tool call
 
 Ask the agent to orient itself:
 
@@ -74,11 +89,26 @@ The agent will call `mcp__shaktiman__summary`. You'll see something like:
 ```
 Files: 4213 | Chunks: 58104 | Symbols: 41220
 Languages: typescript (3210), go (901), python (102)
-Embeddings: 100% (or lower while cold index is still running)
+Embeddings: 0%
 ```
 
-That's the confirmation. From here on, Claude Code will reach for Shaktiman whenever
-it helps — ranked search, budget-fitted context, dependency traversal, and so on.
+That's the confirmation.
+
+:::note[About that `Embeddings: 0%`]
+
+The daemon-launched indexer honors `embedding.enabled`, which defaults to `true` —
+but Ollama also needs to be installed and running with an embedding model pulled
+(`ollama pull nomic-embed-text`). If Ollama isn't reachable, the circuit breaker
+opens and you'll see `Embeddings: 0%`; keyword + structural search still work.
+
+If you ran the [quickstart](./quickstart) without `--embed`, your CLI-populated
+index has no embeddings either, and you'll see `0%` here until the daemon
+catches up. See [Embeddings](/configuration/embeddings) for the full picture.
+
+:::
+
+From here on, Claude Code will reach for Shaktiman whenever it helps — ranked
+search, budget-fitted context, dependency traversal, and so on.
 
 ## What if it didn't work?
 
@@ -87,7 +117,7 @@ it helps — ranked search, budget-fitted context, dependency traversal, and so 
   at a real executable (`ls -l /absolute/path/to/shaktimand`).
 - Searches return nothing → the index may still be warming. Ask the agent to call
   `enrichment_status` or see
-  [Troubleshooting → Indexing stuck](/troubleshooting/overview).
+  [Troubleshooting → Indexing stuck](/troubleshooting/indexing-stuck).
 
 ## Next
 

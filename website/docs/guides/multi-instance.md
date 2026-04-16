@@ -117,4 +117,4 @@ When `[database].backend = "postgres"`, local vector backends (`brute_force`,
 
 - [ADR-002 — Multi-Instance Concurrency](/design/adr-002-multi-instance)
 - [CLI Reference — `shaktimand`](/reference/cli#shaktimand-mcp-daemon)
-- [Troubleshooting — Daemon and leader](/troubleshooting/overview)
+- [Troubleshooting — Daemon and leader](/troubleshooting/daemon-and-leader)

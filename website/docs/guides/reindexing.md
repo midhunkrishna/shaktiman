@@ -102,10 +102,20 @@ Safe at any point. SQLite transactions won't commit unless they complete. The
 embedding worker flushes progress to disk periodically; on the next run only the
 un-embedded chunks are processed.
 
-If you Ctrl-C between phase 1 (backend purge) and phase 2 (local file purge), your
-server-side state is empty but local files still exist. The next `reindex` will
-succeed; a plain `index` will not (the local metadata is now stale relative to the
-empty remote vector store — easiest to re-run `reindex`).
+### What to do after an interrupted run
+
+The worst case is Ctrl-C **between phase 1 (backend purge) and phase 2 (local
+file purge)**. Your server-side vector store and Postgres rows are empty, but
+local `.shaktiman/index.db` still reflects the old corpus — a plain `shaktiman
+index` will not reconcile this mismatch and will produce stale results.
+
+**How to detect it:** after a Ctrl-C during reindex, run `shaktiman
+enrichment-status .`. If `Total chunks` is non-zero but `Embeddings %` is 0 (or
+you see dimension errors when you query), you're in the split state.
+
+**How to recover:** re-run `shaktiman reindex /path/to/project` (add your
+original `--embed` / `--vector` / `--db` flags). It starts over and will
+converge. Don't run `shaktiman index` expecting it to fix this — it won't.
 
 ## See also
 

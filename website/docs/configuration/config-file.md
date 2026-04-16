@@ -122,7 +122,7 @@ either derived or intentionally fixed):
 | `Tokenizer` | `cl100k_base` | Tokenizer for budget accounting. |
 | `WatcherEnabled` | `true` | File-save re-index. |
 | `WatcherDebounceMs` | `200` | Coalesce watcher events. |
-| `EmbedEnabled` | `true` | Run the embedding worker (requires Ollama reachable). |
+| `EmbedEnabled` | `true` | Run the embedding worker on the **daemon** path (requires Ollama reachable). The CLI `shaktiman index` ignores this flag — see [Embeddings → Daemon vs CLI indexing](/configuration/embeddings#daemon-vs-cli-indexing). |
 
 If you need to change these, the source of truth is
 `internal/types/config.go:DefaultConfig` — add a TOML key there if a use case emerges.
