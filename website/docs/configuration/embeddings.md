@@ -96,4 +96,4 @@ them.
 
 - [`[embedding]` config reference](/configuration/config-file#embedding)
 - [Backends → Vector](/configuration/backends)
-- [Troubleshooting — Embedding failures](/troubleshooting/overview)
+- [Troubleshooting — Embedding failures](/troubleshooting/embedding-failures)
