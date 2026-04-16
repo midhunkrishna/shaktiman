@@ -29,9 +29,10 @@ Read file A                      → highly relevant
 (done)
 ```
 
-The token savings are real and consistent — the
-[architecture doc](/design/architecture) quotes a 45–65 % reduction in input
-tokens for typical exploration tasks.
+The token savings are real and consistent — on a typical exploration task,
+expect **45–65 % fewer input tokens** and **70–90 % fewer tool calls** (full
+breakdown below). Conceptual queries benefit most; literal / filename queries
+see no improvement because `Grep` and `Glob` are already the right tool.
 
 ## Feature parity table
 
@@ -105,7 +106,8 @@ fall back to Grep/Glob/Read for literal / filename / specific-file tasks".
 
 ## Token math
 
-From the [architecture estimates](/design/architecture):
+Design estimates on a typical exploration task against a mid-size repo —
+actual numbers vary with repo shape, task, and model:
 
 |  | Without Shaktiman | With Shaktiman | Reduction |
 |---|---|---|---|
@@ -115,6 +117,9 @@ From the [architecture estimates](/design/architecture):
 
 Your mileage varies by query type. Conceptual queries benefit most; literal
 queries see no improvement (because `Grep` is already the right tool).
+
+For the full design rationale behind these numbers, see the contributor-facing
+[architecture doc](/design/architecture#7-token-efficiency-sf-7-realistic-ranges).
 
 ## See also
 
