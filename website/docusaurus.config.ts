@@ -53,6 +53,19 @@ const config: Config = {
     ],
   ],
 
+  plugins: [
+    [
+      '@docusaurus/plugin-client-redirects',
+      {
+        // Register `{from, to}` pairs here whenever a page moves or is
+        // consolidated into another. Docusaurus emits a static HTML stub at
+        // `from` that bounces the browser to `to`, keeping external bookmarks
+        // and search-engine results working.
+        redirects: [],
+      },
+    ],
+  ],
+
   themeConfig: {
     colorMode: {
       respectPrefersColorScheme: true,
