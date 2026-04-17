@@ -1,3 +1,5 @@
+// Package hnsw implements a vector store backed by an HNSW (Hierarchical
+// Navigable Small World) index for approximate nearest-neighbor search.
 package hnsw
 
 import (

@@ -1,3 +1,6 @@
+// Package vector provides the vector-store abstraction, embedding worker,
+// and circuit-breaker protection used to feed embeddings into pluggable
+// vector backends (bruteforce, hnsw, pgvector, qdrant).
 package vector
 
 import (
@@ -9,6 +12,7 @@ import (
 // CircuitState represents the state of the circuit breaker.
 type CircuitState int32
 
+// CircuitState values describe the current operating regime of the breaker.
 const (
 	StateClosed   CircuitState = iota // normal operation
 	StateOpen                         // failing, reject requests with backoff

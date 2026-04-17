@@ -245,7 +245,7 @@ func (s *Store) PendingEdgeCallers(ctx context.Context, dstName string) ([]int64
 	return ids, rows.Err()
 }
 
-// Type alias for backward compatibility.
+// PendingEdgeCaller is a backward-compatible alias for types.PendingEdgeCaller.
 type PendingEdgeCaller = types.PendingEdgeCaller
 
 // PendingEdgeCallersWithKind returns src_symbol_id, kind, and dst_qualified_name

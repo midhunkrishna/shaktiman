@@ -211,7 +211,7 @@ func (p *Parser) extractJavaFieldSymbols(node *tree_sitter.Node, source []byte, 
 // determine visibility (public/private/protected/internal — internal means
 // package-private) and whether the field is `static final` (indexed as
 // "constant" rather than "variable").
-func inspectJavaFieldModifiers(node *tree_sitter.Node, source []byte) (visibility string, isConstant bool) {
+func inspectJavaFieldModifiers(node *tree_sitter.Node, _ []byte) (visibility string, isConstant bool) {
 	visibility = "internal" // package-private default
 	sawStatic := false
 	sawFinal := false

@@ -1,3 +1,6 @@
+// Package pgvector implements a vector store backed by PostgreSQL with
+// the pgvector extension, sharing the Postgres connection pool with the
+// metadata store.
 package pgvector
 
 import (

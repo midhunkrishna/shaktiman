@@ -302,7 +302,7 @@ func (p *Parser) splitNodeByLines(node *tree_sitter.Node, source []byte, name st
 // the previous implementation scanned raw source lines and picked only the
 // first non-comment line as the declaration, truncating multi-line headers
 // and brittly matching comment prefixes with string operations.
-func buildSignatureFromExtracted(node *tree_sitter.Node, source []byte, name string, children []types.ChunkRecord) string {
+func buildSignatureFromExtracted(node *tree_sitter.Node, source []byte, _ string, children []types.ChunkRecord) string {
 	var sb strings.Builder
 
 	// Find the body child — most grammars expose it via a `body` field.

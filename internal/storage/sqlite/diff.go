@@ -11,8 +11,10 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
-// Type aliases for backward compatibility. Canonical definitions are in types/.
+// DiffLogEntry is a backward-compatible alias for types.DiffLogEntry.
 type DiffLogEntry = types.DiffLogEntry
+
+// DiffSymbolEntry is a backward-compatible alias for types.DiffSymbolEntry.
 type DiffSymbolEntry = types.DiffSymbolEntry
 
 // InsertDiffLog records a file-level change within a transaction.
@@ -54,7 +56,7 @@ func (s *Store) InsertDiffSymbols(ctx context.Context, txh types.TxHandle, diffI
 	return nil
 }
 
-// Type alias for backward compatibility.
+// RecentDiffsInput is a backward-compatible alias for types.RecentDiffsInput.
 type RecentDiffsInput = types.RecentDiffsInput
 
 // GetRecentDiffs returns diffs within the given time window.

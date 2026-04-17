@@ -32,7 +32,7 @@ func main() {
 	rootCmd := &cobra.Command{
 		Use:   "shaktiman",
 		Short: "Shaktiman code indexing and retrieval CLI",
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
 			if outputFormat != "json" && outputFormat != "text" {
 				return fmt.Errorf("--format must be 'json' or 'text', got %q", outputFormat)
 			}
@@ -64,7 +64,7 @@ func initCmd() *cobra.Command {
 		Use:   "init <project-root>",
 		Short: "Initialize a .shaktiman config directory",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			projectRoot := args[0]
 			tomlPath := filepath.Join(projectRoot, ".shaktiman", "shaktiman.toml")
 			if _, err := os.Stat(tomlPath); err == nil {
@@ -227,7 +227,7 @@ func indexCmd() *cobra.Command {
 		Use:   "index <project-root>",
 		Short: "Index a project directory",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			cfg, err := loadAndConfigureProject(args[0], vectorBackend, dbBackend, postgresURL, qdrantURL)
 			if err != nil {
 				return err
@@ -274,7 +274,7 @@ func reindexCmd() *cobra.Command {
 		Short: "Purge all indexed data and reindex from scratch",
 		Long:  "Deletes all indexed data (metadata, embeddings, vectors) and re-runs the full index pipeline. Preserves configuration.",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			cfg, err := loadAndConfigureProject(args[0], vectorBackend, dbBackend, postgresURL, qdrantURL)
 			if err != nil {
 				return err
@@ -355,7 +355,7 @@ func statusCmd() *cobra.Command {
 		Use:   "status <project-root>",
 		Short: "Show index status for a project",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			projectRoot := args[0]
 			cfg := types.DefaultConfig(projectRoot)
 			cfg, err := types.LoadConfigFromFile(cfg)

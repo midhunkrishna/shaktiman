@@ -161,7 +161,7 @@ func (db *DB) WithWriteTx(fn func(tx *sql.Tx) error) error {
 
 // WithWriteTxCtx executes fn within a write transaction using a types.TxHandle.
 // This is the backend-agnostic version used by the WriterStore interface.
-func (db *DB) WithWriteTxCtx(ctx context.Context, fn func(tx types.TxHandle) error) error {
+func (db *DB) WithWriteTxCtx(_ context.Context, fn func(tx types.TxHandle) error) error {
 	return db.WithWriteTx(func(tx *sql.Tx) error {
 		return fn(SqliteTxHandle{Tx: tx})
 	})

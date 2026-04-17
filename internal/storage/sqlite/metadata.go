@@ -467,7 +467,7 @@ type VectorCounter interface {
 // GetChunksNeedingEmbedding returns chunks whose parent file is not yet fully
 // embedded (embedding_status != 'complete'). The caller should additionally
 // filter by vector store contents for crash-recovery reconciliation.
-func (s *Store) GetChunksNeedingEmbedding(ctx context.Context, vs VectorCounter) ([]EmbedJobRecord, error) {
+func (s *Store) GetChunksNeedingEmbedding(ctx context.Context, _ VectorCounter) ([]EmbedJobRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT c.id, c.content
 		FROM chunks c

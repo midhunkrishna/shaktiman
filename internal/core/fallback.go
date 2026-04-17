@@ -79,7 +79,7 @@ func DetermineLevelFull(ctx context.Context, input DetermineLevelInput) Fallback
 
 // FilesystemFallback reads raw source files up to the token budget.
 // Used when the index is empty or keyword search returns no results.
-func FilesystemFallback(ctx context.Context, projectRoot string, query string, budget int) (*types.ContextPackage, error) {
+func FilesystemFallback(ctx context.Context, projectRoot string, _ string, budget int) (*types.ContextPackage, error) {
 	absRoot, err := filepath.EvalSymlinks(projectRoot)
 	if err != nil {
 		return nil, fmt.Errorf("resolve project root: %w", err)

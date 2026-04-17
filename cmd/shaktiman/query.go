@@ -82,7 +82,7 @@ func searchCmd() *cobra.Command {
 		Use:   "search <query>",
 		Short: "Search indexed code by keyword or semantic query",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			cfg := types.DefaultConfig(root)
 			cfg, err := types.LoadConfigFromFile(cfg)
 			if err != nil {
@@ -181,7 +181,7 @@ func contextCmd() *cobra.Command {
 		Use:   "context <query>",
 		Short: "Assemble cross-file context for a query",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			cfg := types.DefaultConfig(root)
 			cfg, err := types.LoadConfigFromFile(cfg)
 			if err != nil {
@@ -240,7 +240,7 @@ func symbolsCmd() *cobra.Command {
 		Use:   "symbols <name>",
 		Short: "Look up symbols by name",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			cfg := types.DefaultConfig(root)
 			cfg, err := types.LoadConfigFromFile(cfg)
 			if err != nil {
@@ -303,7 +303,7 @@ func depsCmd() *cobra.Command {
 		Use:   "deps <symbol>",
 		Short: "Show callers/callees of a symbol",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			cfg := types.DefaultConfig(root)
 			cfg, err := types.LoadConfigFromFile(cfg)
 			if err != nil {
@@ -364,7 +364,7 @@ func diffCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "diff",
 		Short: "Show recent file changes and affected symbols",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			cfg := types.DefaultConfig(root)
 			cfg, err := types.LoadConfigFromFile(cfg)
 			if err != nil {
@@ -418,7 +418,7 @@ func enrichmentStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "enrichment-status",
 		Short: "Show indexing stats and enrichment progress",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			cfg := types.DefaultConfig(root)
 			cfg, err := types.LoadConfigFromFile(cfg)
 			if err != nil {
@@ -464,7 +464,7 @@ func summaryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "summary",
 		Short: "Show codebase summary: files, languages, symbols, embedding %",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			cfg := types.DefaultConfig(root)
 			cfg, err := types.LoadConfigFromFile(cfg)
 			if err != nil {
