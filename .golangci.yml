@@ -1,3 +1,16 @@
+version: "2"
+
+run:
+  timeout: 5m
+  build-tags:
+    - sqlite_fts5
+    - sqlite
+    - bruteforce
+    - hnsw
+    - postgres
+    - pgvector
+    - qdrant
+
 linters:
   enable:
     - govet
@@ -5,12 +18,5 @@ linters:
     - staticcheck
     - gosec
     - revive
-    - gosimple
     - ineffassign
-    - typecheck
     - unused
-
-run:
-  timeout: 5m
-  build-tags:
-    - sqlite_fts5
