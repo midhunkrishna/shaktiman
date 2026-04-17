@@ -37,7 +37,7 @@ func openEngine(cfg types.Config, store types.WriterStore, root string) (*core.Q
 		return engine, nil
 	}
 
-	vs, err := vector.NewVectorStore(vector.VectorStoreConfigFrom(cfg, store))
+	vs, err := vector.NewVectorStore(vector.StoreConfigFrom(cfg, store))
 	if err != nil {
 		slog.Warn("vector store unavailable, using keyword search", "err", err)
 		return engine, nil

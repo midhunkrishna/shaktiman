@@ -18,7 +18,7 @@ func (s *Store) InsertEdges(ctx context.Context, txh types.TxHandle, fileID int6
 	if len(edges) == 0 {
 		return nil
 	}
-	tx := txh.(SqliteTxHandle).Tx
+	tx := txh.(TxHandle).Tx
 
 	edgeStmt, err := tx.PrepareContext(ctx, `
 		INSERT OR IGNORE INTO edges (src_symbol_id, dst_symbol_id, kind, file_id)
@@ -69,7 +69,7 @@ func (s *Store) ResolvePendingEdges(ctx context.Context, txh types.TxHandle, new
 	if len(newSymbolNames) == 0 {
 		return nil
 	}
-	tx := txh.(SqliteTxHandle).Tx
+	tx := txh.(TxHandle).Tx
 
 	placeholders := make([]string, len(newSymbolNames))
 	args := make([]any, len(newSymbolNames))
@@ -274,7 +274,7 @@ func (s *Store) PendingEdgeCallersWithKind(ctx context.Context, dstName string) 
 
 // DeleteEdgesByFile removes all edges originating from a given file.
 func (s *Store) DeleteEdgesByFile(ctx context.Context, txh types.TxHandle, fileID int64) error {
-	tx := txh.(SqliteTxHandle).Tx
+	tx := txh.(TxHandle).Tx
 	if _, err := tx.ExecContext(ctx, "DELETE FROM edges WHERE file_id = ?", fileID); err != nil {
 		return fmt.Errorf("delete edges for file %d: %w", fileID, err)
 	}

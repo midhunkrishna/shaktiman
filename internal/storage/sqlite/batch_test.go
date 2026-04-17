@@ -120,12 +120,12 @@ func TestBatchNeighbors(t *testing.T) {
 	_, _, symC := insertTestFileChunkSymbol(t, store, "c.go", "FuncC")
 
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
-		if err := store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, fileID, []types.EdgeRecord{
+		if err := store.InsertEdges(ctx, TxHandle{Tx: tx}, fileID, []types.EdgeRecord{
 			{SrcSymbolName: "FuncA", DstSymbolName: "FuncB", Kind: "calls"},
 		}, map[string]int64{"FuncA": symA, "FuncB": symB}, ""); err != nil {
 			return err
 		}
-		return store.InsertEdges(ctx, SqliteTxHandle{Tx: tx}, fileID, []types.EdgeRecord{
+		return store.InsertEdges(ctx, TxHandle{Tx: tx}, fileID, []types.EdgeRecord{
 			{SrcSymbolName: "FuncB", DstSymbolName: "FuncC", Kind: "calls"},
 		}, map[string]int64{"FuncB": symB, "FuncC": symC}, "")
 	})

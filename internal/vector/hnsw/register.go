@@ -8,7 +8,7 @@ import (
 )
 
 func init() {
-	vector.RegisterVectorStore("hnsw", func(cfg vector.VectorStoreConfig) (types.VectorStore, error) {
-		return NewHNSWStore(HNSWStoreInput{Dim: cfg.Dims})
+	vector.RegisterVectorStore("hnsw", func(cfg vector.StoreConfig) (types.VectorStore, error) {
+		return NewStore(StoreInput{Dim: cfg.Dims})
 	})
 }

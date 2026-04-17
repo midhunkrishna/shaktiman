@@ -13,7 +13,7 @@ func TestBruteForceCompliance(t *testing.T) {
 	}
 	RunVectorStoreTests(t, func(t *testing.T, dims int) types.VectorStore {
 		t.Helper()
-		vs, err := vector.NewVectorStore(vector.VectorStoreConfig{
+		vs, err := vector.NewVectorStore(vector.StoreConfig{
 			Backend: "brute_force",
 			Dims:    dims,
 		})
@@ -30,7 +30,7 @@ func TestHNSWCompliance(t *testing.T) {
 	}
 	RunVectorStoreTests(t, func(t *testing.T, dims int) types.VectorStore {
 		t.Helper()
-		vs, err := vector.NewVectorStore(vector.VectorStoreConfig{
+		vs, err := vector.NewVectorStore(vector.StoreConfig{
 			Backend: "hnsw",
 			Dims:    dims,
 		})

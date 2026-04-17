@@ -36,7 +36,7 @@ func Open(cfg types.Config) (*Backends, error) {
 
 	if cfg.EmbedEnabled {
 		vs, err := vector.NewVectorStore(
-			vector.VectorStoreConfigFrom(cfg, store))
+			vector.StoreConfigFrom(cfg, store))
 		if err != nil {
 			slog.Warn("vector store unavailable", "err", err)
 		} else {

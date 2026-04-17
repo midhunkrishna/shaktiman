@@ -6,8 +6,8 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
-// VectorStoreConfig holds backend-agnostic configuration for creating a VectorStore.
-type VectorStoreConfig struct {
+// StoreConfig holds backend-agnostic configuration for creating a VectorStore.
+type StoreConfig struct {
 	Backend  string // "brute_force" (default), "hnsw", "qdrant", "pgvector"
 	Dims     int    // vector dimensionality (e.g. 768)
 	DataPath string // persistence file path (for BruteForce/HNSW)
@@ -29,10 +29,10 @@ type VectorStoreConfig struct {
 	Store interface{}
 }
 
-// VectorStoreConfigFrom extracts a VectorStoreConfig from the application config
+// StoreConfigFrom extracts a StoreConfig from the application config
 // and the active MetadataStore. This keeps backend-specific wiring out of the daemon.
-func VectorStoreConfigFrom(cfg types.Config, store interface{}) VectorStoreConfig {
-	vsc := VectorStoreConfig{
+func StoreConfigFrom(cfg types.Config, store interface{}) StoreConfig {
+	vsc := StoreConfig{
 		Backend:          cfg.VectorBackend,
 		Dims:             cfg.EmbeddingDims,
 		QdrantURL:        cfg.QdrantURL,
@@ -60,19 +60,19 @@ func VectorStoreConfigFrom(cfg types.Config, store interface{}) VectorStoreConfi
 	return vsc
 }
 
-// VectorStoreFactory creates a VectorStore from config.
-type VectorStoreFactory func(cfg VectorStoreConfig) (types.VectorStore, error)
+// StoreFactory creates a VectorStore from config.
+type StoreFactory func(cfg StoreConfig) (types.VectorStore, error)
 
-var vectorStoreFactories = map[string]VectorStoreFactory{}
+var vectorStoreFactories = map[string]StoreFactory{}
 
 // RegisterVectorStore registers a factory for a named backend.
 // Called from init() in each backend.
-func RegisterVectorStore(name string, factory VectorStoreFactory) {
+func RegisterVectorStore(name string, factory StoreFactory) {
 	vectorStoreFactories[name] = factory
 }
 
 // NewVectorStore creates a VectorStore for the configured backend.
-func NewVectorStore(cfg VectorStoreConfig) (types.VectorStore, error) {
+func NewVectorStore(cfg StoreConfig) (types.VectorStore, error) {
 	if cfg.Backend == "" {
 		cfg.Backend = "brute_force"
 	}

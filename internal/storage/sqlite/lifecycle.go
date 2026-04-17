@@ -6,24 +6,24 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
-// SQLiteLifecycle adapts SQLite FTS5 trigger management into the
+// Lifecycle adapts SQLite FTS5 trigger management into the
 // generic StoreLifecycle interface. Postgres returns nil for lifecycle
 // since generated tsvector columns need no manual management.
-type SQLiteLifecycle struct {
+type Lifecycle struct {
 	store *Store
 }
 
 // Compile-time check.
-var _ types.StoreLifecycle = (*SQLiteLifecycle)(nil)
+var _ types.StoreLifecycle = (*Lifecycle)(nil)
 
-// NewSQLiteLifecycle creates a StoreLifecycle for the SQLite backend.
-func NewSQLiteLifecycle(store *Store) *SQLiteLifecycle {
-	return &SQLiteLifecycle{store: store}
+// NewLifecycle creates a StoreLifecycle for the SQLite backend.
+func NewLifecycle(store *Store) *Lifecycle {
+	return &Lifecycle{store: store}
 }
 
 // OnStartup performs crash recovery: ensures FTS triggers exist and
 // rebuilds the FTS index if it is stale (mismatched row count).
-func (l *SQLiteLifecycle) OnStartup(ctx context.Context) error {
+func (l *Lifecycle) OnStartup(ctx context.Context) error {
 	if err := l.store.EnsureFTSTriggers(ctx); err != nil {
 		return err
 	}
@@ -38,12 +38,12 @@ func (l *SQLiteLifecycle) OnStartup(ctx context.Context) error {
 }
 
 // OnBulkWriteBegin disables FTS triggers for bulk insert performance.
-func (l *SQLiteLifecycle) OnBulkWriteBegin(ctx context.Context) error {
+func (l *Lifecycle) OnBulkWriteBegin(ctx context.Context) error {
 	return l.store.DisableFTSTriggers(ctx)
 }
 
 // OnBulkWriteEnd rebuilds the FTS index and re-enables triggers.
-func (l *SQLiteLifecycle) OnBulkWriteEnd(ctx context.Context) error {
+func (l *Lifecycle) OnBulkWriteEnd(ctx context.Context) error {
 	if err := l.store.RebuildFTS(ctx); err != nil {
 		return err
 	}

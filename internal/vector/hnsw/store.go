@@ -20,25 +20,25 @@ const (
 	defaultMaxElements    = 100_000
 )
 
-// HNSWStoreInput configures a new HNSWStore.
-type HNSWStoreInput struct {
+// StoreInput configures a new Store.
+type StoreInput struct {
 	Dim            int
 	M              int    // max connections per node; 0 = default 16
 	EfConstruction int    // build-time accuracy; 0 = default 200
 	MaxElements    uint64 // initial capacity; 0 = default 100_000
 }
 
-// HNSWStore is a vector store backed by hnswlib via CGo.
+// Store is a vector store backed by hnswlib via CGo.
 // Provides O(log n) approximate nearest-neighbor search.
 // Thread-safe: hnswgo.HnswIndex has internal RWMutex.
-type HNSWStore struct {
+type Store struct {
 	index *hnswgo.HnswIndex
 	dim   int
 	max   uint64
 }
 
-// NewHNSWStore creates an empty HNSW-backed vector store.
-func NewHNSWStore(input HNSWStoreInput) (*HNSWStore, error) {
+// NewStore creates an empty HNSW-backed vector store.
+func NewStore(input StoreInput) (*Store, error) {
 	m := input.M
 	if m == 0 {
 		m = defaultM
@@ -57,7 +57,7 @@ func NewHNSWStore(input HNSWStoreInput) (*HNSWStore, error) {
 		return nil, fmt.Errorf("create hnsw index: %w", err)
 	}
 
-	return &HNSWStore{
+	return &Store{
 		index: idx,
 		dim:   input.Dim,
 		max:   maxEl,
@@ -65,7 +65,7 @@ func NewHNSWStore(input HNSWStoreInput) (*HNSWStore, error) {
 }
 
 // Search returns the topK most similar vectors by cosine similarity.
-func (s *HNSWStore) Search(_ context.Context, query []float32, topK int) ([]types.VectorResult, error) {
+func (s *Store) Search(_ context.Context, query []float32, topK int) ([]types.VectorResult, error) {
 	if len(query) != s.dim {
 		return nil, fmt.Errorf("query dim %d != store dim %d", len(query), s.dim)
 	}
@@ -110,7 +110,7 @@ func (s *HNSWStore) Search(_ context.Context, query []float32, topK int) ([]type
 }
 
 // Upsert inserts or replaces a vector for the given chunk ID.
-func (s *HNSWStore) Upsert(_ context.Context, chunkID int64, vector []float32) error {
+func (s *Store) Upsert(_ context.Context, chunkID int64, vector []float32) error {
 	if len(vector) != s.dim {
 		return fmt.Errorf("vector dim %d != store dim %d", len(vector), s.dim)
 	}
@@ -123,7 +123,7 @@ func (s *HNSWStore) Upsert(_ context.Context, chunkID int64, vector []float32) e
 }
 
 // UpsertBatch inserts multiple vectors in a single call.
-func (s *HNSWStore) UpsertBatch(_ context.Context, chunkIDs []int64, vectors [][]float32) error {
+func (s *Store) UpsertBatch(_ context.Context, chunkIDs []int64, vectors [][]float32) error {
 	if len(chunkIDs) != len(vectors) {
 		return fmt.Errorf("chunkIDs len %d != vectors len %d", len(chunkIDs), len(vectors))
 	}
@@ -150,7 +150,7 @@ func (s *HNSWStore) UpsertBatch(_ context.Context, chunkIDs []int64, vectors [][
 }
 
 // Delete soft-deletes vectors via MarkDeleted.
-func (s *HNSWStore) Delete(_ context.Context, chunkIDs []int64) error {
+func (s *Store) Delete(_ context.Context, chunkIDs []int64) error {
 	for _, id := range chunkIDs {
 		if err := s.index.MarkDeleted(uint64(id)); err != nil {
 			// hnswlib errors if label not found — skip silently for idempotent deletes
@@ -161,7 +161,7 @@ func (s *HNSWStore) Delete(_ context.Context, chunkIDs []int64) error {
 }
 
 // Has returns true if a vector exists for the given chunk ID.
-func (s *HNSWStore) Has(_ context.Context, chunkID int64) (bool, error) {
+func (s *Store) Has(_ context.Context, chunkID int64) (bool, error) {
 	_, err := s.index.GetDataByLabel(uint64(chunkID))
 	if err != nil {
 		return false, nil
@@ -170,7 +170,7 @@ func (s *HNSWStore) Has(_ context.Context, chunkID int64) (bool, error) {
 }
 
 // Count returns the number of stored vectors.
-func (s *HNSWStore) Count(_ context.Context) (int, error) {
+func (s *Store) Count(_ context.Context) (int, error) {
 	c, err := s.index.GetCurrentCount()
 	if err != nil {
 		return 0, fmt.Errorf("get count: %w", err)
@@ -179,23 +179,23 @@ func (s *HNSWStore) Count(_ context.Context) (int, error) {
 }
 
 // Close releases C-side resources.
-func (s *HNSWStore) Close() error {
+func (s *Store) Close() error {
 	s.index.Free()
 	return nil
 }
 
 // Healthy always returns true for the in-process HNSW store.
-func (s *HNSWStore) Healthy(_ context.Context) bool {
+func (s *Store) Healthy(_ context.Context) bool {
 	return true
 }
 
 // Dim returns the vector dimensionality.
-func (s *HNSWStore) Dim() int {
+func (s *Store) Dim() int {
 	return s.dim
 }
 
 // SaveToDisk persists the HNSW index using atomic rename.
-func (s *HNSWStore) SaveToDisk(path string) error {
+func (s *Store) SaveToDisk(path string) error {
 	start := time.Now()
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -221,7 +221,7 @@ func (s *HNSWStore) SaveToDisk(path string) error {
 
 // LoadFromDisk loads an HNSW index from disk.
 // Returns nil if the file does not exist (fresh start).
-func (s *HNSWStore) LoadFromDisk(path string) error {
+func (s *Store) LoadFromDisk(path string) error {
 	start := time.Now()
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -259,7 +259,7 @@ func (s *HNSWStore) LoadFromDisk(path string) error {
 }
 
 // ensureCapacity auto-grows the index if needed.
-func (s *HNSWStore) ensureCapacity(needed uint64) error {
+func (s *Store) ensureCapacity(needed uint64) error {
 	count, err := s.index.GetCurrentCount()
 	if err != nil {
 		return fmt.Errorf("get count for capacity check: %w", err)

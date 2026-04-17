@@ -61,9 +61,9 @@ func TestPgVectorCompliance(t *testing.T) {
 		t.Helper()
 		setupSchema(t, pool, dims)
 
-		store, err := NewPgVectorStore(pool, dims, 1)
+		store, err := NewStore(pool, dims, 1)
 		if err != nil {
-			t.Fatalf("NewPgVectorStore: %v", err)
+			t.Fatalf("NewStore: %v", err)
 		}
 		t.Cleanup(func() {
 			store.Close()
@@ -126,20 +126,20 @@ func TestValidateDimensions_NoTable(t *testing.T) {
 	}
 }
 
-func TestNewPgVectorStore_DimsMismatch(t *testing.T) {
+func TestNewStore_DimsMismatch(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 	setupSchema(t, pool, 4)
 
 	// Table was created with dims=4 by setupSchema
-	store, err := NewPgVectorStore(pool, 4, 1)
+	store, err := NewStore(pool, 4, 1)
 	if err != nil {
-		t.Fatalf("NewPgVectorStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	store.Close()
 
 	// Try to open with dims=8 — should fail
-	_, err = NewPgVectorStore(pool, 8, 1)
+	_, err = NewStore(pool, 8, 1)
 	if err == nil {
 		t.Fatal("expected error for dims mismatch")
 	}
@@ -152,9 +152,9 @@ func TestUpsertBatch_WithZeroVectorsSkipped(t *testing.T) {
 	ctx := context.Background()
 	setupSchema(t, pool, 4)
 
-	store, err := NewPgVectorStore(pool, 4, 1)
+	store, err := NewStore(pool, 4, 1)
 	if err != nil {
-		t.Fatalf("NewPgVectorStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	defer store.Close()
 
@@ -183,9 +183,9 @@ func TestSearch_WithTimeout(t *testing.T) {
 	ctx := context.Background()
 	setupSchema(t, pool, 4)
 
-	store, err := NewPgVectorStore(pool, 4, 1)
+	store, err := NewStore(pool, 4, 1)
 	if err != nil {
-		t.Fatalf("NewPgVectorStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	defer store.Close()
 
@@ -209,9 +209,9 @@ func TestDelete_Chunking(t *testing.T) {
 	ctx := context.Background()
 	setupSchema(t, pool, 2)
 
-	store, err := NewPgVectorStore(pool, 2, 1)
+	store, err := NewStore(pool, 2, 1)
 	if err != nil {
-		t.Fatalf("NewPgVectorStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	defer store.Close()
 
@@ -250,9 +250,9 @@ func TestHealthy_WithPool(t *testing.T) {
 	ctx := context.Background()
 	setupSchema(t, pool, 4)
 
-	store, err := NewPgVectorStore(pool, 4, 1)
+	store, err := NewStore(pool, 4, 1)
 	if err != nil {
-		t.Fatalf("NewPgVectorStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	defer store.Close()
 
@@ -266,9 +266,9 @@ func TestPgVectorStore_PurgeAll(t *testing.T) {
 	ctx := context.Background()
 	setupSchema(t, pool, 4)
 
-	store, err := NewPgVectorStore(pool, 4, 1)
+	store, err := NewStore(pool, 4, 1)
 	if err != nil {
-		t.Fatalf("NewPgVectorStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	defer store.Close()
 	t.Cleanup(func() { pool.Exec(ctx, "DROP TABLE IF EXISTS embeddings") })

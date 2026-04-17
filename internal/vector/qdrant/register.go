@@ -8,8 +8,8 @@ import (
 )
 
 func init() {
-	vector.RegisterVectorStore("qdrant", func(cfg vector.VectorStoreConfig) (types.VectorStore, error) {
+	vector.RegisterVectorStore("qdrant", func(cfg vector.StoreConfig) (types.VectorStore, error) {
 		client := NewClient(cfg.QdrantURL, cfg.QdrantAPIKey)
-		return NewQdrantStore(client, cfg.QdrantCollection, cfg.Dims, cfg.ProjectID)
+		return NewStore(client, cfg.QdrantCollection, cfg.Dims, cfg.ProjectID)
 	})
 }

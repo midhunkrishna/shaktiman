@@ -12,18 +12,18 @@ func TestPgVector_SearchIsolation(t *testing.T) {
 	ctx := context.Background()
 	setupSchema(t, pool, 4)
 
-	storeA, err := NewPgVectorStore(pool, 4, 1)
+	storeA, err := NewStore(pool, 4, 1)
 	if err != nil {
-		t.Fatalf("NewPgVectorStore A: %v", err)
+		t.Fatalf("NewStore A: %v", err)
 	}
 	defer storeA.Close()
 
 	// Insert a second project row for project B.
 	pool.Exec(ctx, `INSERT INTO projects (id, root_path, name) VALUES (2, '/tmp/project-B', 'B') ON CONFLICT DO NOTHING`)
 
-	storeB, err := NewPgVectorStore(pool, 4, 2)
+	storeB, err := NewStore(pool, 4, 2)
 	if err != nil {
-		t.Fatalf("NewPgVectorStore B: %v", err)
+		t.Fatalf("NewStore B: %v", err)
 	}
 	defer storeB.Close()
 
@@ -77,17 +77,17 @@ func TestPgVector_CountIsolation(t *testing.T) {
 	ctx := context.Background()
 	setupSchema(t, pool, 4)
 
-	storeA, err := NewPgVectorStore(pool, 4, 1)
+	storeA, err := NewStore(pool, 4, 1)
 	if err != nil {
-		t.Fatalf("NewPgVectorStore A: %v", err)
+		t.Fatalf("NewStore A: %v", err)
 	}
 	defer storeA.Close()
 
 	pool.Exec(ctx, `INSERT INTO projects (id, root_path, name) VALUES (2, '/tmp/project-B', 'B') ON CONFLICT DO NOTHING`)
 
-	storeB, err := NewPgVectorStore(pool, 4, 2)
+	storeB, err := NewStore(pool, 4, 2)
 	if err != nil {
-		t.Fatalf("NewPgVectorStore B: %v", err)
+		t.Fatalf("NewStore B: %v", err)
 	}
 	defer storeB.Close()
 

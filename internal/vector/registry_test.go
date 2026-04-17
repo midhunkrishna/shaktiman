@@ -14,7 +14,7 @@ func TestNewVectorStore_BruteForce(t *testing.T) {
 		t.Skip("brute_force backend not compiled in")
 	}
 
-	vs, err := vector.NewVectorStore(vector.VectorStoreConfig{
+	vs, err := vector.NewVectorStore(vector.StoreConfig{
 		Backend: "brute_force",
 		Dims:    4,
 	})
@@ -43,7 +43,7 @@ func TestNewVectorStore_HNSW(t *testing.T) {
 		t.Skip("hnsw backend not compiled in")
 	}
 
-	vs, err := vector.NewVectorStore(vector.VectorStoreConfig{
+	vs, err := vector.NewVectorStore(vector.StoreConfig{
 		Backend: "hnsw",
 		Dims:    4,
 	})
@@ -69,7 +69,7 @@ func TestNewVectorStore_DefaultIsBruteForce(t *testing.T) {
 	}
 
 	// Empty backend should default to brute_force
-	vs, err := vector.NewVectorStore(vector.VectorStoreConfig{
+	vs, err := vector.NewVectorStore(vector.StoreConfig{
 		Backend: "",
 		Dims:    4,
 	})
@@ -88,7 +88,7 @@ func TestNewVectorStore_DefaultIsBruteForce(t *testing.T) {
 func TestNewVectorStore_UnknownBackend(t *testing.T) {
 	t.Parallel()
 
-	_, err := vector.NewVectorStore(vector.VectorStoreConfig{
+	_, err := vector.NewVectorStore(vector.StoreConfig{
 		Backend: "faiss",
 		Dims:    4,
 	})
@@ -115,7 +115,7 @@ func TestHasVectorStore_HNSW(t *testing.T) {
 	}
 }
 
-func TestVectorStoreConfigFrom_BasicFields(t *testing.T) {
+func TestStoreConfigFrom_BasicFields(t *testing.T) {
 	t.Parallel()
 	cfg := types.Config{
 		VectorBackend:    "brute_force",
@@ -124,7 +124,7 @@ func TestVectorStoreConfigFrom_BasicFields(t *testing.T) {
 		QdrantCollection: "my_col",
 		QdrantAPIKey:     "secret",
 	}
-	vsc := vector.VectorStoreConfigFrom(cfg, nil)
+	vsc := vector.StoreConfigFrom(cfg, nil)
 	if vsc.Backend != "brute_force" {
 		t.Errorf("Backend = %q, want brute_force", vsc.Backend)
 	}
@@ -150,14 +150,14 @@ type fakePoolStore struct{ pool any }
 
 func (f *fakePoolStore) RawPool() any { return f.pool }
 
-func TestVectorStoreConfigFrom_PgVector_ExtractsPool(t *testing.T) {
+func TestStoreConfigFrom_PgVector_ExtractsPool(t *testing.T) {
 	t.Parallel()
 	sentinel := "fake-pool"
 	cfg := types.Config{
 		VectorBackend: "pgvector",
 		EmbeddingDims: 384,
 	}
-	vsc := vector.VectorStoreConfigFrom(cfg, &fakePoolStore{pool: sentinel})
+	vsc := vector.StoreConfigFrom(cfg, &fakePoolStore{pool: sentinel})
 	if vsc.PgPool != sentinel {
 		t.Errorf("PgPool = %v, want %q", vsc.PgPool, sentinel)
 	}
@@ -166,38 +166,38 @@ func TestVectorStoreConfigFrom_PgVector_ExtractsPool(t *testing.T) {
 	}
 }
 
-func TestVectorStoreConfigFrom_PgVector_NilStore(t *testing.T) {
+func TestStoreConfigFrom_PgVector_NilStore(t *testing.T) {
 	t.Parallel()
 	cfg := types.Config{
 		VectorBackend: "pgvector",
 		EmbeddingDims: 768,
 	}
-	vsc := vector.VectorStoreConfigFrom(cfg, nil)
+	vsc := vector.StoreConfigFrom(cfg, nil)
 	if vsc.PgPool != nil {
 		t.Error("PgPool should be nil when store is nil")
 	}
 }
 
-func TestVectorStoreConfigFrom_PgVector_StoreWithoutPool(t *testing.T) {
+func TestStoreConfigFrom_PgVector_StoreWithoutPool(t *testing.T) {
 	t.Parallel()
 	// Store that doesn't implement RawPool()
 	cfg := types.Config{
 		VectorBackend: "pgvector",
 		EmbeddingDims: 768,
 	}
-	vsc := vector.VectorStoreConfigFrom(cfg, "not-a-pooler")
+	vsc := vector.StoreConfigFrom(cfg, "not-a-pooler")
 	if vsc.PgPool != nil {
 		t.Error("PgPool should be nil when store lacks RawPool()")
 	}
 }
 
-func TestVectorStoreConfigFrom_NonPgVector_IgnoresPool(t *testing.T) {
+func TestStoreConfigFrom_NonPgVector_IgnoresPool(t *testing.T) {
 	t.Parallel()
 	cfg := types.Config{
 		VectorBackend: "qdrant",
 		EmbeddingDims: 768,
 	}
-	vsc := vector.VectorStoreConfigFrom(cfg, &fakePoolStore{pool: "should-be-ignored"})
+	vsc := vector.StoreConfigFrom(cfg, &fakePoolStore{pool: "should-be-ignored"})
 	if vsc.PgPool != nil {
 		t.Error("PgPool should be nil for non-pgvector backend")
 	}
@@ -208,13 +208,13 @@ type fakeProjectStore struct{ id int64 }
 
 func (f *fakeProjectStore) ProjectID() int64 { return f.id }
 
-func TestVectorStoreConfigFrom_Qdrant_ExtractsProjectID(t *testing.T) {
+func TestStoreConfigFrom_Qdrant_ExtractsProjectID(t *testing.T) {
 	t.Parallel()
 	cfg := types.Config{
 		VectorBackend: "qdrant",
 		EmbeddingDims: 768,
 	}
-	vsc := vector.VectorStoreConfigFrom(cfg, &fakeProjectStore{id: 42})
+	vsc := vector.StoreConfigFrom(cfg, &fakeProjectStore{id: 42})
 	if vsc.ProjectID != 42 {
 		t.Errorf("ProjectID = %d, want 42", vsc.ProjectID)
 	}

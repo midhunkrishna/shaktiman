@@ -388,7 +388,7 @@ func TestWithWriteTxCtx_CommitAndRollback(t *testing.T) {
 
 	// Successful transaction via TxHandle
 	err = db.WithWriteTxCtx(ctx, func(txh types.TxHandle) error {
-		tx := txh.(SqliteTxHandle).Tx
+		tx := txh.(TxHandle).Tx
 		_, err := tx.ExecContext(ctx, `INSERT INTO files (path, content_hash, mtime, embedding_status, parse_quality)
 			VALUES ('txh_test.go', 'h1', 1.0, 'pending', 'full')`)
 		return err
@@ -407,7 +407,7 @@ func TestWithWriteTxCtx_CommitAndRollback(t *testing.T) {
 	// Rolled-back transaction via TxHandle
 	rollbackErr := errors.New("forced rollback")
 	err = db.WithWriteTxCtx(ctx, func(txh types.TxHandle) error {
-		tx := txh.(SqliteTxHandle).Tx
+		tx := txh.(TxHandle).Tx
 		tx.ExecContext(ctx, `INSERT INTO files (path, content_hash, mtime, embedding_status, parse_quality)
 			VALUES ('should_not_exist.go', 'h2', 1.0, 'pending', 'full')`)
 		return rollbackErr
@@ -424,13 +424,13 @@ func TestWithWriteTxCtx_CommitAndRollback(t *testing.T) {
 	}
 }
 
-func TestSqliteTxHandle_SatisfiesTxHandle(t *testing.T) {
+func TestTxHandle_SatisfiesTxHandle(t *testing.T) {
 	// Compile-time check is implicit, but verify the assertion works at runtime
-	var txh types.TxHandle = SqliteTxHandle{Tx: nil}
+	var txh types.TxHandle = TxHandle{Tx: nil}
 	txh.IsTxHandle() // should not panic
 
 	// Verify type assertion round-trip
-	recovered := txh.(SqliteTxHandle)
+	recovered := txh.(TxHandle)
 	if recovered.Tx != nil {
 		t.Error("expected nil Tx")
 	}

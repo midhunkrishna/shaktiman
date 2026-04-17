@@ -19,17 +19,17 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
-// BruteForceStore is an in-memory vector store using O(n) cosine scan.
+// Store is an in-memory vector store using O(n) cosine scan.
 // Thread-safe via RWMutex. Suitable for ≤100K vectors (~225MB at 768 dims).
-type BruteForceStore struct {
+type Store struct {
 	mu      sync.RWMutex
 	vectors map[int64][]float32
 	dim     int
 }
 
-// NewBruteForceStore creates an empty store with the given vector dimensionality.
-func NewBruteForceStore(dim int) *BruteForceStore {
-	return &BruteForceStore{
+// NewStore creates an empty store with the given vector dimensionality.
+func NewStore(dim int) *Store {
+	return &Store{
 		vectors: make(map[int64][]float32),
 		dim:     dim,
 	}
@@ -58,7 +58,7 @@ func (h *scoreHeap) Pop() any {
 
 // Search returns the topK most similar vectors by cosine similarity.
 // Uses a min-heap to avoid allocating and sorting all N results.
-func (s *BruteForceStore) Search(_ context.Context, query []float32, topK int) ([]types.VectorResult, error) {
+func (s *Store) Search(_ context.Context, query []float32, topK int) ([]types.VectorResult, error) {
 	if topK <= 0 {
 		return nil, nil
 	}
@@ -100,7 +100,7 @@ func (s *BruteForceStore) Search(_ context.Context, query []float32, topK int) (
 }
 
 // Upsert inserts or replaces a vector for the given chunk ID.
-func (s *BruteForceStore) Upsert(_ context.Context, chunkID int64, vector []float32) error {
+func (s *Store) Upsert(_ context.Context, chunkID int64, vector []float32) error {
 	if len(vector) != s.dim {
 		return fmt.Errorf("vector dim %d != store dim %d", len(vector), s.dim)
 	}
@@ -112,7 +112,7 @@ func (s *BruteForceStore) Upsert(_ context.Context, chunkID int64, vector []floa
 
 // UpsertBatch inserts multiple vectors in a single lock acquisition.
 // All dimensions are validated before any writes to prevent partial updates.
-func (s *BruteForceStore) UpsertBatch(_ context.Context, chunkIDs []int64, vectors [][]float32) error {
+func (s *Store) UpsertBatch(_ context.Context, chunkIDs []int64, vectors [][]float32) error {
 	if len(chunkIDs) != len(vectors) {
 		return fmt.Errorf("chunkIDs len %d != vectors len %d", len(chunkIDs), len(vectors))
 	}
@@ -131,7 +131,7 @@ func (s *BruteForceStore) UpsertBatch(_ context.Context, chunkIDs []int64, vecto
 }
 
 // Delete removes vectors for the given chunk IDs.
-func (s *BruteForceStore) Delete(_ context.Context, chunkIDs []int64) error {
+func (s *Store) Delete(_ context.Context, chunkIDs []int64) error {
 	s.mu.Lock()
 	for _, id := range chunkIDs {
 		delete(s.vectors, id)
@@ -141,7 +141,7 @@ func (s *BruteForceStore) Delete(_ context.Context, chunkIDs []int64) error {
 }
 
 // Count returns the number of stored vectors.
-func (s *BruteForceStore) Count(_ context.Context) (int, error) {
+func (s *Store) Count(_ context.Context) (int, error) {
 	s.mu.RLock()
 	n := len(s.vectors)
 	s.mu.RUnlock()
@@ -149,7 +149,7 @@ func (s *BruteForceStore) Count(_ context.Context) (int, error) {
 }
 
 // Has returns true if a vector exists for the given chunk ID.
-func (s *BruteForceStore) Has(_ context.Context, chunkID int64) (bool, error) {
+func (s *Store) Has(_ context.Context, chunkID int64) (bool, error) {
 	s.mu.RLock()
 	_, ok := s.vectors[chunkID]
 	s.mu.RUnlock()
@@ -157,17 +157,17 @@ func (s *BruteForceStore) Has(_ context.Context, chunkID int64) (bool, error) {
 }
 
 // Close is a no-op for the in-memory brute-force store.
-func (s *BruteForceStore) Close() error {
+func (s *Store) Close() error {
 	return nil
 }
 
 // Healthy always returns true for the in-memory brute-force store.
-func (s *BruteForceStore) Healthy(_ context.Context) bool {
+func (s *Store) Healthy(_ context.Context) bool {
 	return true
 }
 
 // Dim returns the vector dimensionality.
-func (s *BruteForceStore) Dim() int {
+func (s *Store) Dim() int {
 	return s.dim
 }
 
@@ -178,7 +178,7 @@ var embMagic = [4]byte{'E', 'M', 'B', 'V'}
 // Writes format v2 with CRC32 integrity footer.
 // Snapshots vectors under RLock (fast copy), then serializes to disk without
 // holding any lock. Uses math.Float32bits encoding (no reflection overhead).
-func (s *BruteForceStore) SaveToDisk(path string) error {
+func (s *Store) SaveToDisk(path string) error {
 	start := time.Now()
 
 	// Snapshot under lock — release before disk I/O to avoid blocking writers.
@@ -264,7 +264,7 @@ const (
 // LoadFromDisk loads vectors from a binary persistence file.
 // Returns nil if the file does not exist (fresh start).
 // Supports v1 (no checksum) and v2 (CRC32 integrity check).
-func (s *BruteForceStore) LoadFromDisk(path string) error {
+func (s *Store) LoadFromDisk(path string) error {
 	start := time.Now()
 	f, err := os.Open(path)
 	if err != nil {

@@ -25,7 +25,7 @@ func init() {
 		}
 
 		store := NewStore(db)
-		lifecycle := NewSQLiteLifecycle(store)
+		lifecycle := NewLifecycle(store)
 		closer := func() error { return db.Close() }
 
 		return store, lifecycle, closer, nil

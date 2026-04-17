@@ -14,7 +14,7 @@ func newTestVectorStore(t testing.TB, dims int) types.VectorStore {
 	if !HasVectorStore("brute_force") {
 		t.Skip("brute_force backend not compiled in (missing build tag?)")
 	}
-	vs, err := NewVectorStore(VectorStoreConfig{
+	vs, err := NewVectorStore(StoreConfig{
 		Backend: "brute_force",
 		Dims:    dims,
 	})
