@@ -298,9 +298,10 @@ func dependenciesHandler(store types.WriterStore) handlerFunc {
 		}
 
 		direction := req.GetString("direction", "both")
-		if direction == "callers" {
+		switch direction {
+		case "callers":
 			direction = "incoming"
-		} else if direction == "callees" {
+		case "callees":
 			direction = "outgoing"
 		}
 		if direction != "incoming" && direction != "outgoing" && direction != "both" {

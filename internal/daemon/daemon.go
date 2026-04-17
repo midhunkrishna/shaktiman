@@ -290,7 +290,7 @@ func (d *Daemon) EmbedProject(ctx context.Context, onProgress func(types.EmbedPr
 	}
 
 	if !d.embedWorker.EmbedderHealthy(ctx) {
-		return 0, fmt.Errorf("Ollama is not reachable at %s", d.cfg.OllamaURL)
+		return 0, fmt.Errorf("ollama is not reachable at %s", d.cfg.OllamaURL)
 	}
 
 	// Reverse reconciliation: if vector store has fewer vectors than DB claims
