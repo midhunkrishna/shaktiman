@@ -4,6 +4,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"math"
 	"path/filepath"
 
 	"github.com/jackc/pgx/v5"
@@ -31,12 +32,19 @@ var _ types.WriterStore = (*PgStore)(nil)
 // NewPgStore creates a PgStore connected to the given Postgres instance.
 // Call EnsureProject after running migrations to register the project.
 func NewPgStore(ctx context.Context, connStr string, maxOpen, maxIdle int, schema string) (*PgStore, error) {
+	if maxOpen < 0 || maxOpen > math.MaxInt32 {
+		return nil, fmt.Errorf("maxOpen out of int32 range: %d", maxOpen)
+	}
+	if maxIdle < 0 || maxIdle > math.MaxInt32 {
+		return nil, fmt.Errorf("maxIdle out of int32 range: %d", maxIdle)
+	}
+
 	cfg, err := pgxpool.ParseConfig(connStr)
 	if err != nil {
 		return nil, fmt.Errorf("parse postgres connection string: %w", err)
 	}
-	cfg.MaxConns = int32(maxOpen)
-	cfg.MinConns = int32(maxIdle)
+	cfg.MaxConns = int32(maxOpen) //nolint:gosec // bounds-checked above
+	cfg.MinConns = int32(maxIdle) //nolint:gosec // bounds-checked above
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

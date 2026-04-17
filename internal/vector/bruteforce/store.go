@@ -213,8 +213,8 @@ func (s *Store) SaveToDisk(path string) error {
 	var hdr [16]byte
 	copy(hdr[:4], embMagic[:])
 	binary.LittleEndian.PutUint32(hdr[4:8], 2)
-	binary.LittleEndian.PutUint32(hdr[8:12], uint32(dim))
-	binary.LittleEndian.PutUint32(hdr[12:16], uint32(len(snapshot)))
+	binary.LittleEndian.PutUint32(hdr[8:12], uint32(dim))             //nolint:gosec // dim validated <= maxDim (4096) on load
+	binary.LittleEndian.PutUint32(hdr[12:16], uint32(len(snapshot))) //nolint:gosec // vector count validated <= maxVectorCount (2_000_000) on load
 	if _, err := w.Write(hdr[:]); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("write header: %w", err)
@@ -223,7 +223,7 @@ func (s *Store) SaveToDisk(path string) error {
 	// Entries (direct byte encoding — avoids binary.Write reflection per vector)
 	entryBuf := make([]byte, 8+dim*4)
 	for id, vec := range snapshot {
-		binary.LittleEndian.PutUint64(entryBuf[:8], uint64(id))
+		binary.LittleEndian.PutUint64(entryBuf[:8], uint64(id)) //nolint:gosec // DB-assigned positive int64 chunk ID
 		for j, v := range vec {
 			binary.LittleEndian.PutUint32(entryBuf[8+j*4:], math.Float32bits(v))
 		}
@@ -324,7 +324,7 @@ func (s *Store) LoadFromDisk(path string) error {
 		if _, err := io.ReadFull(r, entryBuf); err != nil {
 			return fmt.Errorf("read entry %d: %w", i, err)
 		}
-		id := int64(binary.LittleEndian.Uint64(entryBuf[:8]))
+		id := int64(binary.LittleEndian.Uint64(entryBuf[:8])) //nolint:gosec // round-trip of DB-assigned positive int64 chunk ID
 		vec := make([]float32, dim)
 		for j := range vec {
 			vec[j] = math.Float32frombits(binary.LittleEndian.Uint32(entryBuf[8+j*4:]))

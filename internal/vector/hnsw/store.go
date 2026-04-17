@@ -66,6 +66,9 @@ func NewStore(input StoreInput) (*Store, error) {
 
 // Search returns the topK most similar vectors by cosine similarity.
 func (s *Store) Search(_ context.Context, query []float32, topK int) ([]types.VectorResult, error) {
+	if topK <= 0 {
+		return nil, nil
+	}
 	if len(query) != s.dim {
 		return nil, fmt.Errorf("query dim %d != store dim %d", len(query), s.dim)
 	}
@@ -80,7 +83,7 @@ func (s *Store) Search(_ context.Context, query []float32, topK int) ([]types.Ve
 
 	// Clamp topK to current count — hnswlib errors if topK > count.
 	if uint64(topK) > count {
-		topK = int(count)
+		topK = int(count) //nolint:gosec // topK was just checked > 0; count is bounded by inserted-point count which fits int on 64-bit
 	}
 
 	results, err := s.index.SearchKNN([][]float32{query}, topK, 1)
@@ -102,7 +105,7 @@ func (s *Store) Search(_ context.Context, query []float32, topK int) ([]types.Ve
 		// hnswlib cosine distance = 1 - cosine_similarity
 		// Convert back: similarity = 1.0 - distance
 		out[i] = types.VectorResult{
-			ChunkID: int64(r.Label),
+			ChunkID: int64(r.Label), //nolint:gosec // labels are positive chunk IDs stored as uint64
 			Score:   float64(1.0 - r.Distance),
 		}
 	}
@@ -119,7 +122,7 @@ func (s *Store) Upsert(_ context.Context, chunkID int64, vector []float32) error
 		return err
 	}
 
-	return s.index.AddPoints([][]float32{vector}, []uint64{uint64(chunkID)}, 1, false)
+	return s.index.AddPoints([][]float32{vector}, []uint64{uint64(chunkID)}, 1, false) //nolint:gosec // DB-assigned positive chunk ID
 }
 
 // UpsertBatch inserts multiple vectors in a single call.
@@ -143,7 +146,7 @@ func (s *Store) UpsertBatch(_ context.Context, chunkIDs []int64, vectors [][]flo
 
 	labels := make([]uint64, len(chunkIDs))
 	for i, id := range chunkIDs {
-		labels[i] = uint64(id)
+		labels[i] = uint64(id) //nolint:gosec // DB-assigned positive chunk ID
 	}
 
 	return s.index.AddPoints(vectors, labels, runtime.NumCPU(), false)
@@ -152,7 +155,7 @@ func (s *Store) UpsertBatch(_ context.Context, chunkIDs []int64, vectors [][]flo
 // Delete soft-deletes vectors via MarkDeleted.
 func (s *Store) Delete(_ context.Context, chunkIDs []int64) error {
 	for _, id := range chunkIDs {
-		if err := s.index.MarkDeleted(uint64(id)); err != nil {
+		if err := s.index.MarkDeleted(uint64(id)); err != nil { //nolint:gosec // DB-assigned positive chunk ID
 			// hnswlib errors if label not found — skip silently for idempotent deletes
 			slog.Debug("hnsw mark deleted", "id", id, "err", err)
 		}
@@ -162,7 +165,7 @@ func (s *Store) Delete(_ context.Context, chunkIDs []int64) error {
 
 // Has returns true if a vector exists for the given chunk ID.
 func (s *Store) Has(_ context.Context, chunkID int64) (bool, error) {
-	_, err := s.index.GetDataByLabel(uint64(chunkID))
+	_, err := s.index.GetDataByLabel(uint64(chunkID)) //nolint:gosec // DB-assigned positive chunk ID
 	if err != nil {
 		return false, nil
 	}
@@ -175,7 +178,7 @@ func (s *Store) Count(_ context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("get count: %w", err)
 	}
-	return int(c), nil
+	return int(c), nil //nolint:gosec // count bounded by inserted-point count which fits int on 64-bit
 }
 
 // Close releases C-side resources.

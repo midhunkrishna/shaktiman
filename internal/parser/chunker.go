@@ -44,7 +44,7 @@ func (p *Parser) chunkFile(root *tree_sitter.Node, source []byte, cfg *LanguageC
 	var chunks []types.ChunkRecord
 	var headerParts []headerFragment
 
-	childCount := int(root.NamedChildCount())
+	childCount := int(root.NamedChildCount()) //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 	for i := 0; i < childCount; i++ {
 		child := root.NamedChild(uint(i))
 		nodeType := child.Kind()
@@ -58,8 +58,8 @@ func (p *Parser) chunkFile(root *tree_sitter.Node, source []byte, cfg *LanguageC
 		if cfg.ImportTypes[nodeType] {
 			headerParts = append(headerParts, headerFragment{
 				content:   child.Utf8Text(source),
-				startLine: int(child.StartPosition().Row) + 1,
-				endLine:   int(child.EndPosition().Row) + 1,
+				startLine: int(child.StartPosition().Row) + 1, //nolint:gosec // tree-sitter Row is 0-based line number; fits int on 64-bit
+				endLine:   int(child.EndPosition().Row) + 1,   //nolint:gosec // tree-sitter Row is 0-based line number; fits int on 64-bit
 			})
 			continue
 		}
@@ -68,8 +68,8 @@ func (p *Parser) chunkFile(root *tree_sitter.Node, source []byte, cfg *LanguageC
 		if nodeType == "package_clause" || nodeType == "package_declaration" {
 			headerParts = append(headerParts, headerFragment{
 				content:   child.Utf8Text(source),
-				startLine: int(child.StartPosition().Row) + 1,
-				endLine:   int(child.EndPosition().Row) + 1,
+				startLine: int(child.StartPosition().Row) + 1, //nolint:gosec // tree-sitter Row is 0-based line number; fits int on 64-bit
+				endLine:   int(child.EndPosition().Row) + 1,   //nolint:gosec // tree-sitter Row is 0-based line number; fits int on 64-bit
 			})
 			continue
 		}
@@ -79,8 +79,8 @@ func (p *Parser) chunkFile(root *tree_sitter.Node, source []byte, cfg *LanguageC
 			// Non-chunkable top-level node → include in header
 			headerParts = append(headerParts, headerFragment{
 				content:   child.Utf8Text(source),
-				startLine: int(child.StartPosition().Row) + 1,
-				endLine:   int(child.EndPosition().Row) + 1,
+				startLine: int(child.StartPosition().Row) + 1, //nolint:gosec // tree-sitter Row is 0-based line number; fits int on 64-bit
+				endLine:   int(child.EndPosition().Row) + 1,   //nolint:gosec // tree-sitter Row is 0-based line number; fits int on 64-bit
 			})
 			continue
 		}
@@ -167,8 +167,8 @@ func (p *Parser) chunkNode(node *tree_sitter.Node, source []byte, cfg *LanguageC
 		return []types.ChunkRecord{{
 			SymbolName: name,
 			Kind:       kind,
-			StartLine:  int(node.StartPosition().Row) + 1,
-			EndLine:    int(node.EndPosition().Row) + 1,
+			StartLine:  int(node.StartPosition().Row) + 1, //nolint:gosec // tree-sitter Row is 0-based line number; fits int on 64-bit
+			EndLine:    int(node.EndPosition().Row) + 1,   //nolint:gosec // tree-sitter Row is 0-based line number; fits int on 64-bit
 			Content:    content,
 			TokenCount: tokens,
 			Signature:  extractSignature(nameNode, source),
@@ -206,8 +206,8 @@ func (p *Parser) chunkNode(node *tree_sitter.Node, source []byte, cfg *LanguageC
 		parent := types.ChunkRecord{
 			SymbolName: name,
 			Kind:       kind,
-			StartLine:  int(node.StartPosition().Row) + 1,
-			EndLine:    int(node.EndPosition().Row) + 1,
+			StartLine:  int(node.StartPosition().Row) + 1, //nolint:gosec // tree-sitter Row is 0-based line number; fits int on 64-bit
+			EndLine:    int(node.EndPosition().Row) + 1,   //nolint:gosec // tree-sitter Row is 0-based line number; fits int on 64-bit
 			Content:    sig,
 			TokenCount: p.tokens.Count(sig),
 			Signature:  extractSignature(nameNode, source),
@@ -234,7 +234,7 @@ func (p *Parser) chunkNode(node *tree_sitter.Node, source []byte, cfg *LanguageC
 // structural nodes (body_statement, block, declaration_list, class_body, etc.)
 // to reach the chunkable leaves.
 func (p *Parser) findChunkableChildren(node *tree_sitter.Node, source []byte, cfg *LanguageConfig, depth int, extracted *[]types.ChunkRecord) {
-	childCount := int(node.NamedChildCount())
+	childCount := int(node.NamedChildCount()) //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 	for i := 0; i < childCount; i++ {
 		child := node.NamedChild(uint(i))
 		childType := child.Kind()
@@ -273,8 +273,8 @@ func (p *Parser) findChunkableChildren(node *tree_sitter.Node, source []byte, cf
 // splitNodeByLines splits an oversized node into line-based chunks.
 func (p *Parser) splitNodeByLines(node *tree_sitter.Node, source []byte, name string, kind string) []types.ChunkRecord {
 	content := node.Utf8Text(source)
-	startLine := int(node.StartPosition().Row) + 1
-	endLine := int(node.EndPosition().Row) + 1
+	startLine := int(node.StartPosition().Row) + 1 //nolint:gosec // tree-sitter Row is 0-based line number; fits int on 64-bit
+	endLine := int(node.EndPosition().Row) + 1     //nolint:gosec // tree-sitter Row is 0-based line number; fits int on 64-bit
 
 	// Use the existing splitLargeChunks machinery via a temporary chunk
 	temp := []types.ChunkRecord{{
@@ -310,7 +310,7 @@ func buildSignatureFromExtracted(node *tree_sitter.Node, source []byte, _ string
 	// use positional children (rare).
 	bodyNode := node.ChildByFieldName("body")
 	if bodyNode == nil {
-		if n := int(node.NamedChildCount()); n > 0 {
+		if n := int(node.NamedChildCount()); n > 0 { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 			bodyNode = node.NamedChild(uint(n - 1))
 		}
 	}
@@ -379,7 +379,7 @@ func buildSignatureFromExtracted(node *tree_sitter.Node, source []byte, _ string
 func stripHeaderComments(node *tree_sitter.Node, source []byte, headerEnd uint) string {
 	var buf strings.Builder
 	cursor := node.StartByte()
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 		child := node.NamedChild(uint(i))
 		if child.StartByte() >= headerEnd {
 			break
@@ -548,7 +548,7 @@ func extractName(node *tree_sitter.Node, source []byte) string {
 	// extractName on it, which hits the `name` field above) returns the
 	// actual variable name. Bug #1 in
 	// docs/review-findings/parser-bugs-from-recursive-chunking.md.
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 		child := node.NamedChild(uint(i))
 		if child.Kind() == "variable_declarator" {
 			if name := extractName(child, source); name != "" {
@@ -563,7 +563,7 @@ func extractName(node *tree_sitter.Node, source []byte) string {
 	// almost always a type annotation, not the declared name. Legitimate
 	// type-name contexts (Go type_spec, Rust struct_item) are served by
 	// ChildByFieldName("name") above.
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 		child := node.NamedChild(uint(i))
 		t := child.Kind()
 		if t == "identifier" || t == "field_identifier" || t == "constant" {
@@ -580,7 +580,7 @@ func extractName(node *tree_sitter.Node, source []byte) string {
 	// Final fallback: accept a sibling type_identifier when no other name was
 	// found. This preserves existing behavior for corner cases we haven't
 	// catalogued.
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 		child := node.NamedChild(uint(i))
 		if child.Kind() == "type_identifier" {
 			return child.Utf8Text(source)
@@ -607,7 +607,7 @@ func extractSignature(node *tree_sitter.Node, source []byte) string {
 
 // extractGoTypeName extracts the type name from a Go type_declaration via type_spec.
 func extractGoTypeName(node *tree_sitter.Node, source []byte) string {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 		child := node.NamedChild(uint(i))
 		if child.Kind() == "type_spec" {
 			return extractName(child, source)
@@ -618,7 +618,7 @@ func extractGoTypeName(node *tree_sitter.Node, source []byte) string {
 
 // findChildByType finds the first named child with the given type.
 func findChildByType(node *tree_sitter.Node, nodeType string) *tree_sitter.Node {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 		child := node.NamedChild(uint(i))
 		if child.Kind() == nodeType {
 			return child
@@ -645,7 +645,7 @@ func findDeclarationChild(node *tree_sitter.Node, cfg *LanguageConfig) *tree_sit
 		return decl
 	}
 
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 		child := node.NamedChild(uint(i))
 		childKind := child.Kind()
 		meta, ok := cfg.ChunkableTypes[childKind]

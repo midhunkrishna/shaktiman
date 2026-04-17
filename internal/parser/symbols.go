@@ -22,7 +22,7 @@ func (p *Parser) walkForSymbols(node *tree_sitter.Node, source []byte, exported 
 
 	// Track export context (TypeScript)
 	if cfg.ExportType != "" && nodeType == cfg.ExportType {
-		for i := 0; i < int(node.NamedChildCount()); i++ {
+		for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 			p.walkForSymbols(node.NamedChild(uint(i)), source, true, chunks, symbols, cfg)
 		}
 		return
@@ -30,7 +30,7 @@ func (p *Parser) walkForSymbols(node *tree_sitter.Node, source []byte, exported 
 
 	// Python decorated_definition — recurse into the definition child
 	if nodeType == "decorated_definition" {
-		for i := 0; i < int(node.NamedChildCount()); i++ {
+		for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 			child := node.NamedChild(uint(i))
 			if child.Kind() != "decorator" {
 				p.walkForSymbols(child, source, exported, chunks, symbols, cfg)
@@ -60,7 +60,7 @@ func (p *Parser) walkForSymbols(node *tree_sitter.Node, source []byte, exported 
 		default:
 			name := extractName(node, source)
 			if name != "" {
-				line := int(node.StartPosition().Row) + 1
+				line := int(node.StartPosition().Row) + 1 //nolint:gosec // tree-sitter Row is 0-based line number; fits int on 64-bit
 				isExp := exported || isGoExported(name, cfg)
 				sym := types.SymbolRecord{
 					Name:       name,
@@ -82,7 +82,7 @@ func (p *Parser) walkForSymbols(node *tree_sitter.Node, source []byte, exported 
 
 	// Unwrap ambient declaration wrapper (TypeScript declare)
 	if cfg.AmbientType != "" && nodeType == cfg.AmbientType {
-		for i := 0; i < int(node.NamedChildCount()); i++ {
+		for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 			p.walkForSymbols(node.NamedChild(uint(i)), source, exported, chunks, symbols, cfg)
 		}
 		return
@@ -98,7 +98,7 @@ func (p *Parser) walkForSymbols(node *tree_sitter.Node, source []byte, exported 
 		shouldRecurse = cfg.ChunkableTypes[nodeType].IsContainer
 	}
 	if shouldRecurse {
-		for i := 0; i < int(node.NamedChildCount()); i++ {
+		for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 			p.walkForSymbols(node.NamedChild(uint(i)), source, exported, chunks, symbols, cfg)
 		}
 	}
@@ -106,14 +106,14 @@ func (p *Parser) walkForSymbols(node *tree_sitter.Node, source []byte, exported 
 
 // extractVariableSymbols handles TS const/let/var declarations with multiple declarators.
 func (p *Parser) extractVariableSymbols(node *tree_sitter.Node, source []byte, exported bool, chunks []types.ChunkRecord, symbols *[]types.SymbolRecord) {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 		child := node.NamedChild(uint(i))
 		if child.Kind() == "variable_declarator" {
 			name := extractName(child, source)
 			if name == "" {
 				continue
 			}
-			line := int(child.StartPosition().Row) + 1
+			line := int(child.StartPosition().Row) + 1 //nolint:gosec // tree-sitter Row is 0-based line number; fits int on 64-bit
 			kind := "variable"
 			if isConstDeclaration(node) {
 				kind = "constant"
@@ -143,14 +143,14 @@ func (p *Parser) extractGoVarSymbols(node *tree_sitter.Node, source []byte, chun
 		specType = "const_spec"
 		kind = "constant"
 	}
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 		child := node.NamedChild(uint(i))
 		if child.Kind() == specType {
 			name := extractName(child, source)
 			if name == "" {
 				continue
 			}
-			line := int(child.StartPosition().Row) + 1
+			line := int(child.StartPosition().Row) + 1 //nolint:gosec // tree-sitter Row is 0-based line number; fits int on 64-bit
 			isExp := isGoExported(name, cfg)
 			sym := types.SymbolRecord{
 				Name:       name,
@@ -182,7 +182,7 @@ func (p *Parser) extractJavaFieldSymbols(node *tree_sitter.Node, source []byte, 
 	visibility, isConstant := inspectJavaFieldModifiers(node, source)
 	isExported := visibility == "public"
 
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 		child := node.NamedChild(uint(i))
 		if child.Kind() != "variable_declarator" {
 			continue
@@ -198,7 +198,7 @@ func (p *Parser) extractJavaFieldSymbols(node *tree_sitter.Node, source []byte, 
 		sym := types.SymbolRecord{
 			Name:       name,
 			Kind:       kind,
-			Line:       int(child.StartPosition().Row) + 1,
+			Line:       int(child.StartPosition().Row) + 1, //nolint:gosec // tree-sitter Row is 0-based line number; fits int on 64-bit
 			Visibility: visibility,
 			IsExported: isExported,
 		}
@@ -216,12 +216,12 @@ func inspectJavaFieldModifiers(node *tree_sitter.Node, _ []byte) (visibility str
 	sawStatic := false
 	sawFinal := false
 
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 		child := node.NamedChild(uint(i))
 		if child.Kind() != "modifiers" {
 			continue
 		}
-		for j := 0; j < int(child.ChildCount()); j++ {
+		for j := 0; j < int(child.ChildCount()); j++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 			mod := child.Child(uint(j))
 			switch mod.Kind() {
 			case "public":
@@ -242,14 +242,14 @@ func inspectJavaFieldModifiers(node *tree_sitter.Node, _ []byte) (visibility str
 
 // extractGoTypeSymbols handles Go type declarations with type_spec children.
 func (p *Parser) extractGoTypeSymbols(node *tree_sitter.Node, source []byte, chunks []types.ChunkRecord, symbols *[]types.SymbolRecord, cfg *LanguageConfig) {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 		child := node.NamedChild(uint(i))
 		if child.Kind() == "type_spec" {
 			name := extractName(child, source)
 			if name == "" {
 				continue
 			}
-			line := int(child.StartPosition().Row) + 1
+			line := int(child.StartPosition().Row) + 1 //nolint:gosec // tree-sitter Row is 0-based line number; fits int on 64-bit
 			isExp := isGoExported(name, cfg)
 			sym := types.SymbolRecord{
 				Name:       name,
@@ -290,7 +290,7 @@ func isGoExported(name string, cfg *LanguageConfig) bool {
 
 // isConstDeclaration checks if a lexical_declaration uses "const".
 func isConstDeclaration(node *tree_sitter.Node) bool {
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i := 0; i < int(node.ChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 		child := node.Child(uint(i))
 		if child.Kind() == "const" {
 			return true
