@@ -7,15 +7,15 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
-func TestNewPgVectorStore_NilPool(t *testing.T) {
-	_, err := NewPgVectorStore(nil, 768, 1)
+func TestNewStore_NilPool(t *testing.T) {
+	_, err := NewStore(nil, 768, 1)
 	if err == nil {
 		t.Fatal("expected error for nil pool")
 	}
 }
 
 func TestUpsertBatch_LengthMismatch(t *testing.T) {
-	s := &PgVectorStore{dims: 4}
+	s := &Store{dims: 4}
 	err := s.UpsertBatch(context.Background(), []int64{1, 2}, [][]float32{{0.1, 0.2, 0.3, 0.4}})
 	if err == nil {
 		t.Fatal("expected error for length mismatch")
@@ -23,7 +23,7 @@ func TestUpsertBatch_LengthMismatch(t *testing.T) {
 }
 
 func TestUpsert_DimsMismatch(t *testing.T) {
-	s := &PgVectorStore{dims: 4}
+	s := &Store{dims: 4}
 	err := s.Upsert(context.Background(), 1, []float32{0.1, 0.2})
 	if err == nil {
 		t.Fatal("expected error for dims mismatch")
@@ -31,7 +31,7 @@ func TestUpsert_DimsMismatch(t *testing.T) {
 }
 
 func TestUpsert_ZeroVector(t *testing.T) {
-	s := &PgVectorStore{dims: 4}
+	s := &Store{dims: 4}
 	err := s.Upsert(context.Background(), 1, []float32{0, 0, 0, 0})
 	if err == nil {
 		t.Fatal("expected error for zero vector")
@@ -39,7 +39,7 @@ func TestUpsert_ZeroVector(t *testing.T) {
 }
 
 func TestDelete_Empty(t *testing.T) {
-	s := &PgVectorStore{dims: 4}
+	s := &Store{dims: 4}
 	if err := s.Delete(context.Background(), nil); err != nil {
 		t.Fatalf("Delete nil: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestDelete_Empty(t *testing.T) {
 }
 
 func TestClose_Idempotent(t *testing.T) {
-	s := &PgVectorStore{dims: 4}
+	s := &Store{dims: 4}
 	if err := s.Close(); err != nil {
 		t.Fatalf("first Close: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestClose_Idempotent(t *testing.T) {
 }
 
 func TestSearch_TopKZero(t *testing.T) {
-	s := &PgVectorStore{dims: 4}
+	s := &Store{dims: 4}
 	results, err := s.Search(context.Background(), []float32{1, 0, 0, 0}, 0)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -70,7 +70,7 @@ func TestSearch_TopKZero(t *testing.T) {
 }
 
 func TestSearch_ZeroQuery(t *testing.T) {
-	s := &PgVectorStore{dims: 4}
+	s := &Store{dims: 4}
 	results, err := s.Search(context.Background(), []float32{0, 0, 0, 0}, 5)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -102,14 +102,14 @@ func TestIsZeroVector(t *testing.T) {
 }
 
 func TestCompileTimeCheck(t *testing.T) {
-	var _ types.VectorStore = (*PgVectorStore)(nil)
+	var _ types.VectorStore = (*Store)(nil)
 }
 
 // Note: Migrate_InvalidDims and Migrate_ValidDimsBoundary tests removed —
 // pgvector migration is now handled by goose via postgres.RunMigrations.
 
 func TestUpsertBatch_EmptyBatch(t *testing.T) {
-	s := &PgVectorStore{dims: 4}
+	s := &Store{dims: 4}
 	// Empty batch should be a no-op (no pool call)
 	err := s.UpsertBatch(context.Background(), []int64{}, [][]float32{})
 	if err != nil {
@@ -120,7 +120,7 @@ func TestUpsertBatch_EmptyBatch(t *testing.T) {
 func TestUpsertBatch_AllZeroVectorsSkipped(t *testing.T) {
 	// With no pool, this would panic on a real upsert. But if all vectors are
 	// zero, the batch should skip them all and never touch the pool.
-	s := &PgVectorStore{dims: 2}
+	s := &Store{dims: 2}
 	err := s.UpsertBatch(context.Background(),
 		[]int64{1, 2},
 		[][]float32{{0, 0}, {0, 0}})
@@ -131,7 +131,7 @@ func TestUpsertBatch_AllZeroVectorsSkipped(t *testing.T) {
 }
 
 func TestSearch_NegativeTopK(t *testing.T) {
-	s := &PgVectorStore{dims: 4}
+	s := &Store{dims: 4}
 	results, err := s.Search(context.Background(), []float32{1, 0, 0, 0}, -1)
 	if err != nil {
 		t.Fatalf("Search: %v", err)

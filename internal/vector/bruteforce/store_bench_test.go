@@ -26,7 +26,7 @@ func BenchmarkBruteForceSearch(b *testing.B) {
 	for _, n := range []int{1000, 10000, 50000, 100000} {
 		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
 			rng := rand.New(rand.NewSource(42))
-			store := NewBruteForceStore(768)
+			store := NewStore(768)
 			for i := 0; i < n; i++ {
 				vec := make([]float32, 768)
 				for j := range vec {
@@ -49,7 +49,7 @@ func BenchmarkBruteForceSearch(b *testing.B) {
 
 func BenchmarkSaveToDisk(b *testing.B) {
 	rng := rand.New(rand.NewSource(42))
-	store := NewBruteForceStore(768)
+	store := NewStore(768)
 	for i := 0; i < 50000; i++ {
 		vec := make([]float32, 768)
 		for j := range vec {
@@ -67,7 +67,7 @@ func BenchmarkSaveToDisk(b *testing.B) {
 
 func BenchmarkLoadFromDisk(b *testing.B) {
 	rng := rand.New(rand.NewSource(42))
-	store := NewBruteForceStore(768)
+	store := NewStore(768)
 	for i := 0; i < 50000; i++ {
 		vec := make([]float32, 768)
 		for j := range vec {
@@ -84,7 +84,7 @@ func BenchmarkLoadFromDisk(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		s := NewBruteForceStore(768)
+		s := NewStore(768)
 		if err := s.LoadFromDisk(path); err != nil {
 			b.Fatalf("LoadFromDisk: %v", err)
 		}

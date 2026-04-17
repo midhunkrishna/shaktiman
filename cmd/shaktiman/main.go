@@ -32,7 +32,7 @@ func main() {
 	rootCmd := &cobra.Command{
 		Use:   "shaktiman",
 		Short: "Shaktiman code indexing and retrieval CLI",
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
 			if outputFormat != "json" && outputFormat != "text" {
 				return fmt.Errorf("--format must be 'json' or 'text', got %q", outputFormat)
 			}
@@ -64,7 +64,7 @@ func initCmd() *cobra.Command {
 		Use:   "init <project-root>",
 		Short: "Initialize a .shaktiman config directory",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			projectRoot := args[0]
 			tomlPath := filepath.Join(projectRoot, ".shaktiman", "shaktiman.toml")
 			if _, err := os.Stat(tomlPath); err == nil {
@@ -227,7 +227,7 @@ func indexCmd() *cobra.Command {
 		Use:   "index <project-root>",
 		Short: "Index a project directory",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			cfg, err := loadAndConfigureProject(args[0], vectorBackend, dbBackend, postgresURL, qdrantURL)
 			if err != nil {
 				return err
@@ -242,7 +242,7 @@ func indexCmd() *cobra.Command {
 				}
 				return fmt.Errorf("check daemon lock: %w", lockErr)
 			}
-			defer lock.Release()
+			defer func() { _ = lock.Release() }()
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
@@ -251,7 +251,7 @@ func indexCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("init: %w", err)
 			}
-			defer d.Stop()
+			defer func() { _ = d.Stop() }()
 
 			return runIndexPipeline(ctx, d, cfg, embed)
 		},
@@ -274,7 +274,7 @@ func reindexCmd() *cobra.Command {
 		Short: "Purge all indexed data and reindex from scratch",
 		Long:  "Deletes all indexed data (metadata, embeddings, vectors) and re-runs the full index pipeline. Preserves configuration.",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			cfg, err := loadAndConfigureProject(args[0], vectorBackend, dbBackend, postgresURL, qdrantURL)
 			if err != nil {
 				return err
@@ -287,7 +287,7 @@ func reindexCmd() *cobra.Command {
 				}
 				fmt.Fprint(os.Stderr, "This will delete ALL indexed data and reindex from scratch. Continue? [y/N] ")
 				var answer string
-				fmt.Scanln(&answer)
+				_, _ = fmt.Scanln(&answer)
 				if answer != "y" && answer != "Y" {
 					fmt.Fprintln(os.Stderr, "Aborted.")
 					return nil
@@ -303,7 +303,7 @@ func reindexCmd() *cobra.Command {
 				}
 				return fmt.Errorf("check daemon lock: %w", lockErr)
 			}
-			defer lock.Release()
+			defer func() { _ = lock.Release() }()
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
@@ -314,10 +314,14 @@ func reindexCmd() *cobra.Command {
 				return fmt.Errorf("open backends for purge: %w", err)
 			}
 			if err := backends.PurgeBackends(ctx, b.Store, b.VectorStore); err != nil {
-				b.Close()
+				if cerr := b.Close(); cerr != nil {
+					slog.Warn("close backends after purge error", "err", cerr)
+				}
 				return fmt.Errorf("purge: %w", err)
 			}
-			b.Close()
+			if err := b.Close(); err != nil {
+				slog.Warn("close backends after purge", "err", err)
+			}
 
 			// Phase 2: Delete local files (SQLite DB, vector persistence).
 			if err := backends.PurgeFiles(cfg); err != nil {
@@ -331,7 +335,7 @@ func reindexCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("init for reindex: %w", err)
 			}
-			defer d.Stop()
+			defer func() { _ = d.Stop() }()
 
 			return runIndexPipeline(ctx, d, cfg, embed)
 		},
@@ -355,7 +359,7 @@ func statusCmd() *cobra.Command {
 		Use:   "status <project-root>",
 		Short: "Show index status for a project",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			projectRoot := args[0]
 			cfg := types.DefaultConfig(projectRoot)
 			cfg, err := types.LoadConfigFromFile(cfg)
@@ -367,7 +371,7 @@ func statusCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("open store: %w", err)
 			}
-			defer closer()
+			defer func() { _ = closer() }()
 			ctx := context.Background()
 
 			stats, err := store.GetIndexStats(ctx)

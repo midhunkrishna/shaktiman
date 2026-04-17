@@ -144,7 +144,7 @@ func (e *QueryEngine) determineLevel(ctx context.Context) FallbackLevel {
 }
 
 // searchSemantic runs hybrid search with semantic + keyword candidates.
-func (e *QueryEngine) searchSemantic(ctx context.Context, input SearchInput, level FallbackLevel) ([]types.ScoredResult, error) {
+func (e *QueryEngine) searchSemantic(ctx context.Context, input SearchInput, _ FallbackLevel) ([]types.ScoredResult, error) {
 	filter := TestFilter{ExcludeTests: input.ExcludeTests, TestOnly: input.TestOnly}
 
 	// Get keyword candidates

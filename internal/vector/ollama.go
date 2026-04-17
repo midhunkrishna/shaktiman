@@ -93,7 +93,7 @@ func (c *OllamaClient) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 	if err != nil {
 		return nil, fmt.Errorf("embed HTTP call: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
@@ -122,6 +122,6 @@ func (c *OllamaClient) Healthy(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
 }

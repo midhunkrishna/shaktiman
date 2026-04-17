@@ -1,6 +1,8 @@
 package sqlite
 
 import (
+	"log/slog"
+
 	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
@@ -20,12 +22,14 @@ func init() {
 		}
 
 		if err := Migrate(db); err != nil {
-			db.Close()
+			if cerr := db.Close(); cerr != nil {
+				slog.Warn("close sqlite db after migration error", "err", cerr)
+			}
 			return nil, nil, nil, err
 		}
 
 		store := NewStore(db)
-		lifecycle := NewSQLiteLifecycle(store)
+		lifecycle := NewLifecycle(store)
 		closer := func() error { return db.Close() }
 
 		return store, lifecycle, closer, nil

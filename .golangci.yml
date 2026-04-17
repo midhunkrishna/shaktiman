@@ -1,3 +1,16 @@
+version: "2"
+
+run:
+  timeout: 5m
+  build-tags:
+    - sqlite_fts5
+    - sqlite
+    - bruteforce
+    - hnsw
+    - postgres
+    - pgvector
+    - qdrant
+
 linters:
   enable:
     - govet
@@ -5,12 +18,64 @@ linters:
     - staticcheck
     - gosec
     - revive
-    - gosimple
     - ineffassign
-    - typecheck
     - unused
 
-run:
-  timeout: 5m
-  build-tags:
-    - sqlite_fts5
+  settings:
+    gosec:
+      excludes:
+        # file mode 0o644 on non-sensitive output is acceptable
+        - G306
+        # SSRF taint analysis on trusted config-derived URLs
+        - G704
+        # log injection on trusted project-id
+        - G706
+        # hardcoded credential FPs on DSN templates and test fixtures
+        - G101
+        # SQL string formatting FPs where only table/column identifiers are injected
+        - G201
+        # file inclusion via variable FPs for config paths
+        - G304
+        # math/rand in non-security contexts (benchmarks, sampling)
+        - G404
+        # path traversal FPs on CLI args already validated by caller
+        - G703
+    errcheck:
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+      # test-helper packages (consumed by _test.go files): apply the same
+      # relaxation as tests — errcheck/gosec on setup-style helpers adds
+      # noise without catching real bugs.
+      - path: internal/storage/storetest/
+        linters:
+          - errcheck
+          - gosec
+      - path: internal/vector/vectortest/
+        linters:
+          - errcheck
+          - gosec
+      - path: internal/testutil/
+        linters:
+          - errcheck
+          - gosec
+      - path: _test\.go
+        linters:
+          - revive
+        text: "unused-parameter"
+      - path: internal/storage/postgres/
+        linters:
+          - revive
+        text: "(exported|package-comments)"
+      - path: internal/storage/migrations/
+        linters:
+          - revive
+        text: "(exported|package-comments)"

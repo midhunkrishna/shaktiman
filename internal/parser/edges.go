@@ -72,7 +72,7 @@ func (p *Parser) walkForEdges(node *tree_sitter.Node, owner string, ctx *edgeCon
 
 	// Handle export wrapper (TypeScript)
 	if ctx.cfg.ExportType != "" && nodeType == ctx.cfg.ExportType {
-		for i := 0; i < int(node.NamedChildCount()); i++ {
+		for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 			p.walkForEdges(node.NamedChild(uint(i)), owner, ctx)
 		}
 		return
@@ -80,7 +80,7 @@ func (p *Parser) walkForEdges(node *tree_sitter.Node, owner string, ctx *edgeCon
 
 	// Handle decorated_definition (Python)
 	if nodeType == "decorated_definition" {
-		for i := 0; i < int(node.NamedChildCount()); i++ {
+		for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 			child := node.NamedChild(uint(i))
 			if child.Kind() != "decorator" {
 				p.walkForEdges(child, owner, ctx)
@@ -147,7 +147,7 @@ func (p *Parser) walkForEdges(node *tree_sitter.Node, owner string, ctx *edgeCon
 	}
 
 	// Recurse into children
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 		p.walkForEdges(node.NamedChild(uint(i)), newOwner, ctx)
 	}
 }
@@ -190,7 +190,7 @@ func (p *Parser) tsImportEdges(node *tree_sitter.Node, owner string, ctx *edgeCo
 		modulePath = strings.Trim(src.Utf8Text(ctx.source), "\"'`")
 	}
 
-	for i := 0; i < int(clause.NamedChildCount()); i++ {
+	for i := 0; i < int(clause.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 		child := clause.NamedChild(uint(i))
 		switch child.Kind() {
 		case "identifier":
@@ -199,7 +199,7 @@ func (p *Parser) tsImportEdges(node *tree_sitter.Node, owner string, ctx *edgeCo
 			ctx.addEdgeQualified(owner, shortName, modulePath+"/"+shortName, "imports")
 		case "named_imports":
 			// Named imports: import { Foo, Bar } from 'baz'
-			for j := 0; j < int(child.NamedChildCount()); j++ {
+			for j := 0; j < int(child.NamedChildCount()); j++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 				spec := child.NamedChild(uint(j))
 				if spec.Kind() == "import_specifier" {
 					name := spec.ChildByFieldName("name")
@@ -257,7 +257,7 @@ func (p *Parser) pyImportEdges(node *tree_sitter.Node, owner string, ctx *edgeCo
 		case "wildcard_import":
 			return
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i := 0; i < int(n.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 			walk(n.NamedChild(uint(i)))
 		}
 	}
@@ -277,7 +277,7 @@ func (p *Parser) goImportEdges(node *tree_sitter.Node, owner string, ctx *edgeCo
 			}
 			return
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i := 0; i < int(n.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 			walk(n.NamedChild(uint(i)))
 		}
 	}
@@ -301,7 +301,7 @@ func (p *Parser) javaImportEdges(node *tree_sitter.Node, owner string, ctx *edge
 			ctx.addEdgeQualified(owner, content, content, "imports")
 			return
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i := 0; i < int(n.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 			walk(n.NamedChild(uint(i)))
 		}
 	}
@@ -351,7 +351,7 @@ func (p *Parser) rustImportEdges(node *tree_sitter.Node, owner string, ctx *edge
 			}
 			list := n.ChildByFieldName("list")
 			if list != nil {
-				for i := 0; i < int(list.NamedChildCount()); i++ {
+				for i := 0; i < int(list.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 					child := list.NamedChild(uint(i))
 					if child.Kind() == "identifier" {
 						shortName := child.Utf8Text(ctx.source)
@@ -370,7 +370,7 @@ func (p *Parser) rustImportEdges(node *tree_sitter.Node, owner string, ctx *edge
 			// use foo::*; → skip, no specific name to extract
 			return
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i := 0; i < int(n.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 			walk(n.NamedChild(uint(i)))
 		}
 	}
@@ -482,7 +482,7 @@ func (p *Parser) extractHeritageTypeNames(node *tree_sitter.Node, owner string, 
 		// `Map<String, List<User>>` produced an edge to Map but lost
 		// String, List, and User. Recursing into type_arguments children
 		// extracts every named type inside the generics list.
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i := 0; i < int(n.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 			walk(n.NamedChild(uint(i)))
 		}
 	}
@@ -490,7 +490,7 @@ func (p *Parser) extractHeritageTypeNames(node *tree_sitter.Node, owner string, 
 }
 
 func (p *Parser) extractPythonBases(node *tree_sitter.Node, owner string, ctx *edgeContext) {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 		child := node.NamedChild(uint(i))
 		switch child.Kind() {
 		case "identifier":

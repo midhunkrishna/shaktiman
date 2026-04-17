@@ -4,6 +4,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"math"
 	"path/filepath"
 
 	"github.com/jackc/pgx/v5"
@@ -31,12 +32,19 @@ var _ types.WriterStore = (*PgStore)(nil)
 // NewPgStore creates a PgStore connected to the given Postgres instance.
 // Call EnsureProject after running migrations to register the project.
 func NewPgStore(ctx context.Context, connStr string, maxOpen, maxIdle int, schema string) (*PgStore, error) {
+	if maxOpen < 0 || maxOpen > math.MaxInt32 {
+		return nil, fmt.Errorf("maxOpen out of int32 range: %d", maxOpen)
+	}
+	if maxIdle < 0 || maxIdle > math.MaxInt32 {
+		return nil, fmt.Errorf("maxIdle out of int32 range: %d", maxIdle)
+	}
+
 	cfg, err := pgxpool.ParseConfig(connStr)
 	if err != nil {
 		return nil, fmt.Errorf("parse postgres connection string: %w", err)
 	}
-	cfg.MaxConns = int32(maxOpen)
-	cfg.MinConns = int32(maxIdle)
+	cfg.MaxConns = int32(maxOpen) //nolint:gosec // bounds-checked above
+	cfg.MinConns = int32(maxIdle) //nolint:gosec // bounds-checked above
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
@@ -75,7 +83,7 @@ func (s *PgStore) WithWriteTx(ctx context.Context, fn func(tx types.TxHandle) er
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	if err := fn(PgTxHandle{Tx: tx}); err != nil {
-		tx.Rollback(ctx)
+		_ = tx.Rollback(ctx)
 		return err
 	}
 	return tx.Commit(ctx)
@@ -116,9 +124,11 @@ func (s *PgStore) EnsureProject(ctx context.Context, projectRoot string) error {
 
 	// First-run: claim the default project if it still holds the placeholder path.
 	// This is idempotent — only the first daemon claims it, others get affected=0.
-	s.pool.Exec(ctx,
+	if _, err := s.pool.Exec(ctx,
 		`UPDATE projects SET root_path = $1, name = $2 WHERE id = 1 AND root_path = '__default__'`,
-		resolved, name)
+		resolved, name); err != nil {
+		return fmt.Errorf("claim default project row: %w", err)
+	}
 
 	// Try insert; ON CONFLICT DO NOTHING avoids errors on concurrent starts.
 	var id int64

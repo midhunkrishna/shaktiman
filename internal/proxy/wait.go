@@ -21,7 +21,7 @@ func WaitForSocket(path string, timeout time.Duration) error {
 	for i := 0; ; i++ {
 		conn, err := net.DialTimeout("unix", path, 500*time.Millisecond)
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 			return nil
 		}
 		if time.Now().After(deadline) {

@@ -12,13 +12,13 @@ import (
 )
 
 // Compile-time interface checks.
-var _ types.VectorStore = (*BruteForceStore)(nil)
-var _ types.VectorPersister = (*BruteForceStore)(nil)
+var _ types.VectorStore = (*Store)(nil)
+var _ types.VectorPersister = (*Store)(nil)
 
-func TestBruteForceStore_UpsertAndCount(t *testing.T) {
+func TestStore_UpsertAndCount(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := NewBruteForceStore(3)
+	s := NewStore(3)
 
 	assertCount := func(t *testing.T, want int) {
 		t.Helper()
@@ -54,10 +54,10 @@ func TestBruteForceStore_UpsertAndCount(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_Search(t *testing.T) {
+func TestStore_Search(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := NewBruteForceStore(3)
+	s := NewStore(3)
 
 	// Insert three basis vectors.
 	vectors := map[int64][]float32{
@@ -91,10 +91,10 @@ func TestBruteForceStore_Search(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_Search_TopKLargerThanStore(t *testing.T) {
+func TestStore_Search_TopKLargerThanStore(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := NewBruteForceStore(2)
+	s := NewStore(2)
 
 	if err := s.Upsert(ctx, 1, []float32{1, 0}); err != nil {
 		t.Fatalf("Upsert: %v", err)
@@ -109,10 +109,10 @@ func TestBruteForceStore_Search_TopKLargerThanStore(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_Search_Empty(t *testing.T) {
+func TestStore_Search_Empty(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := NewBruteForceStore(3)
+	s := NewStore(3)
 
 	results, err := s.Search(ctx, []float32{1, 0, 0}, 5)
 	if err != nil {
@@ -123,10 +123,10 @@ func TestBruteForceStore_Search_Empty(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_Search_DimMismatch(t *testing.T) {
+func TestStore_Search_DimMismatch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := NewBruteForceStore(3)
+	s := NewStore(3)
 
 	_, err := s.Search(ctx, []float32{1, 0}, 1)
 	if err == nil {
@@ -134,10 +134,10 @@ func TestBruteForceStore_Search_DimMismatch(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_UpsertBatch(t *testing.T) {
+func TestStore_UpsertBatch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := NewBruteForceStore(2)
+	s := NewStore(2)
 
 	ids := []int64{10, 20, 30}
 	vecs := [][]float32{
@@ -159,10 +159,10 @@ func TestBruteForceStore_UpsertBatch(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_UpsertBatch_LenMismatch(t *testing.T) {
+func TestStore_UpsertBatch_LenMismatch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := NewBruteForceStore(2)
+	s := NewStore(2)
 
 	err := s.UpsertBatch(ctx, []int64{1, 2}, [][]float32{{1, 0}})
 	if err == nil {
@@ -170,10 +170,10 @@ func TestBruteForceStore_UpsertBatch_LenMismatch(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_UpsertBatch_DimMismatch(t *testing.T) {
+func TestStore_UpsertBatch_DimMismatch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := NewBruteForceStore(2)
+	s := NewStore(2)
 
 	err := s.UpsertBatch(ctx, []int64{1}, [][]float32{{1, 0, 0}})
 	if err == nil {
@@ -181,10 +181,10 @@ func TestBruteForceStore_UpsertBatch_DimMismatch(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_Upsert_DimMismatch(t *testing.T) {
+func TestStore_Upsert_DimMismatch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := NewBruteForceStore(3)
+	s := NewStore(3)
 
 	err := s.Upsert(ctx, 1, []float32{1, 0})
 	if err == nil {
@@ -192,10 +192,10 @@ func TestBruteForceStore_Upsert_DimMismatch(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_Delete(t *testing.T) {
+func TestStore_Delete(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := NewBruteForceStore(2)
+	s := NewStore(2)
 
 	ids := []int64{1, 2, 3}
 	for _, id := range ids {
@@ -226,10 +226,10 @@ func TestBruteForceStore_Delete(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_Delete_NonExistent(t *testing.T) {
+func TestStore_Delete_NonExistent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := NewBruteForceStore(2)
+	s := NewStore(2)
 
 	// Deleting IDs that don't exist should not error.
 	if err := s.Delete(ctx, []int64{99, 100}); err != nil {
@@ -237,13 +237,13 @@ func TestBruteForceStore_Delete_NonExistent(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_Persistence(t *testing.T) {
+func TestStore_Persistence(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "embeddings.bin")
 
-	s1 := NewBruteForceStore(3)
+	s1 := NewStore(3)
 	vectors := map[int64][]float32{
 		1: {1, 2, 3},
 		2: {4, 5, 6},
@@ -260,7 +260,7 @@ func TestBruteForceStore_Persistence(t *testing.T) {
 	}
 
 	// Load into a fresh store.
-	s2 := NewBruteForceStore(0) // dim will be overwritten by LoadFromDisk
+	s2 := NewStore(0) // dim will be overwritten by LoadFromDisk
 	if err := s2.LoadFromDisk(path); err != nil {
 		t.Fatalf("LoadFromDisk: %v", err)
 	}
@@ -294,12 +294,12 @@ func TestBruteForceStore_Persistence(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_LoadFromDisk_NotExist(t *testing.T) {
+func TestStore_LoadFromDisk_NotExist(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nonexistent.bin")
 
-	s := NewBruteForceStore(3)
+	s := NewStore(3)
 	if err := s.LoadFromDisk(path); err != nil {
 		t.Fatalf("LoadFromDisk for non-existent file should return nil, got: %v", err)
 	}
@@ -314,10 +314,10 @@ func TestBruteForceStore_LoadFromDisk_NotExist(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_Has(t *testing.T) {
+func TestStore_Has(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := NewBruteForceStore(2)
+	s := NewStore(2)
 
 	if has, err := s.Has(ctx, 1); err != nil {
 		t.Fatalf("Has: %v", err)
@@ -349,7 +349,7 @@ func TestBruteForceStore_Has(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_LoadFromDisk_BoundsValidation(t *testing.T) {
+func TestStore_LoadFromDisk_BoundsValidation(t *testing.T) {
 	t.Parallel()
 
 	t.Run("rejects oversized dim", func(t *testing.T) {
@@ -359,7 +359,7 @@ func TestBruteForceStore_LoadFromDisk_BoundsValidation(t *testing.T) {
 
 		writeBadHeader(t, path, 1, maxDim+1, 0)
 
-		s := NewBruteForceStore(0)
+		s := NewStore(0)
 		err := s.LoadFromDisk(path)
 		if err == nil {
 			t.Fatal("expected error for oversized dim")
@@ -373,7 +373,7 @@ func TestBruteForceStore_LoadFromDisk_BoundsValidation(t *testing.T) {
 
 		writeBadHeader(t, path, 1, 3, maxVectorCount+1)
 
-		s := NewBruteForceStore(0)
+		s := NewStore(0)
 		err := s.LoadFromDisk(path)
 		if err == nil {
 			t.Fatal("expected error for oversized count")
@@ -387,7 +387,7 @@ func TestBruteForceStore_LoadFromDisk_BoundsValidation(t *testing.T) {
 
 		writeBadHeader(t, path, 1, 768, 0)
 
-		s := NewBruteForceStore(384) // expects 384, file says 768
+		s := NewStore(384) // expects 384, file says 768
 		err := s.LoadFromDisk(path)
 		if err == nil {
 			t.Fatal("expected error for dim mismatch")
@@ -395,10 +395,10 @@ func TestBruteForceStore_LoadFromDisk_BoundsValidation(t *testing.T) {
 	})
 }
 
-func TestBruteForceStore_UpsertBatch_NoPartialWrite(t *testing.T) {
+func TestStore_UpsertBatch_NoPartialWrite(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := NewBruteForceStore(2)
+	s := NewStore(2)
 
 	// Pre-populate with known value
 	if err := s.Upsert(ctx, 10, []float32{1, 0}); err != nil {
@@ -418,13 +418,13 @@ func TestBruteForceStore_UpsertBatch_NoPartialWrite(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_Persistence_CRC32(t *testing.T) {
+func TestStore_Persistence_CRC32(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "embeddings_v2.bin")
 
-	s1 := NewBruteForceStore(2)
+	s1 := NewStore(2)
 	if err := s1.Upsert(ctx, 1, []float32{1, 0}); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestBruteForceStore_Persistence_CRC32(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	s2 := NewBruteForceStore(0)
+	s2 := NewStore(0)
 	err = s2.LoadFromDisk(corruptPath)
 	if err == nil {
 		t.Fatal("expected CRC32 mismatch error for corrupted file")
@@ -476,26 +476,26 @@ func writeBadHeader(t *testing.T, path string, version, dim, count uint32) {
 	}
 }
 
-func TestBruteForceStore_Close(t *testing.T) {
+func TestStore_Close(t *testing.T) {
 	t.Parallel()
-	s := NewBruteForceStore(3)
+	s := NewStore(3)
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close() = %v, want nil", err)
 	}
 }
 
-func TestBruteForceStore_SaveToDisk_EmptyStore(t *testing.T) {
+func TestStore_SaveToDisk_EmptyStore(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.bin")
 
-	s1 := NewBruteForceStore(3)
+	s1 := NewStore(3)
 	if err := s1.SaveToDisk(path); err != nil {
 		t.Fatalf("SaveToDisk empty store: %v", err)
 	}
 
-	s2 := NewBruteForceStore(3)
+	s2 := NewStore(3)
 	if err := s2.LoadFromDisk(path); err != nil {
 		t.Fatalf("LoadFromDisk: %v", err)
 	}
@@ -508,9 +508,9 @@ func TestBruteForceStore_SaveToDisk_EmptyStore(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_SaveToDisk_BadPath(t *testing.T) {
+func TestStore_SaveToDisk_BadPath(t *testing.T) {
 	t.Parallel()
-	s := NewBruteForceStore(3)
+	s := NewStore(3)
 	if err := s.Upsert(context.Background(), 1, []float32{1, 2, 3}); err != nil {
 		t.Fatal(err)
 	}
@@ -612,10 +612,10 @@ func TestCosineSimilarity_HighDim(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_Search_TopKZero(t *testing.T) {
+func TestStore_Search_TopKZero(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := NewBruteForceStore(3)
+	s := NewStore(3)
 	if err := s.Upsert(ctx, 1, []float32{1, 0, 0}); err != nil {
 		t.Fatal(err)
 	}
@@ -628,10 +628,10 @@ func TestBruteForceStore_Search_TopKZero(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_Search_TopKNegative(t *testing.T) {
+func TestStore_Search_TopKNegative(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := NewBruteForceStore(3)
+	s := NewStore(3)
 	if err := s.Upsert(ctx, 1, []float32{1, 0, 0}); err != nil {
 		t.Fatal(err)
 	}
@@ -644,10 +644,10 @@ func TestBruteForceStore_Search_TopKNegative(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_SaveToDisk_ConcurrentSearch(t *testing.T) {
+func TestStore_SaveToDisk_ConcurrentSearch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := NewBruteForceStore(3)
+	s := NewStore(3)
 
 	// Populate with enough vectors to make the save non-trivial
 	rng := rand.New(rand.NewSource(42))
@@ -687,7 +687,7 @@ func TestBruteForceStore_SaveToDisk_ConcurrentSearch(t *testing.T) {
 	}
 
 	// Verify the saved file is valid by loading it back
-	s2 := NewBruteForceStore(3)
+	s2 := NewStore(3)
 	if err := s2.LoadFromDisk(path); err != nil {
 		t.Fatalf("LoadFromDisk after concurrent save: %v", err)
 	}
@@ -697,10 +697,10 @@ func TestBruteForceStore_SaveToDisk_ConcurrentSearch(t *testing.T) {
 	}
 }
 
-func TestBruteForceStore_SaveToDisk_ConcurrentUpsert(t *testing.T) {
+func TestStore_SaveToDisk_ConcurrentUpsert(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := NewBruteForceStore(3)
+	s := NewStore(3)
 
 	for i := 0; i < 500; i++ {
 		s.Upsert(ctx, int64(i+1), []float32{float32(i), 0, 0})
@@ -732,7 +732,7 @@ func TestBruteForceStore_SaveToDisk_ConcurrentUpsert(t *testing.T) {
 	}
 
 	// File should be loadable regardless of race outcome
-	s2 := NewBruteForceStore(3)
+	s2 := NewStore(3)
 	if err := s2.LoadFromDisk(path); err != nil {
 		t.Fatalf("LoadFromDisk after concurrent upsert: %v", err)
 	}

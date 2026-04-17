@@ -34,7 +34,7 @@ func Acquire(projectRoot string) (*Lock, error) {
 	}
 
 	dir := filepath.Join(canonical, ".shaktiman")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("create .shaktiman dir: %w", err)
 	}
 
@@ -79,7 +79,7 @@ func (l *Lock) SocketPath() string {
 // Safe to call only while the lock is held (guarantees any existing socket is stale).
 func (l *Lock) Listen() (net.Listener, error) {
 	sockPath := l.SocketPath()
-	os.Remove(sockPath) // remove stale socket from previous unclean exit
+	_ = os.Remove(sockPath) // remove stale socket from previous unclean exit
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", sockPath, err)

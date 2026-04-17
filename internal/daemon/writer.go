@@ -180,7 +180,7 @@ func (wm *WriterManager) processJob(ctx context.Context, job types.WriteJob) {
 	// and returns stale chunk IDs here. The vectorDeleter removes their vectors.
 	// This ensures RunFromDB picks up the new chunks (embedded=0) on its next page,
 	// and old vectors are cleaned up. No additional synchronization is needed between
-	// RunFromDB and the watcher — BruteForceStore is RWMutex-protected, and the
+	// RunFromDB and the watcher — Store is RWMutex-protected, and the
 	// cursor-based query naturally skips deleted rows.
 	if err == nil && wm.vectorDeleter != nil && len(staleChunkIDs) > 0 {
 		if delErr := wm.vectorDeleter.Delete(ctx, staleChunkIDs); delErr != nil {
@@ -540,11 +540,4 @@ func coalesce(val, fallback string) string {
 		return fallback
 	}
 	return val
-}
-
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }

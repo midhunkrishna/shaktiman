@@ -18,7 +18,7 @@ func (s *Store) InsertEdges(ctx context.Context, txh types.TxHandle, fileID int6
 	if len(edges) == 0 {
 		return nil
 	}
-	tx := txh.(SqliteTxHandle).Tx
+	tx := txh.(TxHandle).Tx
 
 	edgeStmt, err := tx.PrepareContext(ctx, `
 		INSERT OR IGNORE INTO edges (src_symbol_id, dst_symbol_id, kind, file_id)
@@ -26,7 +26,7 @@ func (s *Store) InsertEdges(ctx context.Context, txh types.TxHandle, fileID int6
 	if err != nil {
 		return fmt.Errorf("prepare edge insert: %w", err)
 	}
-	defer edgeStmt.Close()
+	defer func() { _ = edgeStmt.Close() }()
 
 	pendingStmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO pending_edges (src_symbol_id, dst_symbol_name, dst_qualified_name, kind, src_language)
@@ -34,7 +34,7 @@ func (s *Store) InsertEdges(ctx context.Context, txh types.TxHandle, fileID int6
 	if err != nil {
 		return fmt.Errorf("prepare pending edge insert: %w", err)
 	}
-	defer pendingStmt.Close()
+	defer func() { _ = pendingStmt.Close() }()
 
 	for _, e := range edges {
 		srcID := symbolIDs[e.SrcSymbolName]
@@ -69,7 +69,7 @@ func (s *Store) ResolvePendingEdges(ctx context.Context, txh types.TxHandle, new
 	if len(newSymbolNames) == 0 {
 		return nil
 	}
-	tx := txh.(SqliteTxHandle).Tx
+	tx := txh.(TxHandle).Tx
 
 	placeholders := make([]string, len(newSymbolNames))
 	args := make([]any, len(newSymbolNames))
@@ -87,7 +87,7 @@ func (s *Store) ResolvePendingEdges(ctx context.Context, txh types.TxHandle, new
 	if err != nil {
 		return fmt.Errorf("query pending edges: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	type pending struct {
 		id       int64
@@ -119,13 +119,13 @@ func (s *Store) ResolvePendingEdges(ctx context.Context, txh types.TxHandle, new
 	if err != nil {
 		return fmt.Errorf("prepare edge resolve insert: %w", err)
 	}
-	defer edgeStmt.Close()
+	defer func() { _ = edgeStmt.Close() }()
 
 	delStmt, err := tx.PrepareContext(ctx, `DELETE FROM pending_edges WHERE id = ?`)
 	if err != nil {
 		return fmt.Errorf("prepare pending delete: %w", err)
 	}
-	defer delStmt.Close()
+	defer func() { _ = delStmt.Close() }()
 
 	for _, p := range toResolve {
 		dstID, err := lookupSymbolIDTx(ctx, tx, p.dstName, 0, p.language)
@@ -207,7 +207,7 @@ func (s *Store) neighborsCTE(ctx context.Context, symbolID int64, maxDepth int, 
 	if err != nil {
 		return nil, fmt.Errorf("neighbors query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var ids []int64
 	for rows.Next() {
@@ -232,7 +232,7 @@ func (s *Store) PendingEdgeCallers(ctx context.Context, dstName string) ([]int64
 	if err != nil {
 		return nil, fmt.Errorf("pending edge callers for %s: %w", dstName, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var ids []int64
 	for rows.Next() {
@@ -245,7 +245,7 @@ func (s *Store) PendingEdgeCallers(ctx context.Context, dstName string) ([]int64
 	return ids, rows.Err()
 }
 
-// Type alias for backward compatibility.
+// PendingEdgeCaller is a backward-compatible alias for types.PendingEdgeCaller.
 type PendingEdgeCaller = types.PendingEdgeCaller
 
 // PendingEdgeCallersWithKind returns src_symbol_id, kind, and dst_qualified_name
@@ -259,7 +259,7 @@ func (s *Store) PendingEdgeCallersWithKind(ctx context.Context, dstName string) 
 	if err != nil {
 		return nil, fmt.Errorf("pending edge callers with kind for %s: %w", dstName, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []PendingEdgeCaller
 	for rows.Next() {
@@ -274,7 +274,7 @@ func (s *Store) PendingEdgeCallersWithKind(ctx context.Context, dstName string) 
 
 // DeleteEdgesByFile removes all edges originating from a given file.
 func (s *Store) DeleteEdgesByFile(ctx context.Context, txh types.TxHandle, fileID int64) error {
-	tx := txh.(SqliteTxHandle).Tx
+	tx := txh.(TxHandle).Tx
 	if _, err := tx.ExecContext(ctx, "DELETE FROM edges WHERE file_id = ?", fileID); err != nil {
 		return fmt.Errorf("delete edges for file %d: %w", fileID, err)
 	}

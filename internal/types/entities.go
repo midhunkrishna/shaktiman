@@ -98,6 +98,7 @@ func (k SiblingKey) String() string {
 // WriteJobType distinguishes the kind of write operation.
 type WriteJobType int
 
+// WriteJobType values identify the operation a WriteJob performs.
 const (
 	WriteJobEnrichment WriteJobType = iota
 	WriteJobFileDelete

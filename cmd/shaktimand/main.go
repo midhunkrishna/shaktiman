@@ -43,7 +43,7 @@ func main() {
 
 	// Configure structured logging to a file (stdout is reserved for MCP protocol).
 	logDir := filepath.Join(projectRoot, ".shaktiman")
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
+	if err := os.MkdirAll(logDir, 0o750); err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot create log directory %s: %v\n", logDir, err)
 		os.Exit(1)
 	}
@@ -63,7 +63,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: acquire daemon lock: %v\n", lockErr)
 		os.Exit(1)
 	}
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 
 	// Leader: rotate previous log, then create a fresh one.
 	setupLogging(logPath, true)
@@ -87,8 +87,8 @@ func main() {
 		slog.Error("failed to create socket listener", "err", err)
 		os.Exit(1)
 	}
-	defer os.Remove(lock.SocketPath())
-	defer socketListener.Close()
+	defer func() { _ = os.Remove(lock.SocketPath()) }()
+	defer func() { _ = socketListener.Close() }()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -133,7 +133,7 @@ func setupLogging(logPath string, rotate bool) {
 	if rotate {
 		if info, err := os.Stat(logPath); err == nil && info.Size() > 0 {
 			sessionDir := filepath.Join(filepath.Dir(logPath), "session-logs")
-			if mkErr := os.MkdirAll(sessionDir, 0o755); mkErr == nil {
+			if mkErr := os.MkdirAll(sessionDir, 0o750); mkErr == nil {
 				ts := info.ModTime().Format("2006-01-02T15-04-05")
 				_ = os.Rename(logPath, filepath.Join(sessionDir, ts+".log"))
 			}
@@ -145,7 +145,7 @@ func setupLogging(logPath string, rotate bool) {
 	if rotate {
 		logFile, err = os.Create(logPath)
 	} else {
-		logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot open log file: %v\n", err)
@@ -200,7 +200,8 @@ func runAsProxy(projectRoot string) {
 		// Re-exec: flock fd has O_CLOEXEC (Go default), stdin/stdout preserved.
 		// The re-exec'd process will attempt flock and succeed (old leader released it).
 		// If another proxy wins the race, we re-enter proxy mode.
-		execErr := syscall.Exec(os.Args[0], os.Args, os.Environ())
+		execErr := syscall.Exec(os.Args[0], os.Args, os.Environ()) //nolint:gosec // re-exec of own binary for leader promotion; os.Args[0] is this process's own path
+
 		// Exec replaces the process; if we get here, it failed.
 		fmt.Fprintf(os.Stderr, "error: re-exec failed: %v\n", execErr)
 		os.Exit(1)

@@ -84,7 +84,7 @@ func (b *Bridge) Run(ctx context.Context) error {
 		}
 
 		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil {
 			return fmt.Errorf("read response: %w", err)
 		}

@@ -2928,7 +2928,7 @@ func TestNewVectorStore_BruteForce(t *testing.T) {
 	if !vector.HasVectorStore("brute_force") {
 		t.Skip("brute_force backend not compiled in")
 	}
-	cfg := vector.VectorStoreConfig{
+	cfg := vector.StoreConfig{
 		Backend: "brute_force",
 		Dims:    4,
 	}
@@ -2949,7 +2949,7 @@ func TestNewVectorStore_HNSW(t *testing.T) {
 	if !vector.HasVectorStore("hnsw") {
 		t.Skip("hnsw backend not compiled in")
 	}
-	cfg := vector.VectorStoreConfig{
+	cfg := vector.StoreConfig{
 		Backend: "hnsw",
 		Dims:    4,
 	}
@@ -2969,7 +2969,7 @@ func TestNewVectorStore_EmptyBackendDefaultsBruteForce(t *testing.T) {
 	if !vector.HasVectorStore("brute_force") {
 		t.Skip("brute_force backend not compiled in")
 	}
-	cfg := vector.VectorStoreConfig{
+	cfg := vector.StoreConfig{
 		Backend: "",
 		Dims:    4,
 	}

@@ -325,39 +325,39 @@ func writeOK(w http.ResponseWriter, result any) {
 	json.NewEncoder(w).Encode(apiResponse{Status: "ok", Result: data})
 }
 
-// newTestStore creates a QdrantStore backed by a fake Qdrant server (unscoped).
-func newTestStore(t *testing.T, dims int) (*QdrantStore, *httptest.Server) {
+// newTestStore creates a Store backed by a fake Qdrant server (unscoped).
+func newTestStore(t *testing.T, dims int) (*Store, *httptest.Server) {
 	return newTestStoreWithProject(t, dims, 0)
 }
 
-// newTestStoreWithProject creates a QdrantStore with a specific projectID.
-func newTestStoreWithProject(t *testing.T, dims int, projectID int64) (*QdrantStore, *httptest.Server) {
+// newTestStoreWithProject creates a Store with a specific projectID.
+func newTestStoreWithProject(t *testing.T, dims int, projectID int64) (*Store, *httptest.Server) {
 	t.Helper()
 	fq := newFakeQdrant()
 	srv := httptest.NewServer(fq.handler(t))
 	client := NewClient(srv.URL, "")
-	store, err := NewQdrantStore(client, "test", dims, projectID)
+	store, err := NewStore(client, "test", dims, projectID)
 	if err != nil {
 		srv.Close()
-		t.Fatalf("NewQdrantStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	return store, srv
 }
 
-// newTestStoreOnServer creates a QdrantStore sharing an existing fake server.
-func newTestStoreOnServer(t *testing.T, srv *httptest.Server, collection string, dims int, projectID int64) *QdrantStore {
+// newTestStoreOnServer creates a Store sharing an existing fake server.
+func newTestStoreOnServer(t *testing.T, srv *httptest.Server, collection string, dims int, projectID int64) *Store {
 	t.Helper()
 	client := NewClient(srv.URL, "")
-	store, err := NewQdrantStore(client, collection, dims, projectID)
+	store, err := NewStore(client, collection, dims, projectID)
 	if err != nil {
-		t.Fatalf("NewQdrantStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	return store
 }
 
 // ── Store tests ──
 
-func TestQdrantStore_Upsert_And_Count(t *testing.T) {
+func TestStore_Upsert_And_Count(t *testing.T) {
 	store, srv := newTestStore(t, 4)
 	defer srv.Close()
 	defer store.Close()
@@ -375,7 +375,7 @@ func TestQdrantStore_Upsert_And_Count(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_UpsertBatch(t *testing.T) {
+func TestStore_UpsertBatch(t *testing.T) {
 	store, srv := newTestStore(t, 4)
 	defer srv.Close()
 	defer store.Close()
@@ -397,7 +397,7 @@ func TestQdrantStore_UpsertBatch(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_UpsertBatch_LengthMismatch(t *testing.T) {
+func TestStore_UpsertBatch_LengthMismatch(t *testing.T) {
 	store, srv := newTestStore(t, 4)
 	defer srv.Close()
 	defer store.Close()
@@ -410,7 +410,7 @@ func TestQdrantStore_UpsertBatch_LengthMismatch(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_UpsertBatch_Chunking(t *testing.T) {
+func TestStore_UpsertBatch_Chunking(t *testing.T) {
 	store, srv := newTestStore(t, 2)
 	defer srv.Close()
 	defer store.Close()
@@ -434,7 +434,7 @@ func TestQdrantStore_UpsertBatch_Chunking(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_Search(t *testing.T) {
+func TestStore_Search(t *testing.T) {
 	store, srv := newTestStore(t, 4)
 	defer srv.Close()
 	defer store.Close()
@@ -457,7 +457,7 @@ func TestQdrantStore_Search(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_Search_TopKZero(t *testing.T) {
+func TestStore_Search_TopKZero(t *testing.T) {
 	store, srv := newTestStore(t, 4)
 	defer srv.Close()
 	defer store.Close()
@@ -471,7 +471,7 @@ func TestQdrantStore_Search_TopKZero(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_Search_EmptyStore(t *testing.T) {
+func TestStore_Search_EmptyStore(t *testing.T) {
 	store, srv := newTestStore(t, 4)
 	defer srv.Close()
 	defer store.Close()
@@ -485,7 +485,7 @@ func TestQdrantStore_Search_EmptyStore(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_Has(t *testing.T) {
+func TestStore_Has(t *testing.T) {
 	store, srv := newTestStore(t, 4)
 	defer srv.Close()
 	defer store.Close()
@@ -507,7 +507,7 @@ func TestQdrantStore_Has(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_Delete(t *testing.T) {
+func TestStore_Delete(t *testing.T) {
 	store, srv := newTestStore(t, 4)
 	defer srv.Close()
 	defer store.Close()
@@ -530,7 +530,7 @@ func TestQdrantStore_Delete(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_Delete_Empty(t *testing.T) {
+func TestStore_Delete_Empty(t *testing.T) {
 	store, srv := newTestStore(t, 4)
 	defer srv.Close()
 	defer store.Close()
@@ -544,7 +544,7 @@ func TestQdrantStore_Delete_Empty(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_Delete_Chunking(t *testing.T) {
+func TestStore_Delete_Chunking(t *testing.T) {
 	store, srv := newTestStore(t, 2)
 	defer srv.Close()
 	defer store.Close()
@@ -569,7 +569,7 @@ func TestQdrantStore_Delete_Chunking(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_Healthy(t *testing.T) {
+func TestStore_Healthy(t *testing.T) {
 	store, srv := newTestStore(t, 4)
 	defer srv.Close()
 
@@ -578,7 +578,7 @@ func TestQdrantStore_Healthy(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_Healthy_Down(t *testing.T) {
+func TestStore_Healthy_Down(t *testing.T) {
 	store, srv := newTestStore(t, 4)
 	srv.Close() // shut down server
 
@@ -587,7 +587,7 @@ func TestQdrantStore_Healthy_Down(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_Close_Idempotent(t *testing.T) {
+func TestStore_Close_Idempotent(t *testing.T) {
 	store, srv := newTestStore(t, 4)
 	defer srv.Close()
 
@@ -599,12 +599,12 @@ func TestQdrantStore_Close_Idempotent(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_CompileTimeCheck(t *testing.T) {
-	// Verify QdrantStore satisfies VectorStore at compile time
-	var _ types.VectorStore = (*QdrantStore)(nil)
+func TestStore_CompileTimeCheck(t *testing.T) {
+	// Verify Store satisfies VectorStore at compile time
+	var _ types.VectorStore = (*Store)(nil)
 }
 
-func TestNewQdrantStore_ExistingCollection_DimsMismatch(t *testing.T) {
+func TestNewStore_ExistingCollection_DimsMismatch(t *testing.T) {
 	fq := newFakeQdrant()
 	srv := httptest.NewServer(fq.handler(t))
 	defer srv.Close()
@@ -614,21 +614,21 @@ func TestNewQdrantStore_ExistingCollection_DimsMismatch(t *testing.T) {
 	client.CreateCollection(context.Background(), "test", 4)
 
 	// Try to open with dims=8 — should fail
-	_, err := NewQdrantStore(client, "test", 8, 0)
+	_, err := NewStore(client, "test", 8, 0)
 	if err == nil {
 		t.Fatal("expected error for dims mismatch")
 	}
 }
 
-func TestNewQdrantStore_CreatesCollection(t *testing.T) {
+func TestNewStore_CreatesCollection(t *testing.T) {
 	fq := newFakeQdrant()
 	srv := httptest.NewServer(fq.handler(t))
 	defer srv.Close()
 
 	client := NewClient(srv.URL, "")
-	store, err := NewQdrantStore(client, "new_col", 128, 0)
+	store, err := NewStore(client, "new_col", 128, 0)
 	if err != nil {
-		t.Fatalf("NewQdrantStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	defer store.Close()
 
@@ -642,7 +642,7 @@ func TestNewQdrantStore_CreatesCollection(t *testing.T) {
 	}
 }
 
-func TestNewQdrantStore_ExistingCollection_DimsMatch(t *testing.T) {
+func TestNewStore_ExistingCollection_DimsMatch(t *testing.T) {
 	fq := newFakeQdrant()
 	srv := httptest.NewServer(fq.handler(t))
 	defer srv.Close()
@@ -650,14 +650,14 @@ func TestNewQdrantStore_ExistingCollection_DimsMatch(t *testing.T) {
 	client := NewClient(srv.URL, "")
 	client.CreateCollection(context.Background(), "existing", 64)
 
-	store, err := NewQdrantStore(client, "existing", 64, 0)
+	store, err := NewStore(client, "existing", 64, 0)
 	if err != nil {
-		t.Fatalf("NewQdrantStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	store.Close()
 }
 
-func TestQdrantStore_Upsert_Overwrites(t *testing.T) {
+func TestStore_Upsert_Overwrites(t *testing.T) {
 	store, srv := newTestStore(t, 4)
 	defer srv.Close()
 	defer store.Close()
@@ -672,7 +672,7 @@ func TestQdrantStore_Upsert_Overwrites(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_Search_ScoreOrder(t *testing.T) {
+func TestStore_Search_ScoreOrder(t *testing.T) {
 	store, srv := newTestStore(t, 4)
 	defer srv.Close()
 	defer store.Close()
@@ -696,7 +696,7 @@ func TestQdrantStore_Search_ScoreOrder(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_PurgeAll_Unscoped(t *testing.T) {
+func TestStore_PurgeAll_Unscoped(t *testing.T) {
 	store, srv := newTestStore(t, 4) // projectID=0
 	defer srv.Close()
 	defer store.Close()
@@ -736,7 +736,7 @@ func TestQdrantStore_PurgeAll_Unscoped(t *testing.T) {
 
 // ── Project isolation tests ──
 
-func TestQdrantStore_SearchIsolation(t *testing.T) {
+func TestStore_SearchIsolation(t *testing.T) {
 	fq := newFakeQdrant()
 	srv := httptest.NewServer(fq.handler(t))
 	defer srv.Close()
@@ -785,7 +785,7 @@ func TestQdrantStore_SearchIsolation(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_CountIsolation(t *testing.T) {
+func TestStore_CountIsolation(t *testing.T) {
 	fq := newFakeQdrant()
 	srv := httptest.NewServer(fq.handler(t))
 	defer srv.Close()
@@ -812,7 +812,7 @@ func TestQdrantStore_CountIsolation(t *testing.T) {
 	}
 }
 
-func TestQdrantStore_PurgeAll_Isolation(t *testing.T) {
+func TestStore_PurgeAll_Isolation(t *testing.T) {
 	fq := newFakeQdrant()
 	srv := httptest.NewServer(fq.handler(t))
 	defer srv.Close()

@@ -11,12 +11,12 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
-// VectorStoreFactory creates a fresh VectorStore for each test.
+// StoreFactory creates a fresh VectorStore for each test.
 // Dims specifies the vector dimensionality to use.
-type VectorStoreFactory func(t *testing.T, dims int) types.VectorStore
+type StoreFactory func(t *testing.T, dims int) types.VectorStore
 
 // RunVectorStoreTests runs the full compliance suite against a VectorStore.
-func RunVectorStoreTests(t *testing.T, factory VectorStoreFactory) {
+func RunVectorStoreTests(t *testing.T, factory StoreFactory) {
 	const dims = 4
 
 	t.Run("Upsert_And_Count", func(t *testing.T) {

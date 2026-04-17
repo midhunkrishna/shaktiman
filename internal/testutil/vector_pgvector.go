@@ -51,10 +51,10 @@ func newPgVectorTestStore(t *testing.T, dims int) types.VectorStore {
 	}
 
 	// Use project_id=1 (the default seeded by migration 005).
-	store, err := pgvector.NewPgVectorStore(pool, dims, 1)
+	store, err := pgvector.NewStore(pool, dims, 1)
 	if err != nil {
 		pool.Close()
-		t.Fatalf("NewPgVectorStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 
 	t.Cleanup(func() {

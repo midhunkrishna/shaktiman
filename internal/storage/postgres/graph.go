@@ -85,10 +85,14 @@ func (s *PgStore) ResolvePendingEdges(ctx context.Context, txh types.TxHandle, n
 		if dstID == 0 {
 			continue
 		}
-		tx.Exec(ctx,
+		if _, err := tx.Exec(ctx,
 			`INSERT INTO edges (src_symbol_id, dst_symbol_id, kind) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-			p.srcID, dstID, p.kind)
-		tx.Exec(ctx, "DELETE FROM pending_edges WHERE id = $1", p.id)
+			p.srcID, dstID, p.kind); err != nil {
+			return fmt.Errorf("insert resolved edge %d→%d: %w", p.srcID, dstID, err)
+		}
+		if _, err := tx.Exec(ctx, "DELETE FROM pending_edges WHERE id = $1", p.id); err != nil {
+			return fmt.Errorf("delete resolved pending edge %d: %w", p.id, err)
+		}
 	}
 	return nil
 }
@@ -113,7 +117,9 @@ func (s *PgStore) PendingEdgeCallers(ctx context.Context, dstName string) ([]int
 	var ids []int64
 	for rows.Next() {
 		var id int64
-		rows.Scan(&id)
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan pending edge caller id: %w", err)
+		}
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
@@ -131,7 +137,9 @@ func (s *PgStore) PendingEdgeCallersWithKind(ctx context.Context, dstName string
 	var results []types.PendingEdgeCaller
 	for rows.Next() {
 		var c types.PendingEdgeCaller
-		rows.Scan(&c.SrcSymbolID, &c.Kind, &c.DstQualifiedName)
+		if err := rows.Scan(&c.SrcSymbolID, &c.Kind, &c.DstQualifiedName); err != nil {
+			return nil, fmt.Errorf("scan pending edge caller: %w", err)
+		}
 		results = append(results, c)
 	}
 	return results, rows.Err()
@@ -204,7 +212,9 @@ func neighborsCTEPg(ctx context.Context, s *PgStore, symbolID int64, maxDepth in
 	var ids []int64
 	for rows.Next() {
 		var id int64
-		rows.Scan(&id)
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan neighbor id: %w", err)
+		}
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()

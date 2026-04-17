@@ -19,7 +19,7 @@ func TestSQLiteLifecycle_OnStartup_FreshDB(t *testing.T) {
 	}
 
 	store := NewStore(db)
-	lifecycle := NewSQLiteLifecycle(store)
+	lifecycle := NewLifecycle(store)
 
 	// OnStartup on a fresh DB should succeed (no stale FTS, triggers already exist)
 	if err := lifecycle.OnStartup(context.Background()); err != nil {
@@ -51,7 +51,7 @@ func TestSQLiteLifecycle_OnStartup_WithData(t *testing.T) {
 			StartLine: 1, EndLine: 10, Content: "func main() {}", TokenCount: 5},
 	})
 
-	lifecycle := NewSQLiteLifecycle(store)
+	lifecycle := NewLifecycle(store)
 
 	// OnStartup should succeed and ensure triggers + FTS are healthy
 	if err := lifecycle.OnStartup(ctx); err != nil {
@@ -81,7 +81,7 @@ func TestSQLiteLifecycle_BulkWriteCycle(t *testing.T) {
 
 	store := NewStore(db)
 	ctx := context.Background()
-	lifecycle := NewSQLiteLifecycle(store)
+	lifecycle := NewLifecycle(store)
 
 	// Begin bulk write (disables triggers)
 	if err := lifecycle.OnBulkWriteBegin(ctx); err != nil {
@@ -137,7 +137,7 @@ func TestSQLiteLifecycle_BulkWriteEnd_RestoresTriggers(t *testing.T) {
 
 	store := NewStore(db)
 	ctx := context.Background()
-	lifecycle := NewSQLiteLifecycle(store)
+	lifecycle := NewLifecycle(store)
 
 	// Full bulk write cycle
 	lifecycle.OnBulkWriteBegin(ctx)
@@ -181,7 +181,7 @@ func TestSQLiteLifecycle_OnBulkWriteEnd_Idempotent(t *testing.T) {
 
 	store := NewStore(db)
 	ctx := context.Background()
-	lifecycle := NewSQLiteLifecycle(store)
+	lifecycle := NewLifecycle(store)
 
 	// Calling OnBulkWriteEnd without OnBulkWriteBegin should still work
 	if err := lifecycle.OnBulkWriteEnd(ctx); err != nil {
@@ -206,7 +206,7 @@ func TestSQLiteLifecycle_OnStartup_Idempotent(t *testing.T) {
 	}
 
 	store := NewStore(db)
-	lifecycle := NewSQLiteLifecycle(store)
+	lifecycle := NewLifecycle(store)
 	ctx := context.Background()
 
 	// Multiple OnStartup calls should all succeed

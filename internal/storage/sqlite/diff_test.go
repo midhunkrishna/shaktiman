@@ -28,7 +28,7 @@ func TestInsertDiffLog(t *testing.T) {
 	var diffID int64
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
 		var insertErr error
-		diffID, insertErr = store.InsertDiffLog(ctx, SqliteTxHandle{Tx: tx}, entry)
+		diffID, insertErr = store.InsertDiffLog(ctx, TxHandle{Tx: tx}, entry)
 		return insertErr
 	})
 	if err != nil {
@@ -79,7 +79,7 @@ func TestInsertDiffSymbols(t *testing.T) {
 	var diffID int64
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
 		var insertErr error
-		diffID, insertErr = store.InsertDiffLog(ctx, SqliteTxHandle{Tx: tx}, DiffLogEntry{
+		diffID, insertErr = store.InsertDiffLog(ctx, TxHandle{Tx: tx}, DiffLogEntry{
 			FileID:     fileID,
 			ChangeType: "modify",
 			LinesAdded: 5,
@@ -88,7 +88,7 @@ func TestInsertDiffSymbols(t *testing.T) {
 			return insertErr
 		}
 
-		return store.InsertDiffSymbols(ctx, SqliteTxHandle{Tx: tx}, diffID, []DiffSymbolEntry{
+		return store.InsertDiffSymbols(ctx, TxHandle{Tx: tx}, diffID, []DiffSymbolEntry{
 			{SymbolName: "SymFunc", SymbolID: symID, ChangeType: "modified", ChunkID: chunkID},
 			{SymbolName: "NewFunc", SymbolID: 0, ChangeType: "added", ChunkID: 0},
 		})
@@ -351,7 +351,7 @@ func TestInsertDiffLog_Direct(t *testing.T) {
 	var diffID int64
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
 		var insertErr error
-		diffID, insertErr = store.InsertDiffLog(ctx, SqliteTxHandle{Tx: tx}, entry)
+		diffID, insertErr = store.InsertDiffLog(ctx, TxHandle{Tx: tx}, entry)
 		return insertErr
 	})
 	if err != nil {
@@ -373,7 +373,7 @@ func TestInsertDiffLog_Direct(t *testing.T) {
 	var diffID2 int64
 	err = db.WithWriteTx(func(tx *sql.Tx) error {
 		var insertErr error
-		diffID2, insertErr = store.InsertDiffLog(ctx, SqliteTxHandle{Tx: tx}, entry2)
+		diffID2, insertErr = store.InsertDiffLog(ctx, TxHandle{Tx: tx}, entry2)
 		return insertErr
 	})
 	if err != nil {
@@ -406,7 +406,7 @@ func TestGetDiffSymbols_Empty(t *testing.T) {
 	var diffID int64
 	err := db.WithWriteTx(func(tx *sql.Tx) error {
 		var insertErr error
-		diffID, insertErr = store.InsertDiffLog(ctx, SqliteTxHandle{Tx: tx}, DiffLogEntry{
+		diffID, insertErr = store.InsertDiffLog(ctx, TxHandle{Tx: tx}, DiffLogEntry{
 			FileID:     fileID,
 			ChangeType: "modify",
 			LinesAdded: 1,

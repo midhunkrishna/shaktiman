@@ -384,7 +384,7 @@ const sampleConfig = `# Shaktiman configuration
 // Errors are logged but not fatal.
 func WriteSampleConfig(projectRoot string) {
 	dir := filepath.Join(projectRoot, ".shaktiman")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		slog.Debug("write sample config: mkdir", "err", err)
 		return
 	}

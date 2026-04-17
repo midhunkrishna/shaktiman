@@ -77,7 +77,7 @@ func (w *Watcher) Start(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			w.fsw.Close()
+			_ = w.fsw.Close()
 			close(w.eventCh)
 			return nil
 

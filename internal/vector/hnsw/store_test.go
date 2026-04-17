@@ -13,23 +13,23 @@ import (
 )
 
 // Compile-time interface checks.
-var _ types.VectorStore = (*HNSWStore)(nil)
-var _ types.VectorPersister = (*HNSWStore)(nil)
+var _ types.VectorStore = (*Store)(nil)
+var _ types.VectorPersister = (*Store)(nil)
 
-func newTestHNSWStore(t *testing.T, dim int) *HNSWStore {
+func newTestStore(t *testing.T, dim int) *Store {
 	t.Helper()
-	s, err := NewHNSWStore(HNSWStoreInput{Dim: dim})
+	s, err := NewStore(StoreInput{Dim: dim})
 	if err != nil {
-		t.Fatalf("NewHNSWStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
 }
 
-func TestHNSWStore_UpsertAndCount(t *testing.T) {
+func TestStore_UpsertAndCount(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := newTestHNSWStore(t, 3)
+	s := newTestStore(t, 3)
 
 	assertCount := func(t *testing.T, want int) {
 		t.Helper()
@@ -65,10 +65,10 @@ func TestHNSWStore_UpsertAndCount(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_Search(t *testing.T) {
+func TestStore_Search(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := newTestHNSWStore(t, 3)
+	s := newTestStore(t, 3)
 
 	// Insert three basis vectors.
 	vectors := []struct {
@@ -101,10 +101,10 @@ func TestHNSWStore_Search(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_Search_TopKLargerThanStore(t *testing.T) {
+func TestStore_Search_TopKLargerThanStore(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := newTestHNSWStore(t, 2)
+	s := newTestStore(t, 2)
 
 	if err := s.Upsert(ctx, 1, []float32{1, 0}); err != nil {
 		t.Fatalf("Upsert: %v", err)
@@ -119,10 +119,10 @@ func TestHNSWStore_Search_TopKLargerThanStore(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_Search_Empty(t *testing.T) {
+func TestStore_Search_Empty(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := newTestHNSWStore(t, 3)
+	s := newTestStore(t, 3)
 
 	results, err := s.Search(ctx, []float32{1, 0, 0}, 5)
 	if err != nil {
@@ -133,10 +133,10 @@ func TestHNSWStore_Search_Empty(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_Search_DimMismatch(t *testing.T) {
+func TestStore_Search_DimMismatch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := newTestHNSWStore(t, 3)
+	s := newTestStore(t, 3)
 
 	_, err := s.Search(ctx, []float32{1, 0}, 1)
 	if err == nil {
@@ -144,10 +144,10 @@ func TestHNSWStore_Search_DimMismatch(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_UpsertBatch(t *testing.T) {
+func TestStore_UpsertBatch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := newTestHNSWStore(t, 2)
+	s := newTestStore(t, 2)
 
 	ids := []int64{10, 20, 30}
 	vecs := [][]float32{
@@ -169,10 +169,10 @@ func TestHNSWStore_UpsertBatch(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_UpsertBatch_LenMismatch(t *testing.T) {
+func TestStore_UpsertBatch_LenMismatch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := newTestHNSWStore(t, 2)
+	s := newTestStore(t, 2)
 
 	err := s.UpsertBatch(ctx, []int64{1, 2}, [][]float32{{1, 0}})
 	if err == nil {
@@ -180,10 +180,10 @@ func TestHNSWStore_UpsertBatch_LenMismatch(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_UpsertBatch_DimMismatch(t *testing.T) {
+func TestStore_UpsertBatch_DimMismatch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := newTestHNSWStore(t, 2)
+	s := newTestStore(t, 2)
 
 	err := s.UpsertBatch(ctx, []int64{1}, [][]float32{{1, 0, 0}})
 	if err == nil {
@@ -191,10 +191,10 @@ func TestHNSWStore_UpsertBatch_DimMismatch(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_Upsert_DimMismatch(t *testing.T) {
+func TestStore_Upsert_DimMismatch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := newTestHNSWStore(t, 3)
+	s := newTestStore(t, 3)
 
 	err := s.Upsert(ctx, 1, []float32{1, 0})
 	if err == nil {
@@ -202,10 +202,10 @@ func TestHNSWStore_Upsert_DimMismatch(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_Delete(t *testing.T) {
+func TestStore_Delete(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := newTestHNSWStore(t, 2)
+	s := newTestStore(t, 2)
 
 	ids := []int64{1, 2, 3}
 	for _, id := range ids {
@@ -229,10 +229,10 @@ func TestHNSWStore_Delete(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_Delete_NonExistent(t *testing.T) {
+func TestStore_Delete_NonExistent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := newTestHNSWStore(t, 2)
+	s := newTestStore(t, 2)
 
 	// Deleting IDs that don't exist should not error.
 	if err := s.Delete(ctx, []int64{99, 100}); err != nil {
@@ -240,10 +240,10 @@ func TestHNSWStore_Delete_NonExistent(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_Has(t *testing.T) {
+func TestStore_Has(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := newTestHNSWStore(t, 2)
+	s := newTestStore(t, 2)
 
 	if has, err := s.Has(ctx, 1); err != nil {
 		t.Fatalf("Has: %v", err)
@@ -266,21 +266,21 @@ func TestHNSWStore_Has(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_Close(t *testing.T) {
+func TestStore_Close(t *testing.T) {
 	t.Parallel()
-	s, err := NewHNSWStore(HNSWStoreInput{Dim: 3})
+	s, err := NewStore(StoreInput{Dim: 3})
 	if err != nil {
-		t.Fatalf("NewHNSWStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close() = %v, want nil", err)
 	}
 }
 
-func TestHNSWStore_UpsertBatch_NoPartialWrite(t *testing.T) {
+func TestStore_UpsertBatch_NoPartialWrite(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := newTestHNSWStore(t, 2)
+	s := newTestStore(t, 2)
 
 	// Pre-populate with known value
 	if err := s.Upsert(ctx, 10, []float32{1, 0}); err != nil {
@@ -300,15 +300,15 @@ func TestHNSWStore_UpsertBatch_NoPartialWrite(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_Persistence(t *testing.T) {
+func TestStore_Persistence(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "index.hnsw")
 
-	s1, err := NewHNSWStore(HNSWStoreInput{Dim: 3})
+	s1, err := NewStore(StoreInput{Dim: 3})
 	if err != nil {
-		t.Fatalf("NewHNSWStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	defer s1.Close()
 
@@ -331,9 +331,9 @@ func TestHNSWStore_Persistence(t *testing.T) {
 	}
 
 	// Load into a fresh store.
-	s2, err := NewHNSWStore(HNSWStoreInput{Dim: 3})
+	s2, err := NewStore(StoreInput{Dim: 3})
 	if err != nil {
-		t.Fatalf("NewHNSWStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	defer s2.Close()
 
@@ -364,12 +364,12 @@ func TestHNSWStore_Persistence(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_LoadFromDisk_NotExist(t *testing.T) {
+func TestStore_LoadFromDisk_NotExist(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nonexistent.hnsw")
 
-	s := newTestHNSWStore(t, 3)
+	s := newTestStore(t, 3)
 	if err := s.LoadFromDisk(path); err != nil {
 		t.Fatalf("LoadFromDisk for non-existent file should return nil, got: %v", err)
 	}
@@ -384,20 +384,20 @@ func TestHNSWStore_LoadFromDisk_NotExist(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_SaveToDisk_EmptyStore(t *testing.T) {
+func TestStore_SaveToDisk_EmptyStore(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.hnsw")
 
-	s1 := newTestHNSWStore(t, 3)
+	s1 := newTestStore(t, 3)
 	if err := s1.SaveToDisk(path); err != nil {
 		t.Fatalf("SaveToDisk empty store: %v", err)
 	}
 
-	s2, err := NewHNSWStore(HNSWStoreInput{Dim: 3})
+	s2, err := NewStore(StoreInput{Dim: 3})
 	if err != nil {
-		t.Fatalf("NewHNSWStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	defer s2.Close()
 
@@ -413,9 +413,9 @@ func TestHNSWStore_SaveToDisk_EmptyStore(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_SaveToDisk_BadPath(t *testing.T) {
+func TestStore_SaveToDisk_BadPath(t *testing.T) {
 	t.Parallel()
-	s := newTestHNSWStore(t, 3)
+	s := newTestStore(t, 3)
 	if err := s.Upsert(context.Background(), 1, []float32{1, 2, 3}); err != nil {
 		t.Fatal(err)
 	}
@@ -427,10 +427,10 @@ func TestHNSWStore_SaveToDisk_BadPath(t *testing.T) {
 
 // HNSW-specific tests
 
-func TestHNSWStore_UpsertReplacesExisting(t *testing.T) {
+func TestStore_UpsertReplacesExisting(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := newTestHNSWStore(t, 3)
+	s := newTestStore(t, 3)
 
 	// Insert vector aligned with x-axis
 	if err := s.Upsert(ctx, 1, []float32{1, 0, 0}); err != nil {
@@ -463,10 +463,10 @@ func TestHNSWStore_UpsertReplacesExisting(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_ScoreConversion(t *testing.T) {
+func TestStore_ScoreConversion(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := newTestHNSWStore(t, 3)
+	s := newTestStore(t, 3)
 
 	if err := s.Upsert(ctx, 1, []float32{1, 0, 0}); err != nil {
 		t.Fatalf("Upsert: %v", err)
@@ -496,13 +496,13 @@ func TestHNSWStore_ScoreConversion(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_SearchRecall(t *testing.T) {
+func TestStore_SearchRecall(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dim := 32
-	s, err := NewHNSWStore(HNSWStoreInput{Dim: dim, MaxElements: 1100})
+	s, err := NewStore(StoreInput{Dim: dim, MaxElements: 1100})
 	if err != nil {
-		t.Fatalf("NewHNSWStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	defer s.Close()
 
@@ -546,13 +546,13 @@ func TestHNSWStore_SearchRecall(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_ConcurrentReadWrite(t *testing.T) {
+func TestStore_ConcurrentReadWrite(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dim := 8
-	s, err := NewHNSWStore(HNSWStoreInput{Dim: dim, MaxElements: 1000})
+	s, err := NewStore(StoreInput{Dim: dim, MaxElements: 1000})
 	if err != nil {
-		t.Fatalf("NewHNSWStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	defer s.Close()
 
@@ -613,14 +613,14 @@ func TestHNSWStore_ConcurrentReadWrite(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_CapacityGrowth(t *testing.T) {
+func TestStore_CapacityGrowth(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dim := 4
 	// Start with very small capacity
-	s, err := NewHNSWStore(HNSWStoreInput{Dim: dim, MaxElements: 10})
+	s, err := NewStore(StoreInput{Dim: dim, MaxElements: 10})
 	if err != nil {
-		t.Fatalf("NewHNSWStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	defer s.Close()
 
@@ -642,10 +642,10 @@ func TestHNSWStore_CapacityGrowth(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_UpsertBatch_Empty(t *testing.T) {
+func TestStore_UpsertBatch_Empty(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := newTestHNSWStore(t, 3)
+	s := newTestStore(t, 3)
 
 	// Empty batch should be a no-op
 	if err := s.UpsertBatch(ctx, nil, nil); err != nil {
@@ -661,10 +661,10 @@ func TestHNSWStore_UpsertBatch_Empty(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_Delete_Empty(t *testing.T) {
+func TestStore_Delete_Empty(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := newTestHNSWStore(t, 2)
+	s := newTestStore(t, 2)
 
 	// Delete on empty store should not error
 	if err := s.Delete(ctx, []int64{}); err != nil {
@@ -675,12 +675,12 @@ func TestHNSWStore_Delete_Empty(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_SaveToDisk_CreatesDir(t *testing.T) {
+func TestStore_SaveToDisk_CreatesDir(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "subdir", "nested", "index.hnsw")
 
-	s := newTestHNSWStore(t, 3)
+	s := newTestStore(t, 3)
 	if err := s.Upsert(context.Background(), 1, []float32{1, 0, 0}); err != nil {
 		t.Fatal(err)
 	}
@@ -694,16 +694,16 @@ func TestHNSWStore_SaveToDisk_CreatesDir(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_NewHNSWStore_CustomParams(t *testing.T) {
+func TestStore_NewStore_CustomParams(t *testing.T) {
 	t.Parallel()
-	s, err := NewHNSWStore(HNSWStoreInput{
+	s, err := NewStore(StoreInput{
 		Dim:            4,
 		M:              32,
 		EfConstruction: 400,
 		MaxElements:    500,
 	})
 	if err != nil {
-		t.Fatalf("NewHNSWStore with custom params: %v", err)
+		t.Fatalf("NewStore with custom params: %v", err)
 	}
 	defer s.Close()
 
@@ -715,12 +715,12 @@ func TestHNSWStore_NewHNSWStore_CustomParams(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_Search_AfterClose(t *testing.T) {
+func TestStore_Search_AfterClose(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s, err := NewHNSWStore(HNSWStoreInput{Dim: 3})
+	s, err := NewStore(StoreInput{Dim: 3})
 	if err != nil {
-		t.Fatalf("NewHNSWStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	if err := s.Upsert(ctx, 1, []float32{1, 0, 0}); err != nil {
 		t.Fatalf("Upsert: %v", err)
@@ -739,10 +739,10 @@ func TestHNSWStore_Search_AfterClose(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_Search_SoftDeleteFallback(t *testing.T) {
+func TestStore_Search_SoftDeleteFallback(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	s := newTestHNSWStore(t, 2)
+	s := newTestStore(t, 2)
 
 	// Insert 3 vectors, delete all 3, then search.
 	// This triggers the "Cannot return the results" error path.
@@ -767,7 +767,7 @@ func TestHNSWStore_Search_SoftDeleteFallback(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_LoadFromDisk_CorruptFile(t *testing.T) {
+func TestStore_LoadFromDisk_CorruptFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "corrupt.hnsw")
@@ -777,7 +777,7 @@ func TestHNSWStore_LoadFromDisk_CorruptFile(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	s := newTestHNSWStore(t, 3)
+	s := newTestStore(t, 3)
 	err := s.LoadFromDisk(path)
 	if err == nil {
 		t.Fatal("expected error for corrupt file, got nil")
@@ -793,16 +793,16 @@ func TestHNSWStore_LoadFromDisk_CorruptFile(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_LoadFromDisk_UpdatesMax(t *testing.T) {
+func TestStore_LoadFromDisk_UpdatesMax(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "dense.hnsw")
 
 	// Create store with small capacity, fill it, save
-	s1, err := NewHNSWStore(HNSWStoreInput{Dim: 3, MaxElements: 50})
+	s1, err := NewStore(StoreInput{Dim: 3, MaxElements: 50})
 	if err != nil {
-		t.Fatalf("NewHNSWStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	for i := int64(1); i <= 50; i++ {
 		if err := s1.Upsert(ctx, i, []float32{float32(i), 0, 0}); err != nil {
@@ -815,9 +815,9 @@ func TestHNSWStore_LoadFromDisk_UpdatesMax(t *testing.T) {
 	s1.Close()
 
 	// Load into store with smaller initial max — hnswlib will expand to fit
-	s2, err := NewHNSWStore(HNSWStoreInput{Dim: 3, MaxElements: 10})
+	s2, err := NewStore(StoreInput{Dim: 3, MaxElements: 10})
 	if err != nil {
-		t.Fatalf("NewHNSWStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	defer s2.Close()
 
@@ -837,15 +837,15 @@ func TestHNSWStore_LoadFromDisk_UpdatesMax(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_EnsureCapacity_LargeNeeded(t *testing.T) {
+func TestStore_EnsureCapacity_LargeNeeded(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dim := 4
 	// Capacity = 5, insert 5, then batch insert 20 more.
 	// This triggers the newMax < count+needed branch (doubling isn't enough).
-	s, err := NewHNSWStore(HNSWStoreInput{Dim: dim, MaxElements: 5})
+	s, err := NewStore(StoreInput{Dim: dim, MaxElements: 5})
 	if err != nil {
-		t.Fatalf("NewHNSWStore: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
 	defer s.Close()
 
@@ -877,10 +877,10 @@ func TestHNSWStore_EnsureCapacity_LargeNeeded(t *testing.T) {
 	}
 }
 
-func TestHNSWStore_SaveToDisk_RenameFail(t *testing.T) {
+func TestStore_SaveToDisk_RenameFail(t *testing.T) {
 	t.Parallel()
 
-	s := newTestHNSWStore(t, 3)
+	s := newTestStore(t, 3)
 	if err := s.Upsert(context.Background(), 1, []float32{1, 0, 0}); err != nil {
 		t.Fatal(err)
 	}

@@ -215,7 +215,6 @@ func setupLargeBenchStoreWithSymbols(b *testing.B) (*Store, []int64, []int64) {
 			}
 			fid, _ := fRes.LastInsertId()
 
-			fileChunkIDs := make([]int64, 0, chunksPerFile)
 			fileSymIDs := make([]int64, 0, chunksPerFile)
 
 			for ci := 0; ci < chunksPerFile; ci++ {
@@ -228,7 +227,6 @@ func setupLargeBenchStoreWithSymbols(b *testing.B) (*Store, []int64, []int64) {
 				}
 				cid, _ := cRes.LastInsertId()
 				allChunkIDs = append(allChunkIDs, cid)
-				fileChunkIDs = append(fileChunkIDs, cid)
 
 				sRes, err := symStmt.Exec(cid, fid, symName, startLine)
 				if err != nil {

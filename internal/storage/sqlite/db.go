@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -14,11 +15,11 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
-// SqliteTxHandle wraps *sql.Tx to satisfy types.TxHandle.
-type SqliteTxHandle struct{ Tx *sql.Tx }
+// TxHandle wraps *sql.Tx to satisfy types.TxHandle.
+type TxHandle struct{ Tx *sql.Tx }
 
 // IsTxHandle implements types.TxHandle.
-func (SqliteTxHandle) IsTxHandle() {}
+func (TxHandle) IsTxHandle() {}
 
 // inMemoryCounter generates unique names for in-memory databases to prevent
 // shared cache conflicts when tests run in parallel.
@@ -48,7 +49,7 @@ func Open(input OpenInput) (*DB, error) {
 		path = fmt.Sprintf("file:inmem_%d?mode=memory&cache=shared", id)
 	} else {
 		dir := filepath.Dir(path)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return nil, fmt.Errorf("create db directory %s: %w", dir, err)
 		}
 	}
@@ -60,7 +61,9 @@ func Open(input OpenInput) (*DB, error) {
 
 	reader, err := openReader(path, input.InMemory)
 	if err != nil {
-		writer.Close()
+		if cerr := writer.Close(); cerr != nil {
+			slog.Warn("close sqlite writer after reader init error", "err", cerr)
+		}
 		return nil, fmt.Errorf("open reader: %w", err)
 	}
 
@@ -82,7 +85,9 @@ func openWriter(path string, inMemory bool) (*sql.DB, error) {
 	db.SetMaxIdleConns(1)
 
 	if _, err := db.Exec("PRAGMA cache_size = -8000"); err != nil {
-		db.Close()
+		if cerr := db.Close(); cerr != nil {
+			slog.Warn("close sqlite writer after pragma error", "err", cerr)
+		}
 		return nil, fmt.Errorf("set writer cache_size: %w", err)
 	}
 
@@ -94,7 +99,9 @@ func openWriter(path string, inMemory bool) (*sql.DB, error) {
 			"PRAGMA foreign_keys = ON",
 		} {
 			if _, err := db.Exec(pragma); err != nil {
-				db.Close()
+				if cerr := db.Close(); cerr != nil {
+					slog.Warn("close sqlite writer after pragma error", "err", cerr)
+				}
 				return nil, fmt.Errorf("set writer %s: %w", pragma, err)
 			}
 		}
@@ -120,12 +127,16 @@ func openReader(path string, inMemory bool) (*sql.DB, error) {
 
 	// Increase reader page cache for large indexes (32MB vs SQLite default 2MB)
 	if _, err := db.Exec("PRAGMA cache_size = -32000"); err != nil {
-		db.Close()
+		if cerr := db.Close(); cerr != nil {
+			slog.Warn("close sqlite reader after pragma error", "err", cerr)
+		}
 		return nil, fmt.Errorf("set reader cache_size: %w", err)
 	}
 	// Enable memory-mapped I/O for reads (256MB)
 	if _, err := db.Exec("PRAGMA mmap_size = 268435456"); err != nil {
-		db.Close()
+		if cerr := db.Close(); cerr != nil {
+			slog.Warn("close sqlite reader after pragma error", "err", cerr)
+		}
 		return nil, fmt.Errorf("set reader mmap_size: %w", err)
 	}
 
@@ -153,7 +164,7 @@ func (db *DB) WithWriteTx(fn func(tx *sql.Tx) error) error {
 		return fmt.Errorf("begin write tx: %w", err)
 	}
 	if err := fn(tx); err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		return err
 	}
 	return tx.Commit()
@@ -161,9 +172,9 @@ func (db *DB) WithWriteTx(fn func(tx *sql.Tx) error) error {
 
 // WithWriteTxCtx executes fn within a write transaction using a types.TxHandle.
 // This is the backend-agnostic version used by the WriterStore interface.
-func (db *DB) WithWriteTxCtx(ctx context.Context, fn func(tx types.TxHandle) error) error {
+func (db *DB) WithWriteTxCtx(_ context.Context, fn func(tx types.TxHandle) error) error {
 	return db.WithWriteTx(func(tx *sql.Tx) error {
-		return fn(SqliteTxHandle{Tx: tx})
+		return fn(TxHandle{Tx: tx})
 	})
 }
 

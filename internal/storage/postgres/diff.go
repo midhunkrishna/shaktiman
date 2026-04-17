@@ -113,7 +113,9 @@ func (s *PgStore) GetDiffSymbols(ctx context.Context, diffID int64) ([]types.Dif
 	var symbols []types.DiffSymbolEntry
 	for rows.Next() {
 		var ds types.DiffSymbolEntry
-		rows.Scan(&ds.SymbolName, &ds.SymbolID, &ds.ChangeType, &ds.ChunkID)
+		if err := rows.Scan(&ds.SymbolName, &ds.SymbolID, &ds.ChangeType, &ds.ChunkID); err != nil {
+			return nil, fmt.Errorf("scan diff_symbol: %w", err)
+		}
 		symbols = append(symbols, ds)
 	}
 	return symbols, rows.Err()

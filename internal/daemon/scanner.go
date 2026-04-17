@@ -193,8 +193,11 @@ func ScanRepo(ctx context.Context, input ScanInput) (*ScanResult, error) {
 			return nil
 		}
 
-		// Read file for hash and size
-		content, err := os.ReadFile(absPath)
+		// Read file for hash and size.
+		// absPath has been canonicalized via EvalSymlinks and verified to lie
+		// within absRoot above; TOCTOU between that check and this read is not
+		// in the scanner's threat model (it indexes the user's own project).
+		content, err := os.ReadFile(absPath) //nolint:gosec // path canonicalized and root-checked above
 		if err != nil {
 			skipped++
 			logger.Debug("scan skip: unreadable", "path", absPath, "err", err)

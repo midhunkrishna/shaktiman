@@ -110,7 +110,7 @@ type VectorResult struct {
 }
 
 // VectorStore provides vector similarity search and storage operations.
-// Default implementation: BruteForceStore (in-memory). Alternative backends
+// Default implementation: Store (in-memory). Alternative backends
 // (HNSW, Qdrant, pgvector) implement this same interface.
 type VectorStore interface {
 	Search(ctx context.Context, query []float32, topK int) ([]VectorResult, error)
@@ -127,7 +127,7 @@ type VectorStore interface {
 }
 
 // VectorPersister is optionally implemented by vector stores that need
-// explicit disk persistence (e.g. BruteForceStore). Stores with built-in
+// explicit disk persistence (e.g. Store). Stores with built-in
 // persistence (Qdrant, HNSW) do not implement this.
 type VectorPersister interface {
 	SaveToDisk(path string) error

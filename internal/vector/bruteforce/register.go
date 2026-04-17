@@ -6,7 +6,7 @@ import (
 )
 
 func init() {
-	vector.RegisterVectorStore("brute_force", func(cfg vector.VectorStoreConfig) (types.VectorStore, error) {
-		return NewBruteForceStore(cfg.Dims), nil
+	vector.RegisterVectorStore("brute_force", func(cfg vector.StoreConfig) (types.VectorStore, error) {
+		return NewStore(cfg.Dims), nil
 	})
 }

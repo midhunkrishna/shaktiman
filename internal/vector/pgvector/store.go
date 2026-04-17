@@ -1,3 +1,6 @@
+// Package pgvector implements a vector store backed by PostgreSQL with
+// the pgvector extension, sharing the Postgres connection pool with the
+// metadata store.
 package pgvector
 
 import (
@@ -20,10 +23,10 @@ const maxBatchSize = 100
 // searchTimeout is the maximum time for a single vector search query.
 const searchTimeout = 30 * time.Second
 
-// PgVectorStore implements types.VectorStore backed by pgvector in PostgreSQL.
+// Store implements types.VectorStore backed by pgvector in PostgreSQL.
 // It borrows a *pgxpool.Pool from the Postgres MetadataStore and does NOT
 // own the pool lifecycle — Close() must not close the pool.
-type PgVectorStore struct {
+type Store struct {
 	pool      *pgxpool.Pool
 	dims      int
 	projectID int64
@@ -33,7 +36,7 @@ type PgVectorStore struct {
 }
 
 // Compile-time check.
-var _ types.VectorStore = (*PgVectorStore)(nil)
+var _ types.VectorStore = (*Store)(nil)
 
 // ValidateDimensions checks that the existing embeddings table (if any)
 // matches the expected vector dimension. Returns nil if the table doesn't
@@ -61,11 +64,11 @@ func ValidateDimensions(ctx context.Context, pool *pgxpool.Pool, expected int) e
 	return nil
 }
 
-// NewPgVectorStore creates a PgVectorStore. The embeddings table and pgvector
+// NewStore creates a Store. The embeddings table and pgvector
 // extension must already exist (created by goose migrations during MetadataStore
 // initialization). This constructor only validates dimensions.
 // projectID scopes all operations to the given project for multi-project isolation.
-func NewPgVectorStore(pool *pgxpool.Pool, dims int, projectID int64) (*PgVectorStore, error) {
+func NewStore(pool *pgxpool.Pool, dims int, projectID int64) (*Store, error) {
 	if pool == nil {
 		return nil, fmt.Errorf("pgvector: pool is nil (pgvector requires database.backend = postgres)")
 	}
@@ -74,13 +77,13 @@ func NewPgVectorStore(pool *pgxpool.Pool, dims int, projectID int64) (*PgVectorS
 		return nil, err
 	}
 
-	return &PgVectorStore{pool: pool, dims: dims, projectID: projectID}, nil
+	return &Store{pool: pool, dims: dims, projectID: projectID}, nil
 }
 
 // Search returns the topK most similar vectors by cosine similarity,
 // scoped to the current project. Over-fetches by 3x to compensate for
 // HNSW post-filtering, then trims to topK.
-func (s *PgVectorStore) Search(ctx context.Context, query []float32, topK int) ([]types.VectorResult, error) {
+func (s *Store) Search(ctx context.Context, query []float32, topK int) ([]types.VectorResult, error) {
 	if topK <= 0 {
 		return nil, nil
 	}
@@ -121,7 +124,7 @@ func (s *PgVectorStore) Search(ctx context.Context, query []float32, topK int) (
 }
 
 // Upsert inserts or replaces a single vector.
-func (s *PgVectorStore) Upsert(ctx context.Context, chunkID int64, vector []float32) error {
+func (s *Store) Upsert(ctx context.Context, chunkID int64, vector []float32) error {
 	if len(vector) != s.dims {
 		return fmt.Errorf("pgvector: vector dim %d != store dim %d", len(vector), s.dims)
 	}
@@ -137,7 +140,7 @@ func (s *PgVectorStore) Upsert(ctx context.Context, chunkID int64, vector []floa
 }
 
 // UpsertBatch inserts multiple vectors, chunked to maxBatchSize per batch.
-func (s *PgVectorStore) UpsertBatch(ctx context.Context, chunkIDs []int64, vectors [][]float32) error {
+func (s *Store) UpsertBatch(ctx context.Context, chunkIDs []int64, vectors [][]float32) error {
 	if len(chunkIDs) != len(vectors) {
 		return fmt.Errorf("pgvector: chunkIDs len %d != vectors len %d", len(chunkIDs), len(vectors))
 	}
@@ -166,7 +169,7 @@ func (s *PgVectorStore) UpsertBatch(ctx context.Context, chunkIDs []int64, vecto
 		br := s.pool.SendBatch(ctx, batch)
 		for k := 0; k < batch.Len(); k++ {
 			if _, err := br.Exec(); err != nil {
-				br.Close()
+				_ = br.Close()
 				return fmt.Errorf("pgvector upsert batch [%d:%d] item %d: %w", i, end, k, err)
 			}
 		}
@@ -178,7 +181,7 @@ func (s *PgVectorStore) UpsertBatch(ctx context.Context, chunkIDs []int64, vecto
 }
 
 // Delete removes vectors by chunk IDs, chunked to maxBatchSize.
-func (s *PgVectorStore) Delete(ctx context.Context, chunkIDs []int64) error {
+func (s *Store) Delete(ctx context.Context, chunkIDs []int64) error {
 	if len(chunkIDs) == 0 {
 		return nil
 	}
@@ -201,13 +204,13 @@ func (s *PgVectorStore) Delete(ctx context.Context, chunkIDs []int64) error {
 
 // PurgeAll deletes all embeddings for the current project.
 // Other projects sharing the same Postgres database are not affected.
-func (s *PgVectorStore) PurgeAll(ctx context.Context) error {
+func (s *Store) PurgeAll(ctx context.Context) error {
 	_, err := s.pool.Exec(ctx, "DELETE FROM embeddings WHERE project_id = $1", s.projectID)
 	return err
 }
 
 // Has returns true if a vector exists for the given chunk ID.
-func (s *PgVectorStore) Has(ctx context.Context, chunkID int64) (bool, error) {
+func (s *Store) Has(ctx context.Context, chunkID int64) (bool, error) {
 	var exists bool
 	err := s.pool.QueryRow(ctx,
 		"SELECT EXISTS(SELECT 1 FROM embeddings WHERE chunk_id = $1)",
@@ -216,7 +219,7 @@ func (s *PgVectorStore) Has(ctx context.Context, chunkID int64) (bool, error) {
 }
 
 // Count returns the exact number of stored vectors for the current project.
-func (s *PgVectorStore) Count(ctx context.Context) (int, error) {
+func (s *Store) Count(ctx context.Context) (int, error) {
 	var count int
 	err := s.pool.QueryRow(ctx, "SELECT COUNT(*) FROM embeddings WHERE project_id = $1", s.projectID).Scan(&count)
 	return count, err
@@ -224,7 +227,7 @@ func (s *PgVectorStore) Count(ctx context.Context) (int, error) {
 
 // Close marks the store as closed. Does NOT close the pool — it is shared
 // with the Postgres MetadataStore and owned by the daemon.
-func (s *PgVectorStore) Close() error {
+func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -236,7 +239,7 @@ func (s *PgVectorStore) Close() error {
 }
 
 // Healthy returns true if the Postgres pool is reachable.
-func (s *PgVectorStore) Healthy(ctx context.Context) bool {
+func (s *Store) Healthy(ctx context.Context) bool {
 	return s.pool.Ping(ctx) == nil
 }
 

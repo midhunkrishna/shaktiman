@@ -37,7 +37,7 @@ func openEngine(cfg types.Config, store types.WriterStore, root string) (*core.Q
 		return engine, nil
 	}
 
-	vs, err := vector.NewVectorStore(vector.VectorStoreConfigFrom(cfg, store))
+	vs, err := vector.NewVectorStore(vector.StoreConfigFrom(cfg, store))
 	if err != nil {
 		slog.Warn("vector store unavailable, using keyword search", "err", err)
 		return engine, nil
@@ -82,7 +82,7 @@ func searchCmd() *cobra.Command {
 		Use:   "search <query>",
 		Short: "Search indexed code by keyword or semantic query",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			cfg := types.DefaultConfig(root)
 			cfg, err := types.LoadConfigFromFile(cfg)
 			if err != nil {
@@ -93,7 +93,7 @@ func searchCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("open store: %w", err)
 			}
-			defer closer()
+			defer func() { _ = closer() }()
 			engine, _ := openEngine(cfg, store, root)
 
 			if maxResults == 0 {
@@ -181,7 +181,7 @@ func contextCmd() *cobra.Command {
 		Use:   "context <query>",
 		Short: "Assemble cross-file context for a query",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			cfg := types.DefaultConfig(root)
 			cfg, err := types.LoadConfigFromFile(cfg)
 			if err != nil {
@@ -192,7 +192,7 @@ func contextCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("open store: %w", err)
 			}
-			defer closer()
+			defer func() { _ = closer() }()
 			engine, _ := openEngine(cfg, store, root)
 
 			if budget == 0 {
@@ -240,7 +240,7 @@ func symbolsCmd() *cobra.Command {
 		Use:   "symbols <name>",
 		Short: "Look up symbols by name",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			cfg := types.DefaultConfig(root)
 			cfg, err := types.LoadConfigFromFile(cfg)
 			if err != nil {
@@ -251,7 +251,7 @@ func symbolsCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("open store: %w", err)
 			}
-			defer closer()
+			defer func() { _ = closer() }()
 
 			filter := core.ScopeToFilter(scope)
 			result, err := core.LookupSymbols(context.Background(), store, args[0], kind, filter)
@@ -303,7 +303,7 @@ func depsCmd() *cobra.Command {
 		Use:   "deps <symbol>",
 		Short: "Show callers/callees of a symbol",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			cfg := types.DefaultConfig(root)
 			cfg, err := types.LoadConfigFromFile(cfg)
 			if err != nil {
@@ -314,7 +314,7 @@ func depsCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("open store: %w", err)
 			}
-			defer closer()
+			defer func() { _ = closer() }()
 
 			dir := direction
 			switch dir {
@@ -364,7 +364,7 @@ func diffCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "diff",
 		Short: "Show recent file changes and affected symbols",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			cfg := types.DefaultConfig(root)
 			cfg, err := types.LoadConfigFromFile(cfg)
 			if err != nil {
@@ -375,7 +375,7 @@ func diffCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("open store: %w", err)
 			}
-			defer closer()
+			defer func() { _ = closer() }()
 
 			duration, err := time.ParseDuration(since)
 			if err != nil {
@@ -418,7 +418,7 @@ func enrichmentStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "enrichment-status",
 		Short: "Show indexing stats and enrichment progress",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			cfg := types.DefaultConfig(root)
 			cfg, err := types.LoadConfigFromFile(cfg)
 			if err != nil {
@@ -429,7 +429,7 @@ func enrichmentStatusCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("open store: %w", err)
 			}
-			defer closer()
+			defer func() { _ = closer() }()
 
 			_, vs := openEngine(cfg, store, root)
 
@@ -464,7 +464,7 @@ func summaryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "summary",
 		Short: "Show codebase summary: files, languages, symbols, embedding %",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			cfg := types.DefaultConfig(root)
 			cfg, err := types.LoadConfigFromFile(cfg)
 			if err != nil {
@@ -475,7 +475,7 @@ func summaryCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("open store: %w", err)
 			}
-			defer closer()
+			defer func() { _ = closer() }()
 
 			_, vs := openEngine(cfg, store, root)
 

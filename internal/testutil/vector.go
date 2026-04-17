@@ -44,7 +44,7 @@ func NewTestVectorStore(t *testing.T, dims int) types.VectorStore {
 		return nil
 	}
 
-	cfg := vector.VectorStoreConfig{
+	cfg := vector.StoreConfig{
 		Backend: backend,
 		Dims:    dims,
 	}
