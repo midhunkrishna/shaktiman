@@ -1,0 +1,16 @@
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - gosec
+    - revive
+    - gosimple
+    - ineffassign
+    - typecheck
+    - unused
+
+run:
+  timeout: 5m
+  build-tags:
+    - sqlite_fts5
