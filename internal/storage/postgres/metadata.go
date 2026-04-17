@@ -335,10 +335,18 @@ func (s *PgStore) GetFileIsTestByID(ctx context.Context, fileID int64) (bool, er
 func (s *PgStore) GetIndexStats(ctx context.Context) (*types.IndexStats, error) {
 	stats := &types.IndexStats{Languages: make(map[string]int)}
 
-	s.queryRow(ctx, "SELECT COUNT(*) FROM files WHERE project_id = $1", s.projectID).Scan(&stats.TotalFiles)
-	s.queryRow(ctx, "SELECT COUNT(*) FROM chunks WHERE file_id IN (SELECT id FROM files WHERE project_id = $1)", s.projectID).Scan(&stats.TotalChunks)
-	s.queryRow(ctx, "SELECT COUNT(*) FROM symbols WHERE file_id IN (SELECT id FROM files WHERE project_id = $1)", s.projectID).Scan(&stats.TotalSymbols)
-	s.queryRow(ctx, "SELECT COUNT(*) FROM files WHERE project_id = $1 AND parse_quality IN ('error', 'unparseable')", s.projectID).Scan(&stats.ParseErrors)
+	if err := s.queryRow(ctx, "SELECT COUNT(*) FROM files WHERE project_id = $1", s.projectID).Scan(&stats.TotalFiles); err != nil {
+		return nil, fmt.Errorf("count files: %w", err)
+	}
+	if err := s.queryRow(ctx, "SELECT COUNT(*) FROM chunks WHERE file_id IN (SELECT id FROM files WHERE project_id = $1)", s.projectID).Scan(&stats.TotalChunks); err != nil {
+		return nil, fmt.Errorf("count chunks: %w", err)
+	}
+	if err := s.queryRow(ctx, "SELECT COUNT(*) FROM symbols WHERE file_id IN (SELECT id FROM files WHERE project_id = $1)", s.projectID).Scan(&stats.TotalSymbols); err != nil {
+		return nil, fmt.Errorf("count symbols: %w", err)
+	}
+	if err := s.queryRow(ctx, "SELECT COUNT(*) FROM files WHERE project_id = $1 AND parse_quality IN ('error', 'unparseable')", s.projectID).Scan(&stats.ParseErrors); err != nil {
+		return nil, fmt.Errorf("count parse errors: %w", err)
+	}
 
 	rows, err := s.query(ctx, "SELECT language, COUNT(*) FROM files WHERE project_id = $1 AND language != '' GROUP BY language", s.projectID)
 	if err != nil {
@@ -438,20 +446,29 @@ func (s *PgStore) MarkChunksEmbedded(ctx context.Context, chunkIDs []int64) erro
 		var fileIDs []int64
 		for rows.Next() {
 			var fid int64
-			rows.Scan(&fid)
+			if err := rows.Scan(&fid); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan file id: %w", err)
+			}
 			fileIDs = append(fileIDs, fid)
 		}
 		rows.Close()
 
 		for _, fid := range fileIDs {
 			var remaining int
-			tx.QueryRow(ctx,
+			if err := tx.QueryRow(ctx,
 				"SELECT COUNT(*) FROM chunks WHERE file_id = $1 AND embedded = 0", fid,
-			).Scan(&remaining)
+			).Scan(&remaining); err != nil {
+				return fmt.Errorf("count remaining embeddings for file %d: %w", fid, err)
+			}
 			if remaining == 0 {
-				tx.Exec(ctx, "UPDATE files SET embedding_status = 'complete' WHERE id = $1", fid)
+				if _, err := tx.Exec(ctx, "UPDATE files SET embedding_status = 'complete' WHERE id = $1", fid); err != nil {
+					return fmt.Errorf("mark file %d embedding complete: %w", fid, err)
+				}
 			} else {
-				tx.Exec(ctx, "UPDATE files SET embedding_status = 'partial' WHERE id = $1 AND embedding_status != 'complete'", fid)
+				if _, err := tx.Exec(ctx, "UPDATE files SET embedding_status = 'partial' WHERE id = $1 AND embedding_status != 'complete'", fid); err != nil {
+					return fmt.Errorf("mark file %d embedding partial: %w", fid, err)
+				}
 			}
 		}
 		return nil
@@ -479,12 +496,16 @@ func (s *PgStore) CountChunksEmbedded(ctx context.Context) (int, error) {
 func (s *PgStore) ResetAllEmbeddedFlags(ctx context.Context) error {
 	return s.WithWriteTx(ctx, func(txh types.TxHandle) error {
 		tx := txh.(PgTxHandle).Tx
-		tx.Exec(ctx,
+		if _, err := tx.Exec(ctx,
 			`UPDATE chunks SET embedded = 0
-			 WHERE embedded = 1 AND file_id IN (SELECT id FROM files WHERE project_id = $1)`, s.projectID)
-		tx.Exec(ctx,
+			 WHERE embedded = 1 AND file_id IN (SELECT id FROM files WHERE project_id = $1)`, s.projectID); err != nil {
+			return fmt.Errorf("reset chunk embedded flags: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
 			`UPDATE files SET embedding_status = 'pending'
-			 WHERE project_id = $1 AND embedding_status != 'pending'`, s.projectID)
+			 WHERE project_id = $1 AND embedding_status != 'pending'`, s.projectID); err != nil {
+			return fmt.Errorf("reset file embedding_status: %w", err)
+		}
 		return nil
 	})
 }
@@ -504,7 +525,9 @@ func (s *PgStore) GetEmbeddedChunkIDs(ctx context.Context, afterID int64, limit 
 	var ids []int64
 	for rows.Next() {
 		var id int64
-		rows.Scan(&id)
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan embedded chunk id: %w", err)
+		}
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
@@ -516,7 +539,9 @@ func (s *PgStore) ResetEmbeddedFlags(ctx context.Context, chunkIDs []int64) erro
 	}
 	return s.WithWriteTx(ctx, func(txh types.TxHandle) error {
 		tx := txh.(PgTxHandle).Tx
-		tx.Exec(ctx, "UPDATE chunks SET embedded = 0 WHERE id = ANY($1)", chunkIDs)
+		if _, err := tx.Exec(ctx, "UPDATE chunks SET embedded = 0 WHERE id = ANY($1)", chunkIDs); err != nil {
+			return fmt.Errorf("reset embedded flags: %w", err)
+		}
 
 		rows, err := tx.Query(ctx, "SELECT DISTINCT file_id FROM chunks WHERE id = ANY($1)", chunkIDs)
 		if err != nil {
@@ -525,19 +550,26 @@ func (s *PgStore) ResetEmbeddedFlags(ctx context.Context, chunkIDs []int64) erro
 		var fileIDs []int64
 		for rows.Next() {
 			var fid int64
-			rows.Scan(&fid)
+			if err := rows.Scan(&fid); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan file id: %w", err)
+			}
 			fileIDs = append(fileIDs, fid)
 		}
 		rows.Close()
 
 		for _, fid := range fileIDs {
 			var embCount int
-			tx.QueryRow(ctx, "SELECT COUNT(*) FROM chunks WHERE file_id = $1 AND embedded = 1", fid).Scan(&embCount)
+			if err := tx.QueryRow(ctx, "SELECT COUNT(*) FROM chunks WHERE file_id = $1 AND embedded = 1", fid).Scan(&embCount); err != nil {
+				return fmt.Errorf("count embedded chunks for file %d: %w", fid, err)
+			}
 			status := "pending"
 			if embCount > 0 {
 				status = "partial"
 			}
-			tx.Exec(ctx, "UPDATE files SET embedding_status = $1 WHERE id = $2", status, fid)
+			if _, err := tx.Exec(ctx, "UPDATE files SET embedding_status = $1 WHERE id = $2", status, fid); err != nil {
+				return fmt.Errorf("set embedding_status for file %d: %w", fid, err)
+			}
 		}
 		return nil
 	})
@@ -612,7 +644,9 @@ func (s *PgStore) BatchGetSymbolIDsForChunks(ctx context.Context, chunkIDs []int
 	defer rows.Close()
 	for rows.Next() {
 		var chunkID, symID int64
-		rows.Scan(&chunkID, &symID)
+		if err := rows.Scan(&chunkID, &symID); err != nil {
+			return nil, fmt.Errorf("scan chunk→symbol id: %w", err)
+		}
 		if _, exists := result[chunkID]; !exists {
 			result[chunkID] = symID
 		}
@@ -642,7 +676,9 @@ func (s *PgStore) BatchGetChunkIDsForSymbols(ctx context.Context, symbolIDs []in
 	defer rows.Close()
 	for rows.Next() {
 		var symID, chunkID int64
-		rows.Scan(&symID, &chunkID)
+		if err := rows.Scan(&symID, &chunkID); err != nil {
+			return nil, fmt.Errorf("scan symbol→chunk id: %w", err)
+		}
 		result[symID] = chunkID
 	}
 	return result, rows.Err()
@@ -723,7 +759,9 @@ func (s *PgStore) BatchGetFileHashes(ctx context.Context, paths []string) (map[s
 	defer rows.Close()
 	for rows.Next() {
 		var path, hash string
-		rows.Scan(&path, &hash)
+		if err := rows.Scan(&path, &hash); err != nil {
+			return nil, fmt.Errorf("scan file path/hash: %w", err)
+		}
 		result[path] = hash
 	}
 	return result, rows.Err()
@@ -828,7 +866,7 @@ func (s *PgStore) RecordToolCalls(ctx context.Context, records []types.ToolCallR
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	for _, rec := range records {
 		if _, err := tx.Exec(ctx, `

@@ -169,7 +169,7 @@ func (s *Store) UpsertBatch(ctx context.Context, chunkIDs []int64, vectors [][]f
 		br := s.pool.SendBatch(ctx, batch)
 		for k := 0; k < batch.Len(); k++ {
 			if _, err := br.Exec(); err != nil {
-				br.Close()
+				_ = br.Close()
 				return fmt.Errorf("pgvector upsert batch [%d:%d] item %d: %w", i, end, k, err)
 			}
 		}

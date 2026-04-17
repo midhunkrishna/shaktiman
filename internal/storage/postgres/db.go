@@ -75,7 +75,7 @@ func (s *PgStore) WithWriteTx(ctx context.Context, fn func(tx types.TxHandle) er
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	if err := fn(PgTxHandle{Tx: tx}); err != nil {
-		tx.Rollback(ctx)
+		_ = tx.Rollback(ctx)
 		return err
 	}
 	return tx.Commit(ctx)
@@ -116,9 +116,11 @@ func (s *PgStore) EnsureProject(ctx context.Context, projectRoot string) error {
 
 	// First-run: claim the default project if it still holds the placeholder path.
 	// This is idempotent — only the first daemon claims it, others get affected=0.
-	s.pool.Exec(ctx,
+	if _, err := s.pool.Exec(ctx,
 		`UPDATE projects SET root_path = $1, name = $2 WHERE id = 1 AND root_path = '__default__'`,
-		resolved, name)
+		resolved, name); err != nil {
+		return fmt.Errorf("claim default project row: %w", err)
+	}
 
 	// Try insert; ON CONFLICT DO NOTHING avoids errors on concurrent starts.
 	var id int64

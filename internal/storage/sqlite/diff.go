@@ -44,7 +44,7 @@ func (s *Store) InsertDiffSymbols(ctx context.Context, txh types.TxHandle, diffI
 	if err != nil {
 		return fmt.Errorf("prepare diff_symbols insert: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	for _, ds := range symbols {
 		symID := sql.NullInt64{Int64: ds.SymbolID, Valid: ds.SymbolID != 0}
@@ -85,7 +85,7 @@ func (s *Store) GetRecentDiffs(ctx context.Context, input RecentDiffsInput) ([]D
 	if err != nil {
 		return nil, fmt.Errorf("get recent diffs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var diffs []DiffLogEntry
 	for rows.Next() {
@@ -110,7 +110,7 @@ func (s *Store) GetDiffSymbols(ctx context.Context, diffID int64) ([]DiffSymbolE
 	if err != nil {
 		return nil, fmt.Errorf("get diff symbols: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var symbols []DiffSymbolEntry
 	for rows.Next() {
@@ -162,7 +162,7 @@ func (s *Store) ComputeChangeScores(ctx context.Context, chunkIDs []int64) (map[
 	if err != nil {
 		return nil, fmt.Errorf("batch symbol-level change scores: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var chunkID int64
@@ -203,7 +203,7 @@ func (s *Store) ComputeChangeScores(ctx context.Context, chunkIDs []int64) (map[
 		if err != nil {
 			return nil, fmt.Errorf("batch file-level change scores: %w", err)
 		}
-		defer rows2.Close()
+		defer func() { _ = rows2.Close() }()
 
 		for rows2.Next() {
 			var chunkID int64

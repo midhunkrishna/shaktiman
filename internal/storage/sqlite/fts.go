@@ -34,7 +34,7 @@ func (s *Store) KeywordSearch(ctx context.Context, query string, limit int) ([]F
 	if err != nil {
 		return nil, fmt.Errorf("FTS5 search %q: %w", query, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []FTSResult
 	for rows.Next() {

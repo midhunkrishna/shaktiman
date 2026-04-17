@@ -93,7 +93,7 @@ func searchCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("open store: %w", err)
 			}
-			defer closer()
+			defer func() { _ = closer() }()
 			engine, _ := openEngine(cfg, store, root)
 
 			if maxResults == 0 {
@@ -192,7 +192,7 @@ func contextCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("open store: %w", err)
 			}
-			defer closer()
+			defer func() { _ = closer() }()
 			engine, _ := openEngine(cfg, store, root)
 
 			if budget == 0 {
@@ -251,7 +251,7 @@ func symbolsCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("open store: %w", err)
 			}
-			defer closer()
+			defer func() { _ = closer() }()
 
 			filter := core.ScopeToFilter(scope)
 			result, err := core.LookupSymbols(context.Background(), store, args[0], kind, filter)
@@ -314,7 +314,7 @@ func depsCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("open store: %w", err)
 			}
-			defer closer()
+			defer func() { _ = closer() }()
 
 			dir := direction
 			switch dir {
@@ -375,7 +375,7 @@ func diffCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("open store: %w", err)
 			}
-			defer closer()
+			defer func() { _ = closer() }()
 
 			duration, err := time.ParseDuration(since)
 			if err != nil {
@@ -429,7 +429,7 @@ func enrichmentStatusCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("open store: %w", err)
 			}
-			defer closer()
+			defer func() { _ = closer() }()
 
 			_, vs := openEngine(cfg, store, root)
 
@@ -475,7 +475,7 @@ func summaryCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("open store: %w", err)
 			}
-			defer closer()
+			defer func() { _ = closer() }()
 
 			_, vs := openEngine(cfg, store, root)
 

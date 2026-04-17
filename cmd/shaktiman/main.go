@@ -242,7 +242,7 @@ func indexCmd() *cobra.Command {
 				}
 				return fmt.Errorf("check daemon lock: %w", lockErr)
 			}
-			defer lock.Release()
+			defer func() { _ = lock.Release() }()
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
@@ -251,7 +251,7 @@ func indexCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("init: %w", err)
 			}
-			defer d.Stop()
+			defer func() { _ = d.Stop() }()
 
 			return runIndexPipeline(ctx, d, cfg, embed)
 		},
@@ -287,7 +287,7 @@ func reindexCmd() *cobra.Command {
 				}
 				fmt.Fprint(os.Stderr, "This will delete ALL indexed data and reindex from scratch. Continue? [y/N] ")
 				var answer string
-				fmt.Scanln(&answer)
+				_, _ = fmt.Scanln(&answer)
 				if answer != "y" && answer != "Y" {
 					fmt.Fprintln(os.Stderr, "Aborted.")
 					return nil
@@ -303,7 +303,7 @@ func reindexCmd() *cobra.Command {
 				}
 				return fmt.Errorf("check daemon lock: %w", lockErr)
 			}
-			defer lock.Release()
+			defer func() { _ = lock.Release() }()
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
@@ -314,10 +314,14 @@ func reindexCmd() *cobra.Command {
 				return fmt.Errorf("open backends for purge: %w", err)
 			}
 			if err := backends.PurgeBackends(ctx, b.Store, b.VectorStore); err != nil {
-				b.Close()
+				if cerr := b.Close(); cerr != nil {
+					slog.Warn("close backends after purge error", "err", cerr)
+				}
 				return fmt.Errorf("purge: %w", err)
 			}
-			b.Close()
+			if err := b.Close(); err != nil {
+				slog.Warn("close backends after purge", "err", err)
+			}
 
 			// Phase 2: Delete local files (SQLite DB, vector persistence).
 			if err := backends.PurgeFiles(cfg); err != nil {
@@ -331,7 +335,7 @@ func reindexCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("init for reindex: %w", err)
 			}
-			defer d.Stop()
+			defer func() { _ = d.Stop() }()
 
 			return runIndexPipeline(ctx, d, cfg, embed)
 		},
@@ -367,7 +371,7 @@ func statusCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("open store: %w", err)
 			}
-			defer closer()
+			defer func() { _ = closer() }()
 			ctx := context.Background()
 
 			stats, err := store.GetIndexStats(ctx)

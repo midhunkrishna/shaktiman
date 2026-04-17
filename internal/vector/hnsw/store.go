@@ -208,7 +208,7 @@ func (s *Store) SaveToDisk(path string) error {
 	}
 
 	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("atomic rename: %w", err)
 	}
 

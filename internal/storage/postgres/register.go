@@ -4,6 +4,7 @@ package postgres
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/shaktimanai/shaktiman/internal/storage"
 	"github.com/shaktimanai/shaktiman/internal/types"
@@ -22,7 +23,9 @@ func init() {
 			dims = 768 // default
 		}
 		if err := RunMigrations(ctx, store.Pool(), dims); err != nil {
-			store.Close()
+			if cerr := store.Close(); cerr != nil {
+				slog.Warn("close postgres store after migration error", "err", cerr)
+			}
 			return nil, nil, nil, err
 		}
 
@@ -32,7 +35,9 @@ func init() {
 		// store remains usable in single-project / backward-compat setups.
 		if cfg.ProjectRoot != "" {
 			if err := store.EnsureProject(ctx, cfg.ProjectRoot); err != nil {
-				store.Close()
+				if cerr := store.Close(); cerr != nil {
+					slog.Warn("close postgres store after project register error", "err", cerr)
+				}
 				return nil, nil, nil, err
 			}
 		} else {

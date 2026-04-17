@@ -52,6 +52,21 @@ linters:
         linters:
           - errcheck
           - gosec
+      # test-helper packages (consumed by _test.go files): apply the same
+      # relaxation as tests — errcheck/gosec on setup-style helpers adds
+      # noise without catching real bugs.
+      - path: internal/storage/storetest/
+        linters:
+          - errcheck
+          - gosec
+      - path: internal/vector/vectortest/
+        linters:
+          - errcheck
+          - gosec
+      - path: internal/testutil/
+        linters:
+          - errcheck
+          - gosec
       - path: _test\.go
         linters:
           - revive

@@ -203,7 +203,7 @@ func (s *Store) SaveToDisk(path string) error {
 		return fmt.Errorf("create temp file: %w", err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // clean up on failure
+	defer func() { _ = os.Remove(tmpName) }() // clean up on failure
 
 	bw := bufio.NewWriterSize(tmp, 1<<20) // 1MB buffer
 	h := crc32.NewIEEE()
@@ -216,7 +216,7 @@ func (s *Store) SaveToDisk(path string) error {
 	binary.LittleEndian.PutUint32(hdr[8:12], uint32(dim))
 	binary.LittleEndian.PutUint32(hdr[12:16], uint32(len(snapshot)))
 	if _, err := w.Write(hdr[:]); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("write header: %w", err)
 	}
 
@@ -228,19 +228,19 @@ func (s *Store) SaveToDisk(path string) error {
 			binary.LittleEndian.PutUint32(entryBuf[8+j*4:], math.Float32bits(v))
 		}
 		if _, err := w.Write(entryBuf); err != nil {
-			tmp.Close()
+			_ = tmp.Close()
 			return fmt.Errorf("write entry: %w", err)
 		}
 	}
 
 	// CRC32 footer (written only to buffer, not hasher)
 	if err := binary.Write(bw, binary.LittleEndian, h.Sum32()); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("write crc32: %w", err)
 	}
 
 	if err := bw.Flush(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("flush: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
@@ -273,7 +273,7 @@ func (s *Store) LoadFromDisk(path string) error {
 		}
 		return fmt.Errorf("open embeddings file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	br := bufio.NewReader(f)
 	h := crc32.NewIEEE()

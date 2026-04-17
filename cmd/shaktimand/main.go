@@ -63,7 +63,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: acquire daemon lock: %v\n", lockErr)
 		os.Exit(1)
 	}
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 
 	// Leader: rotate previous log, then create a fresh one.
 	setupLogging(logPath, true)
@@ -87,8 +87,8 @@ func main() {
 		slog.Error("failed to create socket listener", "err", err)
 		os.Exit(1)
 	}
-	defer os.Remove(lock.SocketPath())
-	defer socketListener.Close()
+	defer func() { _ = os.Remove(lock.SocketPath()) }()
+	defer func() { _ = socketListener.Close() }()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()

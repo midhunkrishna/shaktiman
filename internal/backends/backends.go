@@ -62,7 +62,9 @@ func OpenMetadataOnly(cfg types.Config) (*Backends, error) {
 // Safe to call on partially initialized Backends.
 func (b *Backends) Close() error {
 	if b.VectorStore != nil {
-		b.VectorStore.Close()
+		if err := b.VectorStore.Close(); err != nil {
+			slog.Warn("close vector store", "err", err)
+		}
 	}
 	if b.dbCloser != nil {
 		return b.dbCloser()

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -60,7 +61,9 @@ func Open(input OpenInput) (*DB, error) {
 
 	reader, err := openReader(path, input.InMemory)
 	if err != nil {
-		writer.Close()
+		if cerr := writer.Close(); cerr != nil {
+			slog.Warn("close sqlite writer after reader init error", "err", cerr)
+		}
 		return nil, fmt.Errorf("open reader: %w", err)
 	}
 
@@ -82,7 +85,9 @@ func openWriter(path string, inMemory bool) (*sql.DB, error) {
 	db.SetMaxIdleConns(1)
 
 	if _, err := db.Exec("PRAGMA cache_size = -8000"); err != nil {
-		db.Close()
+		if cerr := db.Close(); cerr != nil {
+			slog.Warn("close sqlite writer after pragma error", "err", cerr)
+		}
 		return nil, fmt.Errorf("set writer cache_size: %w", err)
 	}
 
@@ -94,7 +99,9 @@ func openWriter(path string, inMemory bool) (*sql.DB, error) {
 			"PRAGMA foreign_keys = ON",
 		} {
 			if _, err := db.Exec(pragma); err != nil {
-				db.Close()
+				if cerr := db.Close(); cerr != nil {
+					slog.Warn("close sqlite writer after pragma error", "err", cerr)
+				}
 				return nil, fmt.Errorf("set writer %s: %w", pragma, err)
 			}
 		}
@@ -120,12 +127,16 @@ func openReader(path string, inMemory bool) (*sql.DB, error) {
 
 	// Increase reader page cache for large indexes (32MB vs SQLite default 2MB)
 	if _, err := db.Exec("PRAGMA cache_size = -32000"); err != nil {
-		db.Close()
+		if cerr := db.Close(); cerr != nil {
+			slog.Warn("close sqlite reader after pragma error", "err", cerr)
+		}
 		return nil, fmt.Errorf("set reader cache_size: %w", err)
 	}
 	// Enable memory-mapped I/O for reads (256MB)
 	if _, err := db.Exec("PRAGMA mmap_size = 268435456"); err != nil {
-		db.Close()
+		if cerr := db.Close(); cerr != nil {
+			slog.Warn("close sqlite reader after pragma error", "err", cerr)
+		}
 		return nil, fmt.Errorf("set reader mmap_size: %w", err)
 	}
 
@@ -153,7 +164,7 @@ func (db *DB) WithWriteTx(fn func(tx *sql.Tx) error) error {
 		return fmt.Errorf("begin write tx: %w", err)
 	}
 	if err := fn(tx); err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		return err
 	}
 	return tx.Commit()

@@ -110,7 +110,7 @@ func (s *Store) ListFiles(ctx context.Context) ([]types.FileRecord, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list files: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var files []types.FileRecord
 	for rows.Next() {
@@ -162,7 +162,7 @@ func (s *Store) GetEmbeddedChunkIDsByFile(ctx context.Context, fileID int64) ([]
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var ids []int64
 	for rows.Next() {
 		var id int64
@@ -184,7 +184,7 @@ func (s *Store) UpdateChunkParents(ctx context.Context, updates map[int64]int64)
 		if err != nil {
 			return err
 		}
-		defer stmt.Close()
+		defer func() { _ = stmt.Close() }()
 		for chunkID, parentID := range updates {
 			if _, err := stmt.ExecContext(ctx, parentID, chunkID); err != nil {
 				return err
@@ -208,7 +208,7 @@ func (s *Store) InsertChunks(ctx context.Context, fileID int64, chunks []types.C
 		if err != nil {
 			return fmt.Errorf("prepare chunk insert: %w", err)
 		}
-		defer stmt.Close()
+		defer func() { _ = stmt.Close() }()
 
 		for i, c := range chunks {
 			res, err := stmt.ExecContext(ctx,
@@ -247,7 +247,7 @@ func (s *Store) GetChunksByFile(ctx context.Context, fileID int64) ([]types.Chun
 	if err != nil {
 		return nil, fmt.Errorf("get chunks for file %d: %w", fileID, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanChunks(rows)
 }
 
@@ -290,7 +290,7 @@ func (s *Store) GetSiblingChunks(ctx context.Context, fileID int64, symbolName s
 	if err != nil {
 		return nil, fmt.Errorf("get sibling chunks file=%d sym=%s kind=%s: %w", fileID, symbolName, kind, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanChunks(rows)
 }
 
@@ -318,7 +318,7 @@ func (s *Store) InsertSymbols(ctx context.Context, fileID int64, symbols []types
 		if err != nil {
 			return fmt.Errorf("prepare symbol insert: %w", err)
 		}
-		defer stmt.Close()
+		defer func() { _ = stmt.Close() }()
 
 		for i, sym := range symbols {
 			exported := 0
@@ -347,7 +347,7 @@ func (s *Store) GetSymbolsByFile(ctx context.Context, fileID int64) ([]types.Sym
 	if err != nil {
 		return nil, fmt.Errorf("get symbols for file %d: %w", fileID, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanSymbols(rows)
 }
 
@@ -360,7 +360,7 @@ func (s *Store) GetSymbolByName(ctx context.Context, name string) ([]types.Symbo
 	if err != nil {
 		return nil, fmt.Errorf("get symbols named %s: %w", name, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanSymbols(rows)
 }
 
@@ -445,7 +445,7 @@ func (s *Store) GetIndexStats(ctx context.Context) (*types.IndexStats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("count languages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var lang string
 		var count int
@@ -477,7 +477,7 @@ func (s *Store) GetChunksNeedingEmbedding(ctx context.Context, _ VectorCounter) 
 	if err != nil {
 		return nil, fmt.Errorf("query chunks for embedding: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var jobs []EmbedJobRecord
 	for rows.Next() {
@@ -505,7 +505,7 @@ func (s *Store) GetEmbedPage(ctx context.Context, afterID int64, limit int) ([]t
 	if err != nil {
 		return nil, fmt.Errorf("get embed page: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var jobs []types.EmbedJob
 	for rows.Next() {
@@ -563,7 +563,7 @@ func (s *Store) GetEmbeddedChunkIDs(ctx context.Context, afterID int64, limit in
 	if err != nil {
 		return nil, fmt.Errorf("get embedded chunk IDs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var ids []int64
 	for rows.Next() {
@@ -617,12 +617,12 @@ func (s *Store) ResetEmbeddedFlags(ctx context.Context, chunkIDs []int64) error 
 			for rows.Next() {
 				var fid int64
 				if err := rows.Scan(&fid); err != nil {
-					rows.Close()
+					_ = rows.Close()
 					return fmt.Errorf("scan file ID: %w", err)
 				}
 				fileIDs = append(fileIDs, fid)
 			}
-			rows.Close()
+			_ = rows.Close()
 			if err := rows.Err(); err != nil {
 				return fmt.Errorf("iterate file IDs: %w", err)
 			}
@@ -693,12 +693,12 @@ func (s *Store) MarkChunksEmbedded(ctx context.Context, chunkIDs []int64) error 
 			for rows.Next() {
 				var fid int64
 				if err := rows.Scan(&fid); err != nil {
-					rows.Close()
+					_ = rows.Close()
 					return fmt.Errorf("scan file ID: %w", err)
 				}
 				fileIDs = append(fileIDs, fid)
 			}
-			rows.Close()
+			_ = rows.Close()
 			if err := rows.Err(); err != nil {
 				return fmt.Errorf("iterate file IDs: %w", err)
 			}
@@ -853,7 +853,7 @@ func (s *Store) BatchGetSymbolIDsForChunks(ctx context.Context, chunkIDs []int64
 			var symbolName string
 			var symID, symFileID int64
 			if err := rows.Scan(&chunkID, &fileID, &symbolName, &symID, &symFileID); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, fmt.Errorf("scan symbol ID: %w", err)
 			}
 			// ORDER BY ensures same-file match comes first; keep only the first per chunk.
@@ -861,7 +861,7 @@ func (s *Store) BatchGetSymbolIDsForChunks(ctx context.Context, chunkIDs []int64
 				result[chunkID] = symID
 			}
 		}
-		rows.Close()
+		_ = rows.Close()
 		if err := rows.Err(); err != nil {
 			return nil, err
 		}
@@ -902,12 +902,12 @@ func (s *Store) BatchGetChunkIDsForSymbols(ctx context.Context, symbolIDs []int6
 		for rows.Next() {
 			var symID, chunkID int64
 			if err := rows.Scan(&symID, &chunkID); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, fmt.Errorf("scan chunk ID: %w", err)
 			}
 			result[symID] = chunkID
 		}
-		rows.Close()
+		_ = rows.Close()
 		if err := rows.Err(); err != nil {
 			return nil, err
 		}
@@ -949,13 +949,13 @@ func (s *Store) BatchHydrateChunks(ctx context.Context, chunkIDs []int64) ([]typ
 				&h.StartLine, &h.EndLine, &h.Content, &h.TokenCount,
 				&h.Path, &isTest,
 			); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, fmt.Errorf("scan hydrated chunk: %w", err)
 			}
 			h.IsTest = isTest != 0
 			results = append(results, h)
 		}
-		rows.Close()
+		_ = rows.Close()
 		if err := rows.Err(); err != nil {
 			return nil, err
 		}
@@ -988,13 +988,13 @@ func (s *Store) BatchGetSiblingChunks(ctx context.Context, keys []types.SiblingK
 				&h.StartLine, &h.EndLine, &h.Content, &h.TokenCount,
 				&h.Path, &isTest,
 			); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, fmt.Errorf("scan sibling chunk: %w", err)
 			}
 			h.IsTest = isTest != 0
 			chunks = append(chunks, h)
 		}
-		rows.Close()
+		_ = rows.Close()
 		if err := rows.Err(); err != nil {
 			return nil, err
 		}
@@ -1024,12 +1024,12 @@ func (s *Store) BatchGetFileHashes(ctx context.Context, paths []string) (map[str
 		for rows.Next() {
 			var path, hash string
 			if err := rows.Scan(&path, &hash); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, fmt.Errorf("scan file hash: %w", err)
 			}
 			result[path] = hash
 		}
-		rows.Close()
+		_ = rows.Close()
 		if err := rows.Err(); err != nil {
 			return nil, err
 		}
@@ -1050,7 +1050,7 @@ func (s *Store) RecordToolCalls(ctx context.Context, records []types.ToolCallRec
 		if err != nil {
 			return fmt.Errorf("prepare tool_calls insert: %w", err)
 		}
-		defer stmt.Close()
+		defer func() { _ = stmt.Close() }()
 
 		for _, rec := range records {
 			isErr := 0

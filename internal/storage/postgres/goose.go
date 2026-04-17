@@ -5,6 +5,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -23,7 +24,9 @@ func NewGooseProvider(connConfig *pgxpool.Config, dims int) (*goose.Provider, er
 		goose.WithGoMigrations(pgmigrations.GoMigrations(dims)...),
 	)
 	if err != nil {
-		db.Close()
+		if cerr := db.Close(); cerr != nil {
+			slog.Warn("close goose db after provider init error", "err", cerr)
+		}
 		return nil, fmt.Errorf("create goose provider: %w", err)
 	}
 	return provider, nil
