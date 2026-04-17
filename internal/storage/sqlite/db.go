@@ -49,7 +49,7 @@ func Open(input OpenInput) (*DB, error) {
 		path = fmt.Sprintf("file:inmem_%d?mode=memory&cache=shared", id)
 	} else {
 		dir := filepath.Dir(path)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return nil, fmt.Errorf("create db directory %s: %w", dir, err)
 		}
 	}

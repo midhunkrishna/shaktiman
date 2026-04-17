@@ -226,7 +226,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 		httpHandler := mcpserver.NewStreamableHTTPServer(s)
 		mux := http.NewServeMux()
 		mux.Handle("/mcp", httpHandler)
-		d.socketServer = &http.Server{Handler: mux}
+		d.socketServer = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 		go func() {
 			d.logger.Info("MCP socket server starting", "addr", d.SocketListener.Addr().String())
 			if err := d.socketServer.Serve(d.SocketListener); err != nil && err != http.ErrServerClosed {

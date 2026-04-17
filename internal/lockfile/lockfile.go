@@ -34,7 +34,7 @@ func Acquire(projectRoot string) (*Lock, error) {
 	}
 
 	dir := filepath.Join(canonical, ".shaktiman")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("create .shaktiman dir: %w", err)
 	}
 
