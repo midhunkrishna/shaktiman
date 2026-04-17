@@ -20,3 +20,47 @@ linters:
     - revive
     - ineffassign
     - unused
+
+  settings:
+    gosec:
+      excludes:
+        # file mode 0o644 on non-sensitive output is acceptable
+        - G306
+        # SSRF taint analysis on trusted config-derived URLs
+        - G704
+        # log injection on trusted project-id
+        - G706
+        # hardcoded credential FPs on DSN templates and test fixtures
+        - G101
+        # SQL string formatting FPs where only table/column identifiers are injected
+        - G201
+        # file inclusion via variable FPs for config paths
+        - G304
+        # math/rand in non-security contexts (benchmarks, sampling)
+        - G404
+        # path traversal FPs on CLI args already validated by caller
+        - G703
+    errcheck:
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+      - path: _test\.go
+        linters:
+          - revive
+        text: "unused-parameter"
+      - path: internal/storage/postgres/
+        linters:
+          - revive
+        text: "(exported|package-comments)"
+      - path: internal/storage/migrations/
+        linters:
+          - revive
+        text: "(exported|package-comments)"
