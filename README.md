@@ -22,7 +22,7 @@ Shaktiman indexes your codebase and exposes MCP tools (search, symbols, dependen
 ## Quick Start
 
 ```bash
-git clone https://github.com/shaktimanai/shaktiman.git
+git clone git@github.com:midhunkrishna/shaktiman.git
 cd shaktiman
 go build -tags "sqlite_fts5 sqlite bruteforce hnsw" -o shaktimand ./cmd/shaktimand
 ```
