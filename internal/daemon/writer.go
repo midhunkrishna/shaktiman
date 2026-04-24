@@ -315,15 +315,21 @@ func processEnrichmentJob(ctx context.Context, store types.WriterStore, logger *
 		}
 	}
 
-	// Insert symbols with resolved chunk IDs, track name->ID mapping for edges
-	symRecords := make([]types.SymbolRecord, len(job.Symbols))
+	// Insert symbols with resolved chunk IDs, track name->ID mapping for edges.
+	// findContainingChunk returns -1 for symbols whose line doesn't fall
+	// inside any chunk. Previously these were silently mis-attributed to
+	// chunk 0 (often the file header). Skip them here and record only the
+	// valid ones; emit a Debug log so the count is observable under load.
+	symRecords := make([]types.SymbolRecord, 0, len(job.Symbols))
+	validSymIdx := make([]int, 0, len(job.Symbols)) // parser-side index for each accepted record
+	var orphanCount int
 	for i, sym := range job.Symbols {
-		chunkID := int64(0)
-		if int(sym.ChunkID) < len(chunkIDs) {
-			chunkID = chunkIDs[sym.ChunkID]
+		if sym.ChunkID < 0 || int(sym.ChunkID) >= len(chunkIDs) {
+			orphanCount++
+			continue
 		}
-		symRecords[i] = types.SymbolRecord{
-			ChunkID:       chunkID,
+		symRecords = append(symRecords, types.SymbolRecord{
+			ChunkID:       chunkIDs[sym.ChunkID],
 			Name:          sym.Name,
 			QualifiedName: sym.QualifiedName,
 			Kind:          sym.Kind,
@@ -331,16 +337,22 @@ func processEnrichmentJob(ctx context.Context, store types.WriterStore, logger *
 			Signature:     sym.Signature,
 			Visibility:    sym.Visibility,
 			IsExported:    sym.IsExported,
-		}
+		})
+		validSymIdx = append(validSymIdx, i)
+	}
+	if orphanCount > 0 {
+		slog.Debug("orphan symbols skipped (no containing chunk)",
+			"file", job.FilePath, "count", orphanCount, "total", len(job.Symbols))
 	}
 	symIDs, err := store.InsertSymbols(ctx, fileID, symRecords)
 	if err != nil {
 		return nil, fmt.Errorf("insert symbols for %s: %w", job.FilePath, err)
 	}
 
-	symbolIDs := make(map[string]int64, len(job.Symbols))
+	symbolIDs := make(map[string]int64, len(symRecords))
 	var newSymbolNames []string
-	for i, sym := range job.Symbols {
+	for i := range symRecords {
+		sym := job.Symbols[validSymIdx[i]]
 		// Keep the first symbol ID for each name. Duplicates (e.g. Java
 		// method overloads) would overwrite, potentially pointing edges
 		// at the wrong overload.

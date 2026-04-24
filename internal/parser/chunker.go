@@ -17,6 +17,14 @@ const minChunkTokens = 20
 // maxChunkDepth prevents unbounded recursion on pathological ASTs.
 const maxChunkDepth = 10
 
+// maxASTDepth bounds traversal through non-chunkable structural nodes
+// (block, body_statement, declaration_list, class_body, etc.) inside
+// findChunkableChildren. The chunkable-depth guard only fires when
+// chunkNode is called, so pathologically-nested structural chains
+// between chunkables could drive the Go stack into overflow. 200 is
+// comfortably above any realistic code nesting.
+const maxASTDepth = 200
+
 // ChunkAlgorithmVersion identifies the current chunking algorithm. Bump this
 // whenever chunk boundaries, signature format, or traversal semantics change
 // in a way that would make previously indexed chunks incompatible or
@@ -198,7 +206,7 @@ func (p *Parser) chunkNode(node *tree_sitter.Node, source []byte, cfg *LanguageC
 
 	// Node exceeds maxChunkTokens — try to decompose via chunkable descendants.
 	var extracted []types.ChunkRecord
-	p.findChunkableChildren(node, source, cfg, depth, &extracted)
+	p.findChunkableChildren(node, source, cfg, depth, 0, &extracted)
 
 	if len(extracted) > 0 {
 		// Parent becomes a signature chunk
@@ -233,7 +241,20 @@ func (p *Parser) chunkNode(node *tree_sitter.Node, source []byte, cfg *LanguageC
 // descendants) to find chunkable nodes. This traverses through non-chunkable
 // structural nodes (body_statement, block, declaration_list, class_body, etc.)
 // to reach the chunkable leaves.
-func (p *Parser) findChunkableChildren(node *tree_sitter.Node, source []byte, cfg *LanguageConfig, depth int, extracted *[]types.ChunkRecord) {
+//
+// chunkDepth is the chunkable-container depth passed through to chunkNode on
+// a match (bounded by maxChunkDepth). astDepth is the raw recursion depth
+// through structural nodes and is independent of chunkable depth — it
+// protects against pathologically-nested ASTs that would otherwise overflow
+// the Go stack via this function's structural recursion.
+func (p *Parser) findChunkableChildren(node *tree_sitter.Node, source []byte, cfg *LanguageConfig, chunkDepth int, astDepth int, extracted *[]types.ChunkRecord) {
+	if astDepth > maxASTDepth {
+		if p.logger != nil {
+			p.logger.Warn("parser AST depth guard triggered; stopping descent",
+				"file", p.curPath, "depth", astDepth, "max", maxASTDepth)
+		}
+		return
+	}
 	childCount := int(node.NamedChildCount()) //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
 	for i := 0; i < childCount; i++ {
 		child := node.NamedChild(uint(i))
@@ -261,11 +282,13 @@ func (p *Parser) findChunkableChildren(node *tree_sitter.Node, source []byte, cf
 		}
 
 		if _, chunkable := cfg.ChunkableTypes[childType]; chunkable {
-			*extracted = append(*extracted, p.chunkNode(child, source, cfg, depth+1)...)
+			*extracted = append(*extracted, p.chunkNode(child, source, cfg, chunkDepth+1)...)
 		} else {
 			// Recurse through structural nodes (body_statement, block,
-			// declaration_list, class_body, etc.) to find nested chunkables
-			p.findChunkableChildren(child, source, cfg, depth, extracted)
+			// declaration_list, class_body, etc.) to find nested chunkables.
+			// astDepth+1 so pathologically-deep structural chains hit the
+			// guard before we overflow the Go stack.
+			p.findChunkableChildren(child, source, cfg, chunkDepth, astDepth+1, extracted)
 		}
 	}
 }

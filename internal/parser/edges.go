@@ -13,7 +13,7 @@ type edgeContext struct {
 	source      []byte
 	cfg         *LanguageConfig
 	edges       []types.EdgeRecord
-	seen        map[string]bool // "src|dst|kind" dedup
+	seen        map[string]bool // "src|dst|qualifiedDst|kind" dedup
 	importOwner string          // fallback owner for file-level imports
 }
 
@@ -25,7 +25,11 @@ func (c *edgeContext) addEdgeQualified(src, dst, qualifiedDst, kind string) {
 	if dst == "" {
 		return
 	}
-	key := src + "|" + dst + "|" + kind
+	// Dedup key includes qualifiedDst so two imports of the same short name
+	// from different modules (e.g. `import Foo from 'a'` and
+	// `from b import Foo`) produce two distinct edges, not one collapsed
+	// record where only the first qualified path survives.
+	key := src + "|" + dst + "|" + qualifiedDst + "|" + kind
 	if c.seen[key] {
 		return
 	}
