@@ -78,9 +78,21 @@ func (s *Store) Search(_ context.Context, query []float32, topK int) ([]types.Ve
 	if k > n {
 		k = n
 	}
+	// Skipped counts surface silent corruption that would otherwise poison
+	// the heap comparator (NaN comparisons are always false) or panic on a
+	// length mismatch inside the hot loop in cosineSimilarity.
+	var skippedDim, skippedNaN int
 	h := make(scoreHeap, 0, k)
 	for id, vec := range s.vectors {
+		if len(vec) != s.dim {
+			skippedDim++
+			continue
+		}
 		sim := cosineSimilarity(query, vec)
+		if math.IsNaN(sim) || math.IsInf(sim, 0) {
+			skippedNaN++
+			continue
+		}
 		if h.Len() < topK {
 			heap.Push(&h, scored{id, sim})
 		} else if sim > h[0].score {
@@ -89,6 +101,12 @@ func (s *Store) Search(_ context.Context, query []float32, topK int) ([]types.Ve
 		}
 	}
 	s.mu.RUnlock()
+
+	if skippedDim > 0 || skippedNaN > 0 {
+		slog.Warn("bruteforce search skipped invalid vectors",
+			"dim_mismatch", skippedDim, "nan_or_inf", skippedNaN,
+			"total_indexed", n, "store_dim", s.dim)
+	}
 
 	// Extract results in descending order (highest score first).
 	out := make([]types.VectorResult, h.Len())
@@ -313,12 +331,11 @@ func (s *Store) LoadFromDisk(path string) error {
 		return fmt.Errorf("embedding file dim %d != expected %d (model changed?)", dim, s.dim)
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.dim = int(dim)
-	s.vectors = make(map[int64][]float32, count)
-
-	// Read entries (direct byte decoding — avoids binary.Read reflection per vector)
+	// Decode entries into a fresh local map, swap into the store only on
+	// success. Previously any error past this point (notably the CRC
+	// mismatch below) left s.vectors partially populated, wiping whatever
+	// was there before and returning an error — the worst possible outcome.
+	loaded := make(map[int64][]float32, count)
 	entryBuf := make([]byte, 8+int(dim)*4)
 	for i := uint32(0); i < count; i++ {
 		if _, err := io.ReadFull(r, entryBuf); err != nil {
@@ -329,7 +346,7 @@ func (s *Store) LoadFromDisk(path string) error {
 		for j := range vec {
 			vec[j] = math.Float32frombits(binary.LittleEndian.Uint32(entryBuf[8+j*4:]))
 		}
-		s.vectors[id] = vec
+		loaded[id] = vec
 	}
 
 	// v2: verify CRC32 integrity
@@ -345,8 +362,14 @@ func (s *Store) LoadFromDisk(path string) error {
 		}
 	}
 
+	// Atomic swap: existing s.vectors preserved on any error above.
+	s.mu.Lock()
+	s.dim = int(dim)
+	s.vectors = loaded
+	s.mu.Unlock()
+
 	slog.Info("embeddings loaded from disk",
-		"path", path, "count", len(s.vectors),
+		"path", path, "count", len(loaded),
 		"duration_ms", time.Since(start).Milliseconds())
 	return nil
 }

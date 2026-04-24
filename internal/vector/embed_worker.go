@@ -178,17 +178,37 @@ func (w *EmbedWorker) processBatch(ctx context.Context, batch []EmbedJob) {
 		chunkIDs[i] = j.ChunkID
 	}
 
-	if err := w.store.UpsertBatch(ctx, chunkIDs, vectors); err != nil {
+	// Drop vectors that would corrupt downstream search (zero/NaN/Inf/wrong dim).
+	// Dim is 0 here because processBatch doesn't have direct access to the
+	// store's configured dim; the store's own Upsert path validates dim.
+	cleanIDs, cleanVecs, rej := sanitizeEmbeddings(chunkIDs, vectors, 0, w.logger)
+	if rej.total() > 0 {
+		w.logger.Warn("embeddings rejected before upsert",
+			"batch_size", len(batch),
+			"zero", rej.zero, "nan", rej.naN, "inf", rej.inf,
+			"empty", rej.empty, "dim_mismatch", rej.dimMismatch)
+	}
+	if len(cleanIDs) == 0 {
+		w.logger.Warn("embed batch dropped: all vectors invalid", "size", len(batch))
+		return
+	}
+
+	if err := w.store.UpsertBatch(ctx, cleanIDs, cleanVecs); err != nil {
 		w.logger.Error("upsert batch failed", "err", err)
 		return
 	}
 
 	w.logger.Info("embed batch completed",
 		"size", len(batch),
+		"accepted", len(cleanIDs),
+		"rejected", rej.total(),
 		"duration_ms", time.Since(start).Milliseconds())
 
 	if w.onBatchDone != nil {
-		w.onBatchDone(chunkIDs)
+		// onBatchDone semantically means "these chunks are embedded". Pass
+		// only the accepted IDs so the DB doesn't mark rejected chunks
+		// as embedded.
+		w.onBatchDone(cleanIDs)
 	}
 }
 
@@ -373,9 +393,18 @@ func (w *EmbedWorker) reconcileAndEmbed(ctx context.Context, source types.EmbedS
 		return nil
 	}
 
-	// Success — upsert and mark.
-	if err := w.store.UpsertBatch(ctx, needIDs, vectors); err != nil {
-		return fmt.Errorf("upsert batch: %w", err)
+	// Success — sanitize then upsert and mark.
+	cleanIDs, cleanVecs, rej := sanitizeEmbeddings(needIDs, vectors, 0, w.logger)
+	if rej.total() > 0 {
+		w.logger.Warn("embeddings rejected before upsert",
+			"batch_size", len(needIDs),
+			"zero", rej.zero, "nan", rej.naN, "inf", rej.inf,
+			"empty", rej.empty, "dim_mismatch", rej.dimMismatch)
+	}
+	if len(cleanIDs) > 0 {
+		if err := w.store.UpsertBatch(ctx, cleanIDs, cleanVecs); err != nil {
+			return fmt.Errorf("upsert batch: %w", err)
+		}
 	}
 	if err := source.MarkChunksEmbedded(ctx, batchIDs); err != nil {
 		return fmt.Errorf("mark chunks embedded: %w", err)
@@ -490,7 +519,17 @@ func (w *EmbedWorker) retryDeferred(ctx context.Context, rs *runState) error {
 			}
 			w.cb.RecordSuccess()
 
-			if err := w.store.Upsert(ctx, dc.job.ChunkID, vecs[0]); err != nil {
+			// Sanitize single-vector upsert too; reuse the batch helper.
+			cleanIDs, cleanVecs, rej := sanitizeEmbeddings(
+				[]int64{dc.job.ChunkID}, [][]float32{vecs[0]}, 0, w.logger)
+			if len(cleanIDs) == 0 {
+				rs.skipped++
+				w.logger.Warn("deferred chunk rejected by sanitizer",
+					"chunk_id", dc.job.ChunkID,
+					"zero", rej.zero, "nan", rej.naN, "inf", rej.inf)
+				continue
+			}
+			if err := w.store.Upsert(ctx, cleanIDs[0], cleanVecs[0]); err != nil {
 				return fmt.Errorf("upsert deferred chunk %d: %w", dc.job.ChunkID, err)
 			}
 		}
