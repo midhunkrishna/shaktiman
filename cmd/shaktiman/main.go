@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -106,30 +107,69 @@ func applyBackendFlags(cfg *types.Config, vectorBackend, dbBackend, postgresURL,
 	return nil
 }
 
-// runIndexPipeline runs IndexProject and optionally EmbedProject with progress output.
-func runIndexPipeline(ctx context.Context, d *daemon.Daemon, cfg types.Config, embed bool) error {
-	tty := isTTY()
+// writeIndexProgress formats one IndexProgress event to w. In TTY mode it
+// emits a carriage-return refresh line; otherwise it emits a newline-
+// terminated update only when pct advanced by >=10 since last call (or on
+// completion). Returns the new lastPct.
+func writeIndexProgress(w io.Writer, tty bool, p daemon.IndexProgress, lastPct int) int {
+	if p.Total == 0 {
+		return lastPct
+	}
+	pct := p.Indexed * 100 / p.Total
+	if tty {
+		fmt.Fprintf(w, "\rIndexing: %d/%d files (%d%%)", p.Indexed, p.Total, pct)
+		return lastPct
+	}
+	if pct >= lastPct+10 || p.Indexed == p.Total {
+		fmt.Fprintf(w, "Indexing: %d/%d files (%d%%)\n", p.Indexed, p.Total, pct)
+		return pct
+	}
+	return lastPct
+}
 
+// writeEmbedProgress formats one EmbedProgress event to w. Same TTY semantics
+// as writeIndexProgress. Warnings are emitted inline; they do not advance
+// lastPct. Returns the new lastPct.
+func writeEmbedProgress(w io.Writer, tty bool, p types.EmbedProgress, lastPct int) int {
+	if p.Warning != "" {
+		if tty {
+			fmt.Fprintf(w, "\r%s%s", p.Warning, strings.Repeat(" ", 20))
+		} else {
+			fmt.Fprintf(w, "%s\n", p.Warning)
+		}
+		return lastPct
+	}
+	if p.Total == 0 {
+		return lastPct
+	}
+	pct := p.Embedded * 100 / p.Total
+	if tty {
+		fmt.Fprintf(w, "\rEmbedding: %d/%d chunks (%d%%)", p.Embedded, p.Total, pct)
+		return lastPct
+	}
+	if pct >= lastPct+10 || p.Embedded == p.Total {
+		fmt.Fprintf(w, "Embedding: %d/%d chunks (%d%%)\n", p.Embedded, p.Total, pct)
+		return pct
+	}
+	return lastPct
+}
+
+// runIndexPipeline runs IndexProject and optionally EmbedProject.
+// Progress output (and transient warnings) goes to progressW, which callers
+// typically wire to os.Stderr so that stdout stays machine-parseable. The
+// final summary line goes to summaryW.
+func runIndexPipeline(ctx context.Context, d *daemon.Daemon, cfg types.Config, embed bool, progressW, summaryW io.Writer, tty bool) error {
 	var lastIndexPct int
 	if err := d.IndexProject(ctx, func(p daemon.IndexProgress) {
-		if p.Total == 0 {
-			return
-		}
-		pct := p.Indexed * 100 / p.Total
-		if tty {
-			fmt.Fprintf(os.Stdout, "\rIndexing: %d/%d files (%d%%)", p.Indexed, p.Total, pct)
-		} else if pct >= lastIndexPct+10 || p.Indexed == p.Total {
-			fmt.Fprintf(os.Stdout, "Indexing: %d/%d files (%d%%)\n", p.Indexed, p.Total, pct)
-			lastIndexPct = pct
-		}
+		lastIndexPct = writeIndexProgress(progressW, tty, p, lastIndexPct)
 	}); err != nil {
 		if tty {
-			fmt.Fprintln(os.Stdout)
+			fmt.Fprintln(progressW)
 		}
 		return fmt.Errorf("index: %w", err)
 	}
 	if tty {
-		fmt.Fprintln(os.Stdout)
+		fmt.Fprintln(progressW)
 	}
 
 	stats, err := d.Store().GetIndexStats(ctx)
@@ -137,10 +177,10 @@ func runIndexPipeline(ctx context.Context, d *daemon.Daemon, cfg types.Config, e
 		return fmt.Errorf("stats: %w", err)
 	}
 
-	fmt.Printf("Indexed: %d files | %d chunks | %d symbols\n",
+	fmt.Fprintf(summaryW, "Indexed: %d files | %d chunks | %d symbols\n",
 		stats.TotalFiles, stats.TotalChunks, stats.TotalSymbols)
 	for lang, count := range stats.Languages {
-		fmt.Printf("  %s: %d files\n", lang, count)
+		fmt.Fprintf(summaryW, "  %s: %d files\n", lang, count)
 	}
 
 	if embed {
@@ -149,42 +189,25 @@ func runIndexPipeline(ctx context.Context, d *daemon.Daemon, cfg types.Config, e
 
 		var lastEmbedPct int
 		count, err := d.EmbedProject(ctx, func(p types.EmbedProgress) {
-			if p.Warning != "" {
-				if tty {
-					fmt.Fprintf(os.Stdout, "\r%s%s", p.Warning, strings.Repeat(" ", 20))
-				} else {
-					fmt.Fprintf(os.Stdout, "%s\n", p.Warning)
-				}
-				return
-			}
-			if p.Total == 0 {
-				return
-			}
-			pct := p.Embedded * 100 / p.Total
-			if tty {
-				fmt.Fprintf(os.Stdout, "\rEmbedding: %d/%d chunks (%d%%)", p.Embedded, p.Total, pct)
-			} else if pct >= lastEmbedPct+10 || p.Embedded == p.Total {
-				fmt.Fprintf(os.Stdout, "Embedding: %d/%d chunks (%d%%)\n", p.Embedded, p.Total, pct)
-				lastEmbedPct = pct
-			}
+			lastEmbedPct = writeEmbedProgress(progressW, tty, p, lastEmbedPct)
 		})
 		saveCancel()
 
 		if tty {
-			fmt.Fprintln(os.Stdout)
+			fmt.Fprintln(progressW)
 		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			fmt.Fprintf(os.Stderr, "Indexing completed without embeddings. Run 'shaktiman index --embed' to retry.\n")
+			fmt.Fprintf(progressW, "Error: %v\n", err)
+			fmt.Fprintf(progressW, "Indexing completed without embeddings. Run 'shaktiman index --embed' to retry.\n")
 			if count > 0 {
-				fmt.Printf("Embedded: %d/%d chunks (partial) → %s\n", count, stats.TotalChunks, cfg.EmbeddingsPath)
+				fmt.Fprintf(summaryW, "Embedded: %d/%d chunks (partial) → %s\n", count, stats.TotalChunks, cfg.EmbeddingsPath)
 			}
 		} else {
 			if count < stats.TotalChunks && stats.TotalChunks > 0 {
-				fmt.Fprintf(os.Stderr, "Warning: %d/%d chunks could not be embedded (Ollama errors).\n", stats.TotalChunks-count, stats.TotalChunks)
-				fmt.Fprintf(os.Stderr, "Run 'shaktiman index --embed' to retry failed chunks.\n")
+				fmt.Fprintf(progressW, "Warning: %d/%d chunks could not be embedded (Ollama errors).\n", stats.TotalChunks-count, stats.TotalChunks)
+				fmt.Fprintf(progressW, "Run 'shaktiman index --embed' to retry failed chunks.\n")
 			}
-			fmt.Printf("Embedded: %d/%d chunks → %s\n", count, stats.TotalChunks, cfg.EmbeddingsPath)
+			fmt.Fprintf(summaryW, "Embedded: %d/%d chunks → %s\n", count, stats.TotalChunks, cfg.EmbeddingsPath)
 		}
 	}
 	return nil
@@ -253,7 +276,7 @@ func indexCmd() *cobra.Command {
 			}
 			defer func() { _ = d.Stop() }()
 
-			return runIndexPipeline(ctx, d, cfg, embed)
+			return runIndexPipeline(ctx, d, cfg, embed, os.Stderr, os.Stdout, isTTY())
 		},
 	}
 	addBackendFlags(cmd, &embed, &vectorBackend, &dbBackend, &postgresURL, &qdrantURL)
@@ -328,7 +351,7 @@ func reindexCmd() *cobra.Command {
 				return fmt.Errorf("purge files: %w", err)
 			}
 
-			fmt.Fprintln(os.Stdout, "Purged all indexed data.")
+			fmt.Fprintln(os.Stderr, "Purged all indexed data.")
 
 			// Phase 3: Fresh index via daemon (daemon.New calls backends.Open internally).
 			d, err := daemon.New(cfg)
@@ -337,7 +360,7 @@ func reindexCmd() *cobra.Command {
 			}
 			defer func() { _ = d.Stop() }()
 
-			return runIndexPipeline(ctx, d, cfg, embed)
+			return runIndexPipeline(ctx, d, cfg, embed, os.Stderr, os.Stdout, isTTY())
 		},
 	}
 	addBackendFlags(cmd, &embed, &vectorBackend, &dbBackend, &postgresURL, &qdrantURL)
@@ -345,9 +368,12 @@ func reindexCmd() *cobra.Command {
 	return cmd
 }
 
-// isTTY returns true if stdout is a terminal (not piped or redirected).
+// isTTY returns true if stderr is a terminal (not piped or redirected).
+// Progress output is routed to stderr so interactive refresh (\r) only
+// makes sense when stderr is a terminal; stdout-piped usage (e.g. into jq)
+// must still receive clean, line-oriented progress on stderr.
 func isTTY() bool {
-	fi, err := os.Stdout.Stat()
+	fi, err := os.Stderr.Stat()
 	if err != nil {
 		return false
 	}
