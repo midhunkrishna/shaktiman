@@ -60,7 +60,25 @@ type ParseResult struct {
 }
 
 // Parse parses a source file and returns chunks, symbols, and edges.
-func (p *Parser) Parse(ctx context.Context, input ParseInput) (*ParseResult, error) {
+//
+// Contains defer/recover around the tree-sitter CGO call chain and the
+// downstream AST walkers: a grammar panic on malformed input (known class
+// of tree-sitter crashes) would otherwise kill the worker goroutine and
+// take down the daemon. On recovery we return an error so the caller can
+// log-and-skip the file.
+func (p *Parser) Parse(ctx context.Context, input ParseInput) (_ *ParseResult, retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if p.logger != nil {
+				p.logger.Error("parser panic recovered",
+					"file", input.FilePath,
+					"language", input.Language,
+					"panic", fmt.Sprint(r))
+			}
+			retErr = fmt.Errorf("parser panic on %s (lang=%s): %v", input.FilePath, input.Language, r)
+		}
+	}()
+
 	p.curPath = input.FilePath
 	cfg, err := p.getConfig(input.Language)
 	if err != nil {

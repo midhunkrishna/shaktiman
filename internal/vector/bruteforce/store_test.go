@@ -741,3 +741,87 @@ func TestStore_SaveToDisk_ConcurrentUpsert(t *testing.T) {
 		t.Errorf("expected >= 500 vectors, got %d", count)
 	}
 }
+
+// TestStore_LoadFromDisk_PreservesStateOnCRCFailure verifies the atomic
+// swap: a corrupted file triggers a CRC mismatch, and the existing store
+// state must survive intact rather than being partially overwritten.
+func TestStore_LoadFromDisk_PreservesStateOnCRCFailure(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "embeddings.bin")
+
+	// Produce a well-formed snapshot.
+	s := NewStore(3)
+	s.Upsert(ctx, 1, []float32{1, 0, 0})
+	s.Upsert(ctx, 2, []float32{0, 1, 0})
+	if err := s.SaveToDisk(path); err != nil {
+		t.Fatalf("SaveToDisk: %v", err)
+	}
+
+	// Corrupt the CRC footer by flipping the last byte.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	raw[len(raw)-1] ^= 0xff
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write corrupted: %v", err)
+	}
+
+	// Seed s2 with pre-existing state that must survive the failed load.
+	s2 := NewStore(3)
+	s2.Upsert(ctx, 42, []float32{0, 0, 1})
+
+	loadErr := s2.LoadFromDisk(path)
+	if loadErr == nil {
+		t.Fatalf("expected CRC mismatch error, got nil")
+	}
+
+	// Old state must survive: chunk 42 still present, corrupted file's
+	// chunks 1,2 must NOT leak into s2.vectors.
+	count, _ := s2.Count(ctx)
+	if count != 1 {
+		t.Errorf("expected 1 preserved entry after failed load, got %d", count)
+	}
+	has, _ := s2.Has(ctx, 42)
+	if !has {
+		t.Errorf("pre-load entry 42 lost after failed load")
+	}
+	has1, _ := s2.Has(ctx, 1)
+	if has1 {
+		t.Errorf("partial load leaked entry 1 into store after CRC failure")
+	}
+}
+
+// TestStore_Search_SkipsNaNAndDimMismatch verifies the hot path defends
+// against poisoned vectors. A NaN in a stored vector previously returned
+// NaN from cosineSimilarity, which poisoned the heap comparator and
+// silently produced wrong top-K ordering.
+func TestStore_Search_SkipsNaNAndDimMismatch(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := NewStore(3)
+
+	// Valid vector — should win.
+	s.Upsert(ctx, 1, []float32{1, 0, 0})
+
+	// Bypass Upsert's dim guard by writing directly — simulates a
+	// corrupted LoadFromDisk or a backend bug that put a wrong-dim vector
+	// in the map.
+	s.mu.Lock()
+	s.vectors[2] = []float32{1, 0} // wrong dim
+	s.vectors[3] = []float32{float32(math.NaN()), 0, 0}
+	s.mu.Unlock()
+
+	results, err := s.Search(ctx, []float32{1, 0, 0}, 10)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 valid result, got %d: %+v", len(results), results)
+	}
+	if results[0].ChunkID != 1 {
+		t.Errorf("expected ChunkID=1, got %d", results[0].ChunkID)
+	}
+}

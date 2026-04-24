@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -106,11 +107,23 @@ func (s *PgStore) DeleteFile(ctx context.Context, fileID int64) error {
 
 func (s *PgStore) DeleteFileByPath(ctx context.Context, path string) (int64, error) {
 	var fileID int64
-	err := s.pool.QueryRow(ctx, "SELECT id FROM files WHERE path = $1 AND project_id = $2", path, s.projectID).Scan(&fileID)
-	if err != nil {
-		return 0, nil // not found → no-op
-	}
-	_, err = s.pool.Exec(ctx, "DELETE FROM files WHERE id = $1", fileID)
+	err := s.WithWriteTx(ctx, func(txh types.TxHandle) error {
+		tx := txh.(PgTxHandle).Tx
+		lookupErr := tx.QueryRow(ctx,
+			"SELECT id FROM files WHERE path = $1 AND project_id = $2",
+			path, s.projectID).Scan(&fileID)
+		if errors.Is(lookupErr, pgx.ErrNoRows) {
+			fileID = 0
+			return nil // genuinely not found → no-op
+		}
+		if lookupErr != nil {
+			return fmt.Errorf("lookup file %s: %w", path, lookupErr)
+		}
+		if _, err := tx.Exec(ctx, "DELETE FROM files WHERE id = $1", fileID); err != nil {
+			return fmt.Errorf("delete file %d: %w", fileID, err)
+		}
+		return nil
+	})
 	return fileID, err
 }
 
@@ -138,12 +151,26 @@ func (s *PgStore) UpdateChunkParents(ctx context.Context, updates map[int64]int6
 	if len(updates) == 0 {
 		return nil
 	}
+	chunkIDs := make([]int64, 0, len(updates))
+	parentIDs := make([]int64, 0, len(updates))
 	for chunkID, parentID := range updates {
-		if _, err := s.pool.Exec(ctx, "UPDATE chunks SET parent_chunk_id = $1 WHERE id = $2", parentID, chunkID); err != nil {
-			return err
-		}
+		chunkIDs = append(chunkIDs, chunkID)
+		parentIDs = append(parentIDs, parentID)
 	}
-	return nil
+	return s.WithWriteTx(ctx, func(txh types.TxHandle) error {
+		tx := txh.(PgTxHandle).Tx
+		// Single batched UPDATE via UNNEST: one round-trip, one tx.
+		_, err := tx.Exec(ctx, `
+			UPDATE chunks AS c
+			SET parent_chunk_id = v.parent_id
+			FROM (SELECT unnest($1::bigint[]) AS chunk_id,
+			             unnest($2::bigint[]) AS parent_id) AS v
+			WHERE c.id = v.chunk_id`, chunkIDs, parentIDs)
+		if err != nil {
+			return fmt.Errorf("update chunk parents (%d rows): %w", len(updates), err)
+		}
+		return nil
+	})
 }
 
 // ── Chunk operations ──

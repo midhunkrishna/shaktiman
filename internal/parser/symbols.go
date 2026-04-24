@@ -268,15 +268,18 @@ func (p *Parser) extractGoTypeSymbols(node *tree_sitter.Node, source []byte, chu
 	}
 }
 
-// findContainingChunk returns the chunk index for the chunk whose line range contains the given line.
-// Returns 0 if no chunk contains the line.
+// findContainingChunk returns the chunk index for the chunk whose line range
+// contains the given line, or -1 if no chunk contains the line. Callers must
+// treat -1 as a sentinel (skip the symbol, log, etc.): a zero return was
+// previously ambiguous with "valid chunk at index 0", causing orphan
+// symbols to be silently mis-attributed to the first (often header) chunk.
 func findContainingChunk(line int, chunks []types.ChunkRecord) int64 {
 	for i := range chunks {
 		if line >= chunks[i].StartLine && line <= chunks[i].EndLine {
 			return int64(i)
 		}
 	}
-	return 0
+	return -1
 }
 
 // isGoExported returns true if the name starts with an uppercase letter (Go export rule).

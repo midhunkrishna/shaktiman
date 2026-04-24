@@ -488,6 +488,22 @@ func RunWriterStoreTests(t *testing.T, factory WriterStoreFactory) {
 		}
 	})
 
+	t.Run("DeleteFileByPath_PropagatesGenuineErrors", func(t *testing.T) {
+		// A cancelled context is a transient error — distinct from ErrNoRows.
+		// The previous implementation swallowed all lookup errors as "not
+		// found" which silently hid DB-level failures (locked, corrupt).
+		// The fix uses errors.Is(err, sql.ErrNoRows)/pgx.ErrNoRows to
+		// distinguish; cancelled context must propagate.
+		store := factory(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // pre-cancel before the call
+
+		_, err := store.DeleteFileByPath(ctx, "anything.go")
+		if err == nil {
+			t.Error("expected cancelled context to surface as an error, got nil")
+		}
+	})
+
 	t.Run("GetEmbeddedChunkIDsByFile", func(t *testing.T) {
 		store := factory(t)
 		ctx := context.Background()
@@ -836,6 +852,50 @@ func RunGraphMutatorTests(t *testing.T, factory WriterStoreFactory) {
 		neighbors, _ := store.Neighbors(ctx, symA, 1, "outgoing")
 		if len(neighbors) == 0 {
 			t.Error("expected resolved edge to appear in Neighbors")
+		}
+	})
+
+	t.Run("ResolvePendingEdges_EdgeCleanedOnFileDelete", func(t *testing.T) {
+		// Regression test: resolved edges must carry the originating file_id
+		// so DeleteEdgesByFile can cascade them on re-index.
+		//
+		// Before the fix, ResolvePendingEdges inserted edges without file_id.
+		// DeleteEdgesByFile filters by file_id, so resolved edges survived
+		// file deletion indefinitely — the graph silently accumulated stale
+		// edges as files were re-indexed.
+		store := factory(t)
+		ctx := context.Background()
+
+		// Caller lives in file A; Target is not yet defined → pending edge.
+		fileA, _, symA := insertFCS(t, store, "a.go", "Caller")
+		edges := []types.EdgeRecord{
+			{SrcSymbolName: "Caller", DstSymbolName: "Target", Kind: "calls"},
+		}
+		if err := store.WithWriteTx(ctx, func(tx types.TxHandle) error {
+			return store.InsertEdges(ctx, tx, fileA, edges, map[string]int64{"Caller": symA}, "go")
+		}); err != nil {
+			t.Fatalf("InsertEdges: %v", err)
+		}
+
+		// Now define Target — resolves the pending edge.
+		insertFCS(t, store, "b.go", "Target")
+		if err := store.WithWriteTx(ctx, func(tx types.TxHandle) error {
+			return store.ResolvePendingEdges(ctx, tx, []string{"Target"})
+		}); err != nil {
+			t.Fatalf("ResolvePendingEdges: %v", err)
+		}
+
+		// The resolved edge originated in file A. Delete edges for file A.
+		if err := store.WithWriteTx(ctx, func(tx types.TxHandle) error {
+			return store.DeleteEdgesByFile(ctx, tx, fileA)
+		}); err != nil {
+			t.Fatalf("DeleteEdgesByFile: %v", err)
+		}
+
+		// Caller should now have no outgoing neighbors; the stale edge is gone.
+		neighbors, _ := store.Neighbors(ctx, symA, 1, "outgoing")
+		if len(neighbors) != 0 {
+			t.Errorf("expected resolved edge to be cleaned by DeleteEdgesByFile, got %d neighbors", len(neighbors))
 		}
 	})
 }
