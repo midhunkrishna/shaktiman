@@ -38,9 +38,9 @@ func (s *PgStore) InsertEdges(ctx context.Context, txh types.TxHandle, fileID in
 			}
 		} else {
 			_, err := tx.Exec(ctx,
-				`INSERT INTO pending_edges (src_symbol_id, dst_symbol_name, dst_qualified_name, kind, src_language)
-				 VALUES ($1, $2, $3, $4, $5)`,
-				srcID, e.DstSymbolName, e.DstQualifiedName, e.Kind, language)
+				`INSERT INTO pending_edges (src_symbol_id, file_id, dst_symbol_name, dst_qualified_name, kind, src_language)
+				 VALUES ($1, $2, $3, $4, $5, $6)`,
+				srcID, fileID, e.DstSymbolName, e.DstQualifiedName, e.Kind, language)
 			if err != nil {
 				return fmt.Errorf("insert pending edge %s→%s: %w", e.SrcSymbolName, e.DstSymbolName, err)
 			}
@@ -56,7 +56,7 @@ func (s *PgStore) ResolvePendingEdges(ctx context.Context, txh types.TxHandle, n
 	tx := txh.(PgTxHandle).Tx
 
 	rows, err := tx.Query(ctx, `
-		SELECT id, src_symbol_id, dst_symbol_name, kind, src_language
+		SELECT id, src_symbol_id, file_id, dst_symbol_name, kind, src_language
 		FROM pending_edges
 		WHERE dst_symbol_name = ANY($1)`, newSymbolNames)
 	if err != nil {
@@ -67,6 +67,7 @@ func (s *PgStore) ResolvePendingEdges(ctx context.Context, txh types.TxHandle, n
 	type pending struct {
 		id       int64
 		srcID    int64
+		fileID   int64
 		dstName  string
 		kind     string
 		language string
@@ -74,7 +75,7 @@ func (s *PgStore) ResolvePendingEdges(ctx context.Context, txh types.TxHandle, n
 	var toResolve []pending
 	for rows.Next() {
 		var p pending
-		if err := rows.Scan(&p.id, &p.srcID, &p.dstName, &p.kind, &p.language); err != nil {
+		if err := rows.Scan(&p.id, &p.srcID, &p.fileID, &p.dstName, &p.kind, &p.language); err != nil {
 			return err
 		}
 		toResolve = append(toResolve, p)
@@ -85,9 +86,11 @@ func (s *PgStore) ResolvePendingEdges(ctx context.Context, txh types.TxHandle, n
 		if dstID == 0 {
 			continue
 		}
+		// Preserve file_id on resolved edges so DeleteEdgesByFile can cascade.
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO edges (src_symbol_id, dst_symbol_id, kind) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-			p.srcID, dstID, p.kind); err != nil {
+			`INSERT INTO edges (src_symbol_id, dst_symbol_id, kind, file_id)
+			 VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+			p.srcID, dstID, p.kind, p.fileID); err != nil {
 			return fmt.Errorf("insert resolved edge %d→%d: %w", p.srcID, dstID, err)
 		}
 		if _, err := tx.Exec(ctx, "DELETE FROM pending_edges WHERE id = $1", p.id); err != nil {

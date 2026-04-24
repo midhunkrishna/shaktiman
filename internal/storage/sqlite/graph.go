@@ -29,8 +29,8 @@ func (s *Store) InsertEdges(ctx context.Context, txh types.TxHandle, fileID int6
 	defer func() { _ = edgeStmt.Close() }()
 
 	pendingStmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO pending_edges (src_symbol_id, dst_symbol_name, dst_qualified_name, kind, src_language)
-		VALUES (?, ?, ?, ?, ?)`)
+		INSERT INTO pending_edges (src_symbol_id, file_id, dst_symbol_name, dst_qualified_name, kind, src_language)
+		VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare pending edge insert: %w", err)
 	}
@@ -53,7 +53,7 @@ func (s *Store) InsertEdges(ctx context.Context, txh types.TxHandle, fileID int6
 				return fmt.Errorf("insert edge %s→%s: %w", e.SrcSymbolName, e.DstSymbolName, err)
 			}
 		} else {
-			if _, err := pendingStmt.ExecContext(ctx, srcID, e.DstSymbolName, e.DstQualifiedName, e.Kind, language); err != nil {
+			if _, err := pendingStmt.ExecContext(ctx, srcID, fileID, e.DstSymbolName, e.DstQualifiedName, e.Kind, language); err != nil {
 				return fmt.Errorf("insert pending edge %s→%s: %w", e.SrcSymbolName, e.DstSymbolName, err)
 			}
 		}
@@ -79,7 +79,7 @@ func (s *Store) ResolvePendingEdges(ctx context.Context, txh types.TxHandle, new
 	}
 
 	query := fmt.Sprintf(`
-		SELECT id, src_symbol_id, dst_symbol_name, kind, src_language
+		SELECT id, src_symbol_id, file_id, dst_symbol_name, kind, src_language
 		FROM pending_edges
 		WHERE dst_symbol_name IN (%s)`, strings.Join(placeholders, ","))
 
@@ -92,6 +92,7 @@ func (s *Store) ResolvePendingEdges(ctx context.Context, txh types.TxHandle, new
 	type pending struct {
 		id       int64
 		srcID    int64
+		fileID   int64
 		dstName  string
 		kind     string
 		language string
@@ -100,7 +101,7 @@ func (s *Store) ResolvePendingEdges(ctx context.Context, txh types.TxHandle, new
 
 	for rows.Next() {
 		var p pending
-		if err := rows.Scan(&p.id, &p.srcID, &p.dstName, &p.kind, &p.language); err != nil {
+		if err := rows.Scan(&p.id, &p.srcID, &p.fileID, &p.dstName, &p.kind, &p.language); err != nil {
 			return fmt.Errorf("scan pending edge: %w", err)
 		}
 		toResolve = append(toResolve, p)
@@ -113,9 +114,10 @@ func (s *Store) ResolvePendingEdges(ctx context.Context, txh types.TxHandle, new
 		return nil
 	}
 
+	// Preserve file_id on resolved edges so DeleteEdgesByFile can cascade.
 	edgeStmt, err := tx.PrepareContext(ctx, `
-		INSERT OR IGNORE INTO edges (src_symbol_id, dst_symbol_id, kind)
-		VALUES (?, ?, ?)`)
+		INSERT OR IGNORE INTO edges (src_symbol_id, dst_symbol_id, kind, file_id)
+		VALUES (?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare edge resolve insert: %w", err)
 	}
@@ -133,7 +135,7 @@ func (s *Store) ResolvePendingEdges(ctx context.Context, txh types.TxHandle, new
 			continue
 		}
 
-		if _, err := edgeStmt.ExecContext(ctx, p.srcID, dstID, p.kind); err != nil {
+		if _, err := edgeStmt.ExecContext(ctx, p.srcID, dstID, p.kind, p.fileID); err != nil {
 			return fmt.Errorf("resolve edge %d: %w", p.id, err)
 		}
 		if _, err := delStmt.ExecContext(ctx, p.id); err != nil {

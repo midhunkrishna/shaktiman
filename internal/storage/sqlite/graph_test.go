@@ -820,7 +820,7 @@ func TestPendingEdges_QualifiedNameAndLanguageColumns(t *testing.T) {
 	// Verify dst_qualified_name and src_language columns exist
 	err = db.WithWriteTx(func(tx *sql.Tx) error {
 		_, execErr := tx.ExecContext(ctx,
-			"INSERT INTO pending_edges (src_symbol_id, dst_symbol_name, dst_qualified_name, kind, src_language) VALUES (1, 'Foo', 'com.example.Foo', 'imports', 'java')")
+			"INSERT INTO pending_edges (src_symbol_id, file_id, dst_symbol_name, dst_qualified_name, kind, src_language) VALUES (1, 1, 'Foo', 'com.example.Foo', 'imports', 'java')")
 		return execErr
 	})
 	if err != nil {
