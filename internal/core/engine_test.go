@@ -1022,3 +1022,44 @@ func TestSearch_DefaultMaxResults(t *testing.T) {
 		t.Error("expected results with default MaxResults")
 	}
 }
+
+// TestFilterByScore_ReturnsFreshSlice verifies the filter allocates a new
+// slice and does not mutate or alias the caller's backing array. Mutation
+// was the previous behavior and made the ranker's slice unsafe to share
+// across concurrent consumers.
+func TestFilterByScore_ReturnsFreshSlice(t *testing.T) {
+	t.Parallel()
+
+	original := []types.ScoredResult{
+		{ChunkID: 1, Score: 0.9, Path: "a.go"},
+		{ChunkID: 2, Score: 0.4, Path: "b.go"},
+		{ChunkID: 3, Score: 0.7, Path: "c.go"},
+	}
+	// Snapshot of what the caller held.
+	snapshot := make([]types.ScoredResult, len(original))
+	copy(snapshot, original)
+
+	filtered := filterByScore(original, 0.6)
+
+	// Filter should drop b.go.
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 filtered results, got %d", len(filtered))
+	}
+
+	// Caller's slice must be untouched: same length, same contents.
+	if len(original) != len(snapshot) {
+		t.Errorf("original length changed: got %d, want %d", len(original), len(snapshot))
+	}
+	for i := range snapshot {
+		if original[i].ChunkID != snapshot[i].ChunkID {
+			t.Errorf("original[%d] mutated: ChunkID=%d, want %d", i, original[i].ChunkID, snapshot[i].ChunkID)
+		}
+	}
+
+	// And the two slices must not share backing storage: mutating the
+	// filtered result must not change the original.
+	filtered[0].Score = -1
+	if original[0].Score == -1 {
+		t.Errorf("filtered and original share backing array")
+	}
+}

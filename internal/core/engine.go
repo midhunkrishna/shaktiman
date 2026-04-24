@@ -309,6 +309,8 @@ func (e *QueryEngine) sessionScorer() types.SessionScorer {
 }
 
 // recordSession records search results in the session store and decays non-hits.
+// Uses the atomic RecordAndDecay primitive so concurrent Search callers don't
+// interleave record/decay pairs and silently under-credit each other's hits.
 func (e *QueryEngine) recordSession(results []types.ScoredResult) {
 	if e.sessionStore == nil {
 		return
@@ -317,20 +319,20 @@ func (e *QueryEngine) recordSession(results []types.ScoredResult) {
 	for i, r := range results {
 		hits[i] = SessionHit{FilePath: r.Path, StartLine: r.StartLine}
 	}
-	e.sessionStore.RecordBatch(hits)
-	e.sessionStore.DecayAllExcept(hits)
+	e.sessionStore.RecordAndDecay(hits)
 }
 
-// filterByScore removes results with Score below the threshold (in-place).
+// filterByScore returns results with Score >= minScore. Allocates a fresh
+// slice so callers aren't surprised by aliasing of the ranker's backing
+// array across concurrent queries.
 func filterByScore(results []types.ScoredResult, minScore float64) []types.ScoredResult {
-	n := 0
+	filtered := make([]types.ScoredResult, 0, len(results))
 	for _, r := range results {
 		if r.Score >= minScore {
-			results[n] = r
-			n++
+			filtered = append(filtered, r)
 		}
 	}
-	return results[:n]
+	return filtered
 }
 
 // mergeResults creates a union of keyword and semantic results, hydrating vector-only entries.

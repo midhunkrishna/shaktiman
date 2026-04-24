@@ -81,7 +81,54 @@ func (s *SessionStore) RecordAccess(filePath string, startLine int) {
 	s.entries[key] = elem
 }
 
+// RecordAndDecay records accesses for a batch of search results and advances
+// the session generation in a single lock-held operation. Hit entries'
+// lastGeneration is set to the new generation (exempting them from decay);
+// all other entries' queriesSince grows implicitly via the generation bump.
+//
+// This is the correct primitive for recording a query's results. The two-call
+// pattern (RecordBatch followed by DecayAllExcept) is not safe under
+// concurrent callers: two searches can interleave their record/decay pairs
+// and cause one caller's hits to see a generation advanced by the other
+// caller before its own decay-exempt write, under-crediting recency.
+func (s *SessionStore) RecordAndDecay(hits []SessionHit) {
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	gen := s.generation.Add(1)
+
+	for _, h := range hits {
+		key := sessionKey(h.FilePath, h.StartLine)
+
+		if elem, ok := s.entries[key]; ok {
+			e := elem.Value.(*sessionEntry)
+			e.accessCount++
+			e.lastAccessed = now
+			e.lastGeneration = gen
+			s.order.MoveToBack(elem)
+			continue
+		}
+
+		s.evictIfNeeded()
+
+		entry := &sessionEntry{
+			key:            key,
+			accessCount:    1,
+			lastAccessed:   now,
+			lastGeneration: gen,
+		}
+		elem := s.order.PushBack(entry)
+		s.entries[key] = elem
+	}
+}
+
 // RecordBatch records accesses for a batch of search results.
+//
+// Deprecated for the record+decay query pattern: use RecordAndDecay instead.
+// This method remains for callers that want to record accesses without
+// advancing the generation (e.g. warmup/migration).
 func (s *SessionStore) RecordBatch(hits []SessionHit) {
 	now := time.Now()
 	gen := s.generation.Load()
@@ -153,6 +200,10 @@ func (s *SessionStore) Score(filePath string, startLine int) float64 {
 // O(len(hits)) instead of O(len(entries)).
 // Invariant: must be called exactly once per query cycle for the generation
 // counter to be equivalent to per-entry queriesSinceLastHit counting.
+//
+// Deprecated for the record+decay query pattern: use RecordAndDecay instead.
+// This method remains for callers that want to advance the generation
+// without recording new accesses.
 func (s *SessionStore) DecayAllExcept(hits []SessionHit) {
 	gen := s.generation.Add(1)
 
