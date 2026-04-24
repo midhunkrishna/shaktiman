@@ -442,6 +442,245 @@ func TestMultiProject_BatchGetFileHashes(t *testing.T) {
 	}
 }
 
+// seedPair seeds storeA and storeB with one file each (same path, different
+// content) plus one chunk + one symbol per file, and returns all the IDs so
+// tests can assert that getters passed project B's ID never return project
+// A's data and vice versa.
+type seededPair struct {
+	fidA, cidA, sidA int64
+	fidB, cidB, sidB int64
+}
+
+func seedPair(t *testing.T, storeA, storeB *PgStore) seededPair {
+	t.Helper()
+	ctx := context.Background()
+
+	fidA, err := storeA.UpsertFile(ctx, &types.FileRecord{
+		Path: "main.go", ContentHash: "hA", Mtime: 1.0,
+		Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		IsTest: false,
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile A: %v", err)
+	}
+	cidsA, err := storeA.InsertChunks(ctx, fidA, []types.ChunkRecord{
+		{ChunkIndex: 0, SymbolName: "HandlerA", Kind: "function",
+			StartLine: 1, EndLine: 5, Content: "func HandlerA() {}", TokenCount: 3},
+	})
+	if err != nil {
+		t.Fatalf("InsertChunks A: %v", err)
+	}
+	sidsA, err := storeA.InsertSymbols(ctx, fidA, []types.SymbolRecord{
+		{ChunkID: cidsA[0], Name: "HandlerA", Kind: "function",
+			Line: 1, Visibility: "exported", IsExported: true},
+	})
+	if err != nil {
+		t.Fatalf("InsertSymbols A: %v", err)
+	}
+
+	fidB, err := storeB.UpsertFile(ctx, &types.FileRecord{
+		Path: "main.go", ContentHash: "hB", Mtime: 2.0,
+		Language: "go", EmbeddingStatus: "pending", ParseQuality: "full",
+		IsTest: true, // different IsTest so isolation can be asserted
+	})
+	if err != nil {
+		t.Fatalf("UpsertFile B: %v", err)
+	}
+	cidsB, err := storeB.InsertChunks(ctx, fidB, []types.ChunkRecord{
+		{ChunkIndex: 0, SymbolName: "HandlerB", Kind: "function",
+			StartLine: 1, EndLine: 5, Content: "func HandlerB() {}", TokenCount: 3},
+	})
+	if err != nil {
+		t.Fatalf("InsertChunks B: %v", err)
+	}
+	sidsB, err := storeB.InsertSymbols(ctx, fidB, []types.SymbolRecord{
+		{ChunkID: cidsB[0], Name: "HandlerB", Kind: "function",
+			Line: 1, Visibility: "exported", IsExported: true},
+	})
+	if err != nil {
+		t.Fatalf("InsertSymbols B: %v", err)
+	}
+
+	return seededPair{
+		fidA: fidA, cidA: cidsA[0], sidA: sidsA[0],
+		fidB: fidB, cidB: cidsB[0], sidB: sidsB[0],
+	}
+}
+
+// TestMultiProject_GetChunkByID_Isolation verifies project A cannot fetch a
+// chunk row belonging to project B by passing B's chunk ID.
+func TestMultiProject_GetChunkByID_Isolation(t *testing.T) {
+	storeA, storeB := newProjectTestStorePair(t)
+	ctx := context.Background()
+	p := seedPair(t, storeA, storeB)
+
+	// Store A looking up B's chunk ID must return nil (not found from A's view).
+	got, err := storeA.GetChunkByID(ctx, p.cidB)
+	if err != nil {
+		t.Fatalf("storeA.GetChunkByID(B's id): %v", err)
+	}
+	if got != nil {
+		t.Errorf("cross-project leak: storeA returned chunk %+v for project B's id", got)
+	}
+
+	// Own ID still works.
+	own, err := storeA.GetChunkByID(ctx, p.cidA)
+	if err != nil || own == nil {
+		t.Fatalf("storeA.GetChunkByID(own): %v, nil=%v", err, own == nil)
+	}
+}
+
+// TestMultiProject_GetChunksByFile_Isolation verifies project A passing
+// project B's fileID returns nothing.
+func TestMultiProject_GetChunksByFile_Isolation(t *testing.T) {
+	storeA, storeB := newProjectTestStorePair(t)
+	ctx := context.Background()
+	p := seedPair(t, storeA, storeB)
+
+	chunks, err := storeA.GetChunksByFile(ctx, p.fidB)
+	if err != nil {
+		t.Fatalf("storeA.GetChunksByFile(B's fid): %v", err)
+	}
+	if len(chunks) != 0 {
+		t.Errorf("cross-project leak: storeA returned %d chunks for project B's file", len(chunks))
+	}
+
+	own, _ := storeA.GetChunksByFile(ctx, p.fidA)
+	if len(own) != 1 {
+		t.Errorf("storeA own chunks: expected 1, got %d", len(own))
+	}
+}
+
+func TestMultiProject_GetSiblingChunks_Isolation(t *testing.T) {
+	storeA, storeB := newProjectTestStorePair(t)
+	ctx := context.Background()
+	p := seedPair(t, storeA, storeB)
+
+	// Ask A for "HandlerB" in B's fileID — must return empty.
+	chunks, err := storeA.GetSiblingChunks(ctx, p.fidB, "HandlerB", "function")
+	if err != nil {
+		t.Fatalf("storeA.GetSiblingChunks cross: %v", err)
+	}
+	if len(chunks) != 0 {
+		t.Errorf("cross-project leak: storeA returned %d siblings for project B", len(chunks))
+	}
+}
+
+func TestMultiProject_GetSymbolsByFile_Isolation(t *testing.T) {
+	storeA, storeB := newProjectTestStorePair(t)
+	ctx := context.Background()
+	p := seedPair(t, storeA, storeB)
+
+	syms, err := storeA.GetSymbolsByFile(ctx, p.fidB)
+	if err != nil {
+		t.Fatalf("storeA.GetSymbolsByFile: %v", err)
+	}
+	if len(syms) != 0 {
+		t.Errorf("cross-project leak: storeA returned %d symbols for project B", len(syms))
+	}
+}
+
+func TestMultiProject_GetSymbolByID_Isolation(t *testing.T) {
+	storeA, storeB := newProjectTestStorePair(t)
+	ctx := context.Background()
+	p := seedPair(t, storeA, storeB)
+
+	sym, err := storeA.GetSymbolByID(ctx, p.sidB)
+	if err != nil {
+		t.Fatalf("storeA.GetSymbolByID(B's id): %v", err)
+	}
+	if sym != nil {
+		t.Errorf("cross-project leak: storeA returned symbol %+v for project B's id", sym)
+	}
+}
+
+func TestMultiProject_GetFilePathByID_Isolation(t *testing.T) {
+	storeA, storeB := newProjectTestStorePair(t)
+	ctx := context.Background()
+	p := seedPair(t, storeA, storeB)
+
+	// storeA looking up storeB's fileID must error (no rows) — not return B's path.
+	_, err := storeA.GetFilePathByID(ctx, p.fidB)
+	if err == nil {
+		t.Errorf("cross-project leak: storeA returned path for project B's fileID")
+	}
+
+	// Own path still resolves.
+	path, err := storeA.GetFilePathByID(ctx, p.fidA)
+	if err != nil || path != "main.go" {
+		t.Errorf("storeA own path: err=%v path=%q", err, path)
+	}
+}
+
+func TestMultiProject_GetFileIsTestByID_Isolation(t *testing.T) {
+	storeA, storeB := newProjectTestStorePair(t)
+	ctx := context.Background()
+	p := seedPair(t, storeA, storeB)
+
+	// storeA looking up B's fileID must error, NOT return B's is_test value.
+	// (B has IsTest=true; A has IsTest=false, so a leak would be observable.)
+	_, err := storeA.GetFileIsTestByID(ctx, p.fidB)
+	if err == nil {
+		t.Errorf("cross-project leak: storeA returned is_test for project B's fileID")
+	}
+}
+
+func TestMultiProject_BatchGetChunkIDsForSymbols_Isolation(t *testing.T) {
+	storeA, storeB := newProjectTestStorePair(t)
+	ctx := context.Background()
+	p := seedPair(t, storeA, storeB)
+
+	// Ask A for B's symbol ID — the returned map must not contain it.
+	got, err := storeA.BatchGetChunkIDsForSymbols(ctx, []int64{p.sidA, p.sidB})
+	if err != nil {
+		t.Fatalf("BatchGetChunkIDsForSymbols: %v", err)
+	}
+	if _, leaked := got[p.sidB]; leaked {
+		t.Errorf("cross-project leak: BatchGetChunkIDsForSymbols returned chunk for project B's symbol id %d", p.sidB)
+	}
+	if got[p.sidA] != p.cidA {
+		t.Errorf("own lookup missing: got[%d]=%d want %d", p.sidA, got[p.sidA], p.cidA)
+	}
+}
+
+func TestMultiProject_BatchGetSymbolIDsForChunks_Isolation(t *testing.T) {
+	storeA, storeB := newProjectTestStorePair(t)
+	ctx := context.Background()
+	p := seedPair(t, storeA, storeB)
+
+	// Ask A for B's chunk id — must not appear in result.
+	got, err := storeA.BatchGetSymbolIDsForChunks(ctx, []int64{p.cidA, p.cidB})
+	if err != nil {
+		t.Fatalf("BatchGetSymbolIDsForChunks: %v", err)
+	}
+	if _, leaked := got[p.cidB]; leaked {
+		t.Errorf("cross-project leak: returned symbol for project B's chunk id %d", p.cidB)
+	}
+}
+
+func TestMultiProject_GetEmbeddedChunkIDsByFile_Isolation(t *testing.T) {
+	storeA, storeB := newProjectTestStorePair(t)
+	ctx := context.Background()
+	p := seedPair(t, storeA, storeB)
+
+	// Mark both projects' chunks as embedded.
+	if err := storeA.MarkChunksEmbedded(ctx, []int64{p.cidA}); err != nil {
+		t.Fatalf("mark A embedded: %v", err)
+	}
+	if err := storeB.MarkChunksEmbedded(ctx, []int64{p.cidB}); err != nil {
+		t.Fatalf("mark B embedded: %v", err)
+	}
+
+	// storeA asking for embedded chunks under B's fileID must return none.
+	ids, err := storeA.GetEmbeddedChunkIDsByFile(ctx, p.fidB)
+	if err != nil {
+		t.Fatalf("GetEmbeddedChunkIDsByFile: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("cross-project leak: got %d embedded chunk ids for project B", len(ids))
+	}
+}
+
 func TestBackwardCompat_DefaultProject(t *testing.T) {
 	store := newProjectTestStore(t)
 	ctx := context.Background()
