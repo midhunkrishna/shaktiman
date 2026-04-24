@@ -37,7 +37,8 @@ func (s *PgStore) UpsertFile(ctx context.Context, file *types.FileRecord) (int64
 			indexed_at = EXCLUDED.indexed_at,
 			embedding_status = EXCLUDED.embedding_status,
 			parse_quality = EXCLUDED.parse_quality,
-			is_test = EXCLUDED.is_test
+			is_test = EXCLUDED.is_test,
+			project_id = EXCLUDED.project_id
 		RETURNING id`,
 		file.Path, file.ContentHash, file.Mtime, file.Size,
 		file.Language, now, embStatus, pq, file.IsTest, s.projectID,
@@ -114,7 +115,10 @@ func (s *PgStore) DeleteFileByPath(ctx context.Context, path string) (int64, err
 }
 
 func (s *PgStore) GetEmbeddedChunkIDsByFile(ctx context.Context, fileID int64) ([]int64, error) {
-	rows, err := s.query(ctx, "SELECT id FROM chunks WHERE file_id = $1 AND embedded = 1", fileID)
+	rows, err := s.query(ctx, `
+		SELECT c.id FROM chunks c
+		JOIN files f ON c.file_id = f.id
+		WHERE c.file_id = $1 AND f.project_id = $2 AND c.embedded = 1`, fileID, s.projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -184,9 +188,12 @@ func (s *PgStore) InsertChunks(ctx context.Context, fileID int64, chunks []types
 
 func (s *PgStore) GetChunksByFile(ctx context.Context, fileID int64) ([]types.ChunkRecord, error) {
 	rows, err := s.query(ctx, `
-		SELECT id, file_id, parent_chunk_id, chunk_index, symbol_name, kind,
-		       start_line, end_line, content, token_count, signature, parse_quality
-		FROM chunks WHERE file_id = $1 ORDER BY chunk_index`, fileID)
+		SELECT c.id, c.file_id, c.parent_chunk_id, c.chunk_index, c.symbol_name, c.kind,
+		       c.start_line, c.end_line, c.content, c.token_count, c.signature, c.parse_quality
+		FROM chunks c
+		JOIN files f ON c.file_id = f.id
+		WHERE c.file_id = $1 AND f.project_id = $2
+		ORDER BY c.chunk_index`, fileID, s.projectID)
 	if err != nil {
 		return nil, fmt.Errorf("get chunks: %w", err)
 	}
@@ -198,9 +205,11 @@ func (s *PgStore) GetChunkByID(ctx context.Context, id int64) (*types.ChunkRecor
 	var c types.ChunkRecord
 	var parentID *int64
 	err := s.queryRow(ctx, `
-		SELECT id, file_id, parent_chunk_id, chunk_index, symbol_name, kind,
-		       start_line, end_line, content, token_count, signature, parse_quality
-		FROM chunks WHERE id = $1`, id,
+		SELECT c.id, c.file_id, c.parent_chunk_id, c.chunk_index, c.symbol_name, c.kind,
+		       c.start_line, c.end_line, c.content, c.token_count, c.signature, c.parse_quality
+		FROM chunks c
+		JOIN files f ON c.file_id = f.id
+		WHERE c.id = $1 AND f.project_id = $2`, id, s.projectID,
 	).Scan(&c.ID, &c.FileID, &parentID, &c.ChunkIndex, &c.SymbolName, &c.Kind,
 		&c.StartLine, &c.EndLine, &c.Content, &c.TokenCount, &c.Signature, &c.ParseQuality)
 	if err == pgx.ErrNoRows {
@@ -215,11 +224,12 @@ func (s *PgStore) GetChunkByID(ctx context.Context, id int64) (*types.ChunkRecor
 
 func (s *PgStore) GetSiblingChunks(ctx context.Context, fileID int64, symbolName string, kind string) ([]types.ChunkRecord, error) {
 	rows, err := s.query(ctx, `
-		SELECT id, file_id, parent_chunk_id, chunk_index, symbol_name, kind,
-		       start_line, end_line, content, token_count, signature, parse_quality
-		FROM chunks
-		WHERE file_id = $1 AND symbol_name = $2 AND kind = $3
-		ORDER BY chunk_index`, fileID, symbolName, kind)
+		SELECT c.id, c.file_id, c.parent_chunk_id, c.chunk_index, c.symbol_name, c.kind,
+		       c.start_line, c.end_line, c.content, c.token_count, c.signature, c.parse_quality
+		FROM chunks c
+		JOIN files f ON c.file_id = f.id
+		WHERE c.file_id = $1 AND c.symbol_name = $2 AND c.kind = $3 AND f.project_id = $4
+		ORDER BY c.chunk_index`, fileID, symbolName, kind, s.projectID)
 	if err != nil {
 		return nil, fmt.Errorf("get sibling chunks: %w", err)
 	}
@@ -261,9 +271,12 @@ func (s *PgStore) InsertSymbols(ctx context.Context, fileID int64, symbols []typ
 
 func (s *PgStore) GetSymbolsByFile(ctx context.Context, fileID int64) ([]types.SymbolRecord, error) {
 	rows, err := s.query(ctx, `
-		SELECT id, chunk_id, file_id, name, qualified_name, kind,
-		       line, signature, visibility, is_exported
-		FROM symbols WHERE file_id = $1 ORDER BY line`, fileID)
+		SELECT s.id, s.chunk_id, s.file_id, s.name, s.qualified_name, s.kind,
+		       s.line, s.signature, s.visibility, s.is_exported
+		FROM symbols s
+		JOIN files f ON s.file_id = f.id
+		WHERE s.file_id = $1 AND f.project_id = $2
+		ORDER BY s.line`, fileID, s.projectID)
 	if err != nil {
 		return nil, fmt.Errorf("get symbols: %w", err)
 	}
@@ -288,9 +301,11 @@ func (s *PgStore) GetSymbolByName(ctx context.Context, name string) ([]types.Sym
 func (s *PgStore) GetSymbolByID(ctx context.Context, id int64) (*types.SymbolRecord, error) {
 	var sym types.SymbolRecord
 	err := s.queryRow(ctx, `
-		SELECT id, chunk_id, file_id, name, qualified_name, kind,
-		       line, signature, visibility, is_exported
-		FROM symbols WHERE id = $1`, id,
+		SELECT s.id, s.chunk_id, s.file_id, s.name, s.qualified_name, s.kind,
+		       s.line, s.signature, s.visibility, s.is_exported
+		FROM symbols s
+		JOIN files f ON s.file_id = f.id
+		WHERE s.id = $1 AND f.project_id = $2`, id, s.projectID,
 	).Scan(&sym.ID, &sym.ChunkID, &sym.FileID, &sym.Name, &sym.QualifiedName, &sym.Kind,
 		&sym.Line, &sym.Signature, &sym.Visibility, &sym.IsExported)
 	if err == pgx.ErrNoRows {
@@ -314,7 +329,7 @@ func (s *PgStore) DeleteSymbolsByFile(ctx context.Context, fileID int64) error {
 
 func (s *PgStore) GetFilePathByID(ctx context.Context, fileID int64) (string, error) {
 	var path string
-	err := s.queryRow(ctx, "SELECT path FROM files WHERE id = $1", fileID).Scan(&path)
+	err := s.queryRow(ctx, "SELECT path FROM files WHERE id = $1 AND project_id = $2", fileID, s.projectID).Scan(&path)
 	if err != nil {
 		return "", fmt.Errorf("get path for file %d: %w", fileID, err)
 	}
@@ -323,7 +338,7 @@ func (s *PgStore) GetFilePathByID(ctx context.Context, fileID int64) (string, er
 
 func (s *PgStore) GetFileIsTestByID(ctx context.Context, fileID int64) (bool, error) {
 	var isTest bool
-	err := s.queryRow(ctx, "SELECT is_test FROM files WHERE id = $1", fileID).Scan(&isTest)
+	err := s.queryRow(ctx, "SELECT is_test FROM files WHERE id = $1 AND project_id = $2", fileID, s.projectID).Scan(&isTest)
 	if err != nil {
 		return false, fmt.Errorf("get is_test for file %d: %w", fileID, err)
 	}
@@ -350,15 +365,19 @@ func (s *PgStore) GetIndexStats(ctx context.Context) (*types.IndexStats, error) 
 
 	rows, err := s.query(ctx, "SELECT language, COUNT(*) FROM files WHERE project_id = $1 AND language != '' GROUP BY language", s.projectID)
 	if err != nil {
-		return stats, nil
+		return nil, fmt.Errorf("list languages: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var lang string
 		var count int
-		if err := rows.Scan(&lang, &count); err == nil {
-			stats.Languages[lang] = count
+		if err := rows.Scan(&lang, &count); err != nil {
+			return nil, fmt.Errorf("scan language stat: %w", err)
 		}
+		stats.Languages[lang] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate language stats: %w", err)
 	}
 	return stats, nil
 }
@@ -634,10 +653,13 @@ func (s *PgStore) BatchGetSymbolIDsForChunks(ctx context.Context, chunkIDs []int
 	rows, err := s.query(ctx, `
 		SELECT c.id, s.id AS sym_id
 		FROM chunks c
+		JOIN files cf ON c.file_id = cf.id
 		JOIN symbols s ON s.name = c.symbol_name
+		JOIN files sf ON s.file_id = sf.id
 		WHERE c.id = ANY($1) AND c.symbol_name != ''
+		  AND cf.project_id = $2 AND sf.project_id = $2
 		ORDER BY c.id, CASE WHEN s.file_id = c.file_id THEN 0 ELSE 1 END, s.id
-	`, chunkIDs)
+	`, chunkIDs, s.projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -668,8 +690,11 @@ func (s *PgStore) BatchNeighbors(ctx context.Context, symbolIDs []int64, maxDept
 
 func (s *PgStore) BatchGetChunkIDsForSymbols(ctx context.Context, symbolIDs []int64) (map[int64]int64, error) {
 	result := make(map[int64]int64, len(symbolIDs))
-	rows, err := s.query(ctx,
-		"SELECT id, chunk_id FROM symbols WHERE id = ANY($1)", symbolIDs)
+	rows, err := s.query(ctx, `
+		SELECT s.id, s.chunk_id
+		FROM symbols s
+		JOIN files f ON s.file_id = f.id
+		WHERE s.id = ANY($1) AND f.project_id = $2`, symbolIDs, s.projectID)
 	if err != nil {
 		return nil, err
 	}

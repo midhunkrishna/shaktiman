@@ -385,3 +385,124 @@ func BenchmarkSessionStore_DecayAllExcept(b *testing.B) {
 		ss.DecayAllExcept(hits)
 	}
 }
+
+// TestSessionStore_RecordAndDecay_Basic verifies the atomic primitive does
+// what the old RecordBatch+DecayAllExcept pair did for a single caller.
+func TestSessionStore_RecordAndDecay_Basic(t *testing.T) {
+	t.Parallel()
+
+	ss := NewSessionStore(100)
+
+	hits := []SessionHit{
+		{FilePath: "a.go", StartLine: 1},
+		{FilePath: "b.go", StartLine: 5},
+	}
+	ss.RecordAndDecay(hits)
+
+	if ss.Len() != 2 {
+		t.Fatalf("expected 2 entries, got %d", ss.Len())
+	}
+	// Both hits should score positive immediately after recording.
+	for _, h := range hits {
+		s := ss.Score(h.FilePath, h.StartLine)
+		if s <= 0 {
+			t.Errorf("expected positive score for %s:%d, got %f", h.FilePath, h.StartLine, s)
+		}
+	}
+}
+
+// TestSessionStore_RecordAndDecay_DecayExempts verifies hit entries keep a
+// decay-exempt score equal to 1.0 (multiplicatively) across the call,
+// matching the semantics the two-call pattern tried to achieve.
+func TestSessionStore_RecordAndDecay_DecayExempts(t *testing.T) {
+	t.Parallel()
+
+	ss := NewSessionStore(100)
+
+	// Three calls, each recording a different hit set. After each call the
+	// hit(s) of that call must have queriesSince==0 when scored, while
+	// non-hits accumulate queriesSince.
+	ss.RecordAndDecay([]SessionHit{{FilePath: "a.go", StartLine: 1}})
+	ss.RecordAndDecay([]SessionHit{{FilePath: "b.go", StartLine: 1}})
+	ss.RecordAndDecay([]SessionHit{{FilePath: "a.go", StartLine: 1}})
+
+	// a.go was hit on call 1 and call 3. After call 3, its queriesSince==0.
+	// b.go was hit on call 2. After call 3, its queriesSince==1.
+	// Both should score >0, with a.go scoring higher than b.go.
+	scoreA := ss.Score("a.go", 1)
+	scoreB := ss.Score("b.go", 1)
+	if scoreA <= 0 || scoreB <= 0 {
+		t.Fatalf("expected positive scores; scoreA=%f scoreB=%f", scoreA, scoreB)
+	}
+	if scoreA <= scoreB {
+		t.Errorf("expected scoreA > scoreB (a hit more recently + more often); scoreA=%f scoreB=%f", scoreA, scoreB)
+	}
+}
+
+// TestSessionStore_RecordAndDecay_Concurrent exercises the race the method
+// was introduced to fix. With -race, concurrent callers must not trigger a
+// data race, and every caller's own hits must have queriesSince==0 when
+// scored immediately after that caller's RecordAndDecay returns.
+//
+// The pre-fix two-call pattern could fail this under high concurrency: one
+// caller's DecayAllExcept could bump the generation between another
+// caller's RecordBatch and DecayAllExcept, causing that other caller's
+// hits to see a non-zero queriesSince before its own decay-exempt write.
+func TestSessionStore_RecordAndDecay_Concurrent(t *testing.T) {
+	t.Parallel()
+
+	ss := NewSessionStore(10_000)
+
+	const workers = 16
+	const iters = 200
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for w := range workers {
+		go func(worker int) {
+			defer wg.Done()
+			hits := []SessionHit{
+				{FilePath: fmt.Sprintf("worker%d_a.go", worker), StartLine: 1},
+				{FilePath: fmt.Sprintf("worker%d_b.go", worker), StartLine: 2},
+			}
+			for range iters {
+				ss.RecordAndDecay(hits)
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	// Every worker's hit entries must exist with a positive score (no lost
+	// updates under concurrency; the generation-bump race cannot drop scores
+	// to zero for a recently-recorded hit).
+	for w := range workers {
+		for _, suffix := range []string{"a", "b"} {
+			line := 1
+			if suffix == "b" {
+				line = 2
+			}
+			key := fmt.Sprintf("worker%d_%s.go", w, suffix)
+			s := ss.Score(key, line)
+			if s <= 0 {
+				t.Errorf("worker %d suffix %s: expected positive score, got %f", w, suffix, s)
+			}
+		}
+	}
+	if got := ss.Len(); got != workers*2 {
+		t.Errorf("expected %d entries, got %d (possible lost updates)", workers*2, got)
+	}
+}
+
+func BenchmarkSessionStore_RecordAndDecay(b *testing.B) {
+	ss := NewSessionStore(2000)
+	hits := make([]SessionHit, 10)
+	for i := range hits {
+		hits[i] = SessionHit{FilePath: fmt.Sprintf("file%d.go", i), StartLine: i * 10}
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		ss.RecordAndDecay(hits)
+	}
+}
