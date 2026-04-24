@@ -488,6 +488,22 @@ func RunWriterStoreTests(t *testing.T, factory WriterStoreFactory) {
 		}
 	})
 
+	t.Run("DeleteFileByPath_PropagatesGenuineErrors", func(t *testing.T) {
+		// A cancelled context is a transient error — distinct from ErrNoRows.
+		// The previous implementation swallowed all lookup errors as "not
+		// found" which silently hid DB-level failures (locked, corrupt).
+		// The fix uses errors.Is(err, sql.ErrNoRows)/pgx.ErrNoRows to
+		// distinguish; cancelled context must propagate.
+		store := factory(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // pre-cancel before the call
+
+		_, err := store.DeleteFileByPath(ctx, "anything.go")
+		if err == nil {
+			t.Error("expected cancelled context to surface as an error, got nil")
+		}
+	})
+
 	t.Run("GetEmbeddedChunkIDsByFile", func(t *testing.T) {
 		store := factory(t)
 		ctx := context.Background()

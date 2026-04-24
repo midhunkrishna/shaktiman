@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -142,15 +143,22 @@ func (s *Store) DeleteFile(ctx context.Context, fileID int64) error {
 
 // DeleteFileByPath removes a file by path and cascades to chunks/symbols.
 // Returns the file ID that was deleted, or 0 if not found.
+// Returns a non-nil error only for genuine failures (e.g. DB locked,
+// corruption) — a missing row is not an error.
 func (s *Store) DeleteFileByPath(ctx context.Context, path string) (int64, error) {
 	var fileID int64
 	err := s.db.WithWriteTx(func(tx *sql.Tx) error {
 		err := tx.QueryRowContext(ctx, "SELECT id FROM files WHERE path = ?", path).Scan(&fileID)
-		if err != nil {
-			return nil // not found → no-op
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil // genuinely not found → no-op
 		}
-		_, err = tx.ExecContext(ctx, "DELETE FROM files WHERE id = ?", fileID)
-		return err
+		if err != nil {
+			return fmt.Errorf("lookup file %s: %w", path, err)
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM files WHERE id = ?", fileID); err != nil {
+			return fmt.Errorf("delete file %d: %w", fileID, err)
+		}
+		return nil
 	})
 	return fileID, err
 }
