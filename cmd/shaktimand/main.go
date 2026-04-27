@@ -197,10 +197,14 @@ func runAsProxy(projectRoot string) {
 		os.Exit(1)
 	}
 
-	slog.Info("entering proxy mode", "project_root", projectRoot, "socket", sockPath)
+	markerPath := daemon.ReadyMarkerPath(projectRoot)
+	slog.Info("entering proxy mode",
+		"project_root", projectRoot,
+		"socket", sockPath,
+		"marker", markerPath)
 
-	if err := proxy.WaitForSocket(sockPath, promotionWaitTimeout); err != nil {
-		fmt.Fprintf(os.Stderr, "error: leader daemon socket not available: %v\n", err)
+	if err := proxy.WaitForReady(sockPath, markerPath, promotionWaitTimeout); err != nil {
+		fmt.Fprintf(os.Stderr, "error: leader daemon not ready: %v\n", err)
 		fmt.Fprintf(os.Stderr, "hint: the leader daemon may still be starting up\n")
 		os.Exit(1)
 	}

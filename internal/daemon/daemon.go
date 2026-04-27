@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +22,23 @@ import (
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )
+
+// ReadyMarkerName is the file written under .shaktiman/ when the leader's
+// MCP socket server is accepting connections. Proxies wait for this
+// before dialing to avoid races against partially-initialized leaders.
+const ReadyMarkerName = "ready"
+
+// socketShutdownTimeout bounds graceful socket-server shutdown. The
+// previous 2s budget aborted in-flight tools/call mid-stream, surfacing
+// to clients as truncated JSON responses; 15s gives realistic tool
+// invocations time to drain.
+const socketShutdownTimeout = 15 * time.Second
+
+// ReadyMarkerPath returns the absolute path of the readiness marker
+// file for a given project root.
+func ReadyMarkerPath(projectRoot string) string {
+	return filepath.Join(projectRoot, ".shaktiman", ReadyMarkerName)
+}
 
 // parserVersionConfigKey is the config-table key under which the parser
 // chunk algorithm version is persisted. When the running code's
@@ -227,6 +246,15 @@ func (d *Daemon) Start(ctx context.Context) error {
 		mux := http.NewServeMux()
 		mux.Handle("/mcp", httpHandler)
 		d.socketServer = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+
+		readyPath := ReadyMarkerPath(d.cfg.ProjectRoot)
+		// Write the readiness marker just before Serve. The window between
+		// marker creation and the accept loop being live is sub-millisecond;
+		// the kernel listen backlog absorbs any dial that races.
+		if err := writeReadyMarker(readyPath, d.sessionID); err != nil {
+			d.logger.Warn("write ready marker failed", "err", err, "path", readyPath)
+		}
+
 		go func() {
 			d.logger.Info("MCP socket server starting", "addr", d.SocketListener.Addr().String())
 			if err := d.socketServer.Serve(d.SocketListener); err != nil && err != http.ErrServerClosed {
@@ -432,9 +460,15 @@ func (d *Daemon) Stop() error {
 	start := time.Now()
 	d.logger.Info("shutting down")
 
+	// Remove the readiness marker so proxies that race their dial against
+	// our shutdown observe the down state via marker absence.
+	_ = os.Remove(ReadyMarkerPath(d.cfg.ProjectRoot))
+
 	// Shut down socket server first so proxies see connection-refused quickly.
+	// The deadline must be long enough for in-flight tools/call requests to
+	// drain — a 2s budget surfaced as truncated JSON to clients.
 	if d.socketServer != nil {
-		socketCtx, socketCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		socketCtx, socketCancel := context.WithTimeout(context.Background(), socketShutdownTimeout)
 		if err := d.socketServer.Shutdown(socketCtx); err != nil {
 			d.logger.Warn("socket server shutdown error", "err", err)
 		}
@@ -477,6 +511,36 @@ func (d *Daemon) Stop() error {
 	return nil
 }
 
+
+// writeReadyMarker creates the readiness marker file. The marker holds the
+// leader's session ID so that future tooling can correlate proxy mode
+// with the leader instance it is bridging to. Writes are atomic via
+// rename so a partially-written file is never observed.
+func writeReadyMarker(path, sessionID string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return fmt.Errorf("mkdir ready marker dir: %w", err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".ready-*")
+	if err != nil {
+		return fmt.Errorf("create temp ready marker: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+
+	payload := fmt.Sprintf("session_id=%s\npid=%d\nstarted=%s\n",
+		sessionID, os.Getpid(), time.Now().UTC().Format(time.RFC3339))
+	if _, err := tmp.WriteString(payload); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write ready marker: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close ready marker: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("rename ready marker into place: %w", err)
+	}
+	return nil
+}
 
 // saveVectors persists vectors if the store supports explicit persistence.
 func (d *Daemon) saveVectors(path string) error {
