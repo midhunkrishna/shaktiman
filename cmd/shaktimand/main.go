@@ -7,11 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
-
 	"time"
 
 	"github.com/shaktimanai/shaktiman/internal/daemon"
@@ -19,6 +19,28 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/proxy"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
+
+// promotionWaitTimeout bounds how long a freshly-promoted proxy waits
+// for the leader socket to come up. Cold indexes on large repositories
+// routinely exceed the original 5s bound; 30s covers typical cold
+// starts while still failing loudly on genuinely broken leaders.
+const promotionWaitTimeout = 30 * time.Second
+
+// promotionBackoffMin and Max bound the jittered sleep before a proxy
+// re-execs itself to claim the leader slot. On a simultaneous
+// leader-exit event, multiple proxies would otherwise all re-exec in
+// lockstep; the loser(s) then race WaitForSocket against a cold leader
+// start-up. Jitter spreads the attempts out.
+const (
+	promotionBackoffMin = 50 * time.Millisecond
+	promotionBackoffMax = 500 * time.Millisecond
+)
+
+// promotionBackoff returns a uniformly-random sleep within the
+// [promotionBackoffMin, promotionBackoffMax] window.
+func promotionBackoff() time.Duration {
+	return promotionBackoffMin + rand.N(promotionBackoffMax-promotionBackoffMin)
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -175,10 +197,14 @@ func runAsProxy(projectRoot string) {
 		os.Exit(1)
 	}
 
-	slog.Info("entering proxy mode", "project_root", projectRoot, "socket", sockPath)
+	markerPath := daemon.ReadyMarkerPath(projectRoot)
+	slog.Info("entering proxy mode",
+		"project_root", projectRoot,
+		"socket", sockPath,
+		"marker", markerPath)
 
-	if err := proxy.WaitForSocket(sockPath, 5*time.Second); err != nil {
-		fmt.Fprintf(os.Stderr, "error: leader daemon socket not available: %v\n", err)
+	if err := proxy.WaitForReady(sockPath, markerPath, promotionWaitTimeout); err != nil {
+		fmt.Fprintf(os.Stderr, "error: leader daemon not ready: %v\n", err)
 		fmt.Fprintf(os.Stderr, "hint: the leader daemon may still be starting up\n")
 		os.Exit(1)
 	}
@@ -196,11 +222,30 @@ func runAsProxy(projectRoot string) {
 	bridgeErr := b.Run(ctx)
 
 	if errors.Is(bridgeErr, proxy.ErrLeaderGone) {
-		slog.Info("leader exited, attempting promotion via re-exec")
+		// Jittered backoff spreads simultaneous promotion attempts across
+		// concurrent proxies; without it, all proxies that observe
+		// ErrLeaderGone re-exec in lockstep and the losers race
+		// WaitForSocket against a cold-starting leader.
+		sleep := promotionBackoff()
+		slog.Info("leader exited, promoting via re-exec after backoff",
+			"backoff_ms", sleep.Milliseconds())
+		time.Sleep(sleep)
+
+		// Resolve our canonical executable path. os.Args[0] may be a
+		// relative path or a name resolved via $PATH, which Exec will
+		// re-resolve from the NEW process's cwd/env — brittle across
+		// binary upgrades or working-directory changes between start
+		// and promotion.
+		exe, exeErr := os.Executable()
+		if exeErr != nil {
+			fmt.Fprintf(os.Stderr, "error: resolve own executable for re-exec: %v\n", exeErr)
+			os.Exit(1)
+		}
+
 		// Re-exec: flock fd has O_CLOEXEC (Go default), stdin/stdout preserved.
 		// The re-exec'd process will attempt flock and succeed (old leader released it).
 		// If another proxy wins the race, we re-enter proxy mode.
-		execErr := syscall.Exec(os.Args[0], os.Args, os.Environ()) //nolint:gosec // re-exec of own binary for leader promotion; os.Args[0] is this process's own path
+		execErr := syscall.Exec(exe, os.Args, os.Environ()) //nolint:gosec // re-exec of own binary for leader promotion; exe resolved via os.Executable()
 
 		// Exec replaces the process; if we get here, it failed.
 		fmt.Fprintf(os.Stderr, "error: re-exec failed: %v\n", execErr)

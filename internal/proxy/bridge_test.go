@@ -296,6 +296,112 @@ func TestBridge_SessionHeader(t *testing.T) {
 	}
 }
 
+// TestBridge_SessionRefresh verifies that the bridge picks up a new
+// session ID from any response, not just the first. This matters when
+// the leader rotates session state mid-stream (e.g. re-initialize); the
+// previous bufio.Scanner-based bridge captured only the first ID and
+// kept sending it forever.
+func TestBridge_SessionRefresh(t *testing.T) {
+	t.Parallel()
+
+	sockPath := testSocketPath(t)
+
+	var mu sync.Mutex
+	var receivedSessionIDs []string
+	respIDs := []string{"sess-1", "sess-2", "sess-3"}
+	var respIdx int
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	defer ln.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		receivedSessionIDs = append(receivedSessionIDs, r.Header.Get("Mcp-Session-Id"))
+		id := respIDs[respIdx]
+		respIdx++
+		mu.Unlock()
+
+		body, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Mcp-Session-Id", id)
+		w.Write(body)
+	})
+
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(ln)
+	defer srv.Close()
+
+	input := `{"jsonrpc":"2.0","id":1,"method":"a"}` + "\n" +
+		`{"jsonrpc":"2.0","id":2,"method":"b"}` + "\n" +
+		`{"jsonrpc":"2.0","id":3,"method":"c"}` + "\n"
+	stdin := strings.NewReader(input)
+	var stdout bytes.Buffer
+
+	b := &Bridge{
+		SocketPath: sockPath,
+		Stdin:      stdin,
+		Stdout:     &stdout,
+		Logger:     slog.Default(),
+	}
+
+	if err := b.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(receivedSessionIDs) != 3 {
+		t.Fatalf("expected 3 requests, got %d", len(receivedSessionIDs))
+	}
+	if receivedSessionIDs[0] != "" {
+		t.Fatalf("first request: want empty session ID, got %q", receivedSessionIDs[0])
+	}
+	if receivedSessionIDs[1] != "sess-1" {
+		t.Fatalf("second request: want sess-1, got %q", receivedSessionIDs[1])
+	}
+	// Critical: third request must use sess-2 (refreshed), not sess-1.
+	if receivedSessionIDs[2] != "sess-2" {
+		t.Fatalf("third request: want sess-2 (refreshed), got %q", receivedSessionIDs[2])
+	}
+}
+
+// TestBridge_OversizedPayload sends a 2 MiB payload (above the old 1 MiB
+// bufio.Scanner cap) to confirm json.Decoder framing handles it.
+func TestBridge_OversizedPayload(t *testing.T) {
+	t.Parallel()
+
+	sockPath := testSocketPath(t)
+	ln, srv := startTestHTTPServer(t, sockPath)
+	defer ln.Close()
+	defer srv.Close()
+
+	large := `{"jsonrpc":"2.0","id":1,"method":"test","params":{"data":"` +
+		strings.Repeat("x", 2*1024*1024) +
+		`"}}` + "\n"
+	stdin := strings.NewReader(large)
+	var stdout bytes.Buffer
+
+	b := &Bridge{
+		SocketPath: sockPath,
+		Stdin:      stdin,
+		Stdout:     &stdout,
+		Logger:     slog.Default(),
+	}
+
+	if err := b.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if stdout.Len() < 2*1024*1024 {
+		t.Fatalf("response too short (%d bytes)", stdout.Len())
+	}
+}
+
 func TestBridge_LeaderExitsMidStream(t *testing.T) {
 	t.Parallel()
 
@@ -435,8 +541,8 @@ func TestBridge_ScannerError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from scanner")
 	}
-	if !strings.Contains(err.Error(), "stdin scan") {
-		t.Fatalf("expected stdin scan error, got: %v", err)
+	if !strings.Contains(err.Error(), "stdin decode") {
+		t.Fatalf("expected stdin decode error, got: %v", err)
 	}
 }
 
