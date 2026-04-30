@@ -5,12 +5,17 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -42,13 +47,80 @@ func promotionBackoff() time.Duration {
 	return promotionBackoffMin + rand.N(promotionBackoffMax-promotionBackoffMin)
 }
 
-func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "usage: shaktimand <project-root>\n")
-		os.Exit(1)
+type cliFlags struct {
+	logLevel    string
+	pprofAddr   string
+	showVersion bool
+	projectRoot string
+}
+
+func parseFlags(args []string, stderr io.Writer) (cliFlags, error) {
+	fs := flag.NewFlagSet("shaktimand", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, "usage: shaktimand [flags] <project-root>\n\nflags:\n")
+		fs.PrintDefaults()
 	}
 
-	projectRoot := os.Args[1]
+	var f cliFlags
+	fs.StringVar(&f.logLevel, "log-level", "",
+		"slog log level (debug|info|warn|error); falls back to $SHAKTIMAN_LOG_LEVEL then info")
+	fs.StringVar(&f.pprofAddr, "pprof-addr", "",
+		"bind net/http/pprof on this addr (e.g. 127.0.0.1:6060); empty disables it")
+	fs.BoolVar(&f.showVersion, "version", false, "print version and exit")
+
+	if err := fs.Parse(args); err != nil {
+		return f, err
+	}
+	if f.showVersion {
+		return f, nil
+	}
+	rest := fs.Args()
+	if len(rest) < 1 {
+		fs.Usage()
+		return f, fmt.Errorf("missing <project-root>")
+	}
+	f.projectRoot = rest[0]
+	return f, nil
+}
+
+// resolveLogLevel picks the effective slog level from (in order) the
+// --log-level flag, $SHAKTIMAN_LOG_LEVEL, then info. Unknown values are
+// not silently ignored — they return a non-empty warning string the
+// caller logs once the logger is set up.
+func resolveLogLevel(flagVal string) (slog.Level, string) {
+	source, raw := "", ""
+	switch {
+	case flagVal != "":
+		source, raw = "--log-level", flagVal
+	case os.Getenv("SHAKTIMAN_LOG_LEVEL") != "":
+		source, raw = "SHAKTIMAN_LOG_LEVEL", os.Getenv("SHAKTIMAN_LOG_LEVEL")
+	default:
+		return slog.LevelInfo, ""
+	}
+
+	var lvl slog.Level
+	if err := lvl.UnmarshalText([]byte(raw)); err != nil {
+		return slog.LevelInfo, fmt.Sprintf(
+			"unknown log level %q from %s; defaulting to info", raw, source)
+	}
+	return lvl, ""
+}
+
+func main() {
+	flags, err := parseFlags(os.Args[1:], os.Stderr)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
+		os.Exit(2)
+	}
+	if flags.showVersion {
+		fmt.Println(versionLine())
+		return
+	}
+
+	projectRoot := flags.projectRoot
 
 	// Validate project root exists
 	info, err := os.Stat(projectRoot)
@@ -71,6 +143,14 @@ func main() {
 	}
 	logPath := filepath.Join(logDir, "shaktimand.log")
 
+	logLevel, levelWarning := resolveLogLevel(flags.logLevel)
+
+	// Ignore SIGPIPE before any I/O is wired up. The MCP daemon writes to
+	// long-lived pipes (stdout, sockets) whose readers can disappear; the
+	// default SIGPIPE action is to terminate the process, which would
+	// abort indexing on a benign client disconnect.
+	signal.Ignore(syscall.SIGPIPE)
+
 	// Acquire singleton lock for this project. Ensures exactly one leader daemon.
 	// If another daemon holds the lock, enter proxy mode instead.
 	lock, lockErr := lockfile.Acquire(projectRoot)
@@ -78,7 +158,10 @@ func main() {
 		if errors.Is(lockErr, lockfile.ErrAlreadyLocked) {
 			// Proxy: append to shared log — never rotate or truncate, as
 			// the leader's file descriptor would become detached.
-			setupLogging(logPath, false)
+			setupLogging(logPath, false, logLevel)
+			if levelWarning != "" {
+				slog.Warn(levelWarning)
+			}
 			runAsProxy(projectRoot)
 			return
 		}
@@ -88,7 +171,10 @@ func main() {
 	defer func() { _ = lock.Release() }()
 
 	// Leader: rotate previous log, then create a fresh one.
-	setupLogging(logPath, true)
+	setupLogging(logPath, true, logLevel)
+	if levelWarning != "" {
+		slog.Warn(levelWarning)
+	}
 
 	cfg := types.DefaultConfig(projectRoot)
 
@@ -103,6 +189,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Optional pprof listener for diagnostics. Bound to whatever the user
+	// passed; if they bind 0.0.0.0 they accepted that risk explicitly.
+	if flags.pprofAddr != "" {
+		startPprof(flags.pprofAddr)
+	}
+
 	// Create Unix domain socket for proxy clients.
 	socketListener, err := lock.Listen()
 	if err != nil {
@@ -115,20 +207,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	slog.Info("shaktimand starting",
-		"project_root", cfg.ProjectRoot,
-		"db_path", cfg.DBPath,
-		"embed_enabled", cfg.EmbedEnabled,
-		"embed_model", cfg.EmbeddingModel,
-		"ollama_url", cfg.OllamaURL,
-		"watcher_enabled", cfg.WatcherEnabled,
-		"search_max_results", cfg.SearchMaxResults,
-		"search_default_mode", cfg.SearchDefaultMode,
-		"search_min_score", cfg.SearchMinScore,
-		"context_enabled", cfg.ContextEnabled,
-		"context_budget_tokens", cfg.ContextBudgetTokens,
-		"pid", os.Getpid(),
-	)
+	logStartupBanner(cfg, lock.SocketPath(), flags.pprofAddr)
 
 	d, err := daemon.New(cfg)
 	if err != nil {
@@ -147,11 +226,71 @@ func main() {
 	}
 }
 
+// logStartupBanner emits a single grep-able structured log line summarizing
+// version, runtime, configuration, and listener addresses. Operators reading
+// log archives use this as the anchor for "what was running on this date".
+func logStartupBanner(cfg types.Config, socketPath, pprofAddr string) {
+	rev := vcsRevision()
+	if vcsModified() {
+		rev += "-dirty"
+	}
+	slog.Info("shaktimand starting",
+		"version", binaryVersion,
+		"vcs_revision", rev,
+		"go_version", runtime.Version(),
+		"goos", runtime.GOOS,
+		"goarch", runtime.GOARCH,
+		"pid", os.Getpid(),
+		"project_root", cfg.ProjectRoot,
+		"db_backend", cfg.DatabaseBackend,
+		"db_path", cfg.DBPath,
+		"vector_backend", cfg.VectorBackend,
+		"embed_enabled", cfg.EmbedEnabled,
+		"embed_model", cfg.EmbeddingModel,
+		"ollama_url", cfg.OllamaURL,
+		"watcher_enabled", cfg.WatcherEnabled,
+		"search_max_results", cfg.SearchMaxResults,
+		"search_default_mode", cfg.SearchDefaultMode,
+		"search_min_score", cfg.SearchMinScore,
+		"context_enabled", cfg.ContextEnabled,
+		"context_budget_tokens", cfg.ContextBudgetTokens,
+		"socket_path", socketPath,
+		"pprof_addr", pprofAddr,
+	)
+}
+
+// startPprof launches an http.Server hosting net/http/pprof on a
+// private mux in its own goroutine. The handlers are registered on a
+// dedicated ServeMux rather than http.DefaultServeMux so pprof routes
+// are never accidentally exposed elsewhere (gosec G108). Failure to
+// bind logs a warning rather than crashing the daemon — pprof is
+// opt-in diagnostics, not core functionality.
+func startPprof(addr string) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() {
+		slog.Info("pprof server listening", "addr", addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Warn("pprof server stopped", "err", err)
+		}
+	}()
+}
+
 // setupLogging configures slog to write to logPath. When rotate is true
 // (leader mode), the existing log is moved to session-logs/ and a fresh file
 // is created. When rotate is false (proxy mode), the file is opened in append
 // mode so the leader's file descriptor is not invalidated.
-func setupLogging(logPath string, rotate bool) {
+func setupLogging(logPath string, rotate bool, level slog.Level) {
 	if rotate {
 		if info, err := os.Stat(logPath); err == nil && info.Size() > 0 {
 			sessionDir := filepath.Join(filepath.Dir(logPath), "session-logs")
@@ -174,16 +313,8 @@ func setupLogging(logPath string, rotate bool) {
 		os.Exit(1)
 	}
 
-	logLevel := slog.LevelInfo
-	if lvl := os.Getenv("SHAKTIMAN_LOG_LEVEL"); lvl != "" {
-		var l slog.Level
-		if err := l.UnmarshalText([]byte(lvl)); err == nil {
-			logLevel = l
-		}
-	}
-
 	logger := slog.New(slog.NewJSONHandler(logFile, &slog.HandlerOptions{
-		Level: logLevel,
+		Level: level,
 	}))
 	slog.SetDefault(logger)
 }
@@ -257,4 +388,3 @@ func runAsProxy(projectRoot string) {
 		os.Exit(1)
 	}
 }
-

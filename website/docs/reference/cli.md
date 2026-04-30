@@ -149,10 +149,10 @@ See [`summary` MCP tool](/reference/mcp-tools/summary).
 ## `shaktimand` (MCP daemon)
 
 ```
-shaktimand <project-root>
+shaktimand [flags] <project-root>
 ```
 
-Takes a single positional argument: the project root. The daemon:
+Takes the project root as its sole positional argument. The daemon:
 
 1. Canonicalizes the project root path (`symlinks + relative → absolute`) so two
    daemons can't race by addressing the same directory differently.
@@ -167,6 +167,31 @@ Takes a single positional argument: the project root. The daemon:
 
 `shaktimand` is not normally run by hand. Wire it via your MCP client's
 configuration (for Claude Code, see [Claude Code Setup](/getting-started/claude-code-setup)).
+
+### Flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--help` | — | Print usage and exit. |
+| `--version` | — | Print binary version (with VCS revision when built from a checkout) and exit. |
+| `--log-level <debug\|info\|warn\|error>` | `info` | slog level. Falls back to `$SHAKTIMAN_LOG_LEVEL` if the flag is unset; unknown values log a warning to `shaktimand.log` and continue at `info`. |
+| `--pprof-addr <host:port>` | — | If set, serves `net/http/pprof` on this address. Disabled when empty. Bind to a loopback address (e.g. `127.0.0.1:6060`) unless you explicitly intend external access. |
+
+### Startup banner
+
+On startup the leader writes one structured `slog` line at `info` level summarizing
+version, VCS revision (with a `-dirty` suffix when the working tree was modified at
+build time), Go runtime, pid, project root, db backend, vector backend, embedding
+config, socket path, and `--pprof-addr`. Use this line as the anchor when scanning
+log archives during a post-mortem. Proxy-mode processes log a separate `entering
+proxy mode` line instead.
+
+### Signals
+
+`shaktimand` ignores `SIGPIPE`. The daemon writes to long-lived pipes (stdin/stdout
+to the MCP client, the proxy socket); a benign reader disconnect would otherwise
+terminate the process and abort indexing. `SIGINT` and `SIGTERM` trigger graceful
+shutdown.
 
 ## Source of truth
 
