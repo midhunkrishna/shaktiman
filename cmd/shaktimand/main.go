@@ -11,7 +11,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
-	_ "net/http/pprof" // registers pprof handlers; only listened on if --pprof-addr is set
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -259,12 +259,23 @@ func logStartupBanner(cfg types.Config, socketPath, pprofAddr string) {
 	)
 }
 
-// startPprof launches an http.Server hosting net/http/pprof in its own
-// goroutine. Failure to bind logs a warning rather than crashing the
-// daemon — pprof is opt-in diagnostics, not core functionality.
+// startPprof launches an http.Server hosting net/http/pprof on a
+// private mux in its own goroutine. The handlers are registered on a
+// dedicated ServeMux rather than http.DefaultServeMux so pprof routes
+// are never accidentally exposed elsewhere (gosec G108). Failure to
+// bind logs a warning rather than crashing the daemon — pprof is
+// opt-in diagnostics, not core functionality.
 func startPprof(addr string) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
 	srv := &http.Server{
 		Addr:              addr,
+		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {
