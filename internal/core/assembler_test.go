@@ -299,4 +299,68 @@ func TestAssemble_BestEffortSpillOver(t *testing.T) {
 	if pkg.TotalTokens != 70 {
 		t.Errorf("expected TotalTokens=70, got %d", pkg.TotalTokens)
 	}
+
+	// Spill-over must surface a budget_overflow flag in Meta so callers
+	// can detect that TotalTokens > BudgetTokens; silent overflow used
+	// to ship past contract violators in MCP responses.
+	if got, _ := pkg.Meta["budget_overflow"].(bool); !got {
+		t.Errorf("expected Meta[budget_overflow]=true, got Meta=%v", pkg.Meta)
+	}
+	if got, _ := pkg.Meta["budget_overflow_tokens"].(int); got != 20 {
+		t.Errorf("expected Meta[budget_overflow_tokens]=20, got %v", pkg.Meta["budget_overflow_tokens"])
+	}
+}
+
+// TestAssemble_TruncatedFlag verifies that a single oversized first
+// chunk produces a truncated marker so callers know the content was
+// sliced.
+func TestAssemble_TruncatedFlag(t *testing.T) {
+	t.Parallel()
+
+	// 200-token chunk against a 50-token budget triggers truncateChunk.
+	candidates := []types.ScoredResult{
+		{ChunkID: 1, Score: 0.9, Path: "a.go", SymbolName: "Big",
+			Kind: "function", StartLine: 1, EndLine: 50,
+			Content:    strings.Repeat("line\n", 200),
+			TokenCount: 200},
+	}
+
+	pkg := Assemble(AssemblerInput{
+		Candidates:   candidates,
+		BudgetTokens: 50,
+	})
+
+	if got, _ := pkg.Meta["truncated"].(bool); !got {
+		t.Errorf("expected Meta[truncated]=true, got Meta=%v", pkg.Meta)
+	}
+	if pkg.TotalTokens > 50 {
+		t.Errorf("truncated package should fit budget, got %d", pkg.TotalTokens)
+	}
+}
+
+// TestAssemble_NoFlagsWhenWithinBudget guards against false positives.
+// Normal packing must leave Meta untouched.
+func TestAssemble_NoFlagsWhenWithinBudget(t *testing.T) {
+	t.Parallel()
+
+	candidates := []types.ScoredResult{
+		{ChunkID: 1, Score: 0.9, Path: "a.go",
+			Kind: "function", StartLine: 1, EndLine: 5,
+			Content: "ok", TokenCount: 10},
+		{ChunkID: 2, Score: 0.8, Path: "b.go",
+			Kind: "function", StartLine: 1, EndLine: 5,
+			Content: "ok", TokenCount: 20},
+	}
+
+	pkg := Assemble(AssemblerInput{
+		Candidates:   candidates,
+		BudgetTokens: 100,
+	})
+
+	if _, ok := pkg.Meta["budget_overflow"]; ok {
+		t.Errorf("unexpected budget_overflow flag in Meta=%v", pkg.Meta)
+	}
+	if _, ok := pkg.Meta["truncated"]; ok {
+		t.Errorf("unexpected truncated flag in Meta=%v", pkg.Meta)
+	}
 }

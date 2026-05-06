@@ -3,8 +3,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
@@ -12,27 +12,34 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
-// resultCountMap carries result count from handlers to withMetrics.
-// Keyed by *CallToolResult pointer; cleaned up via LoadAndDelete after each call.
-var resultCountMap sync.Map
+// mcpHandlerTimeout bounds a single MCP tool call. Long enough for a
+// cold-cache hybrid search to complete (Ollama embed + DB read +
+// re-rank can comfortably take tens of seconds); short enough that a
+// genuinely wedged handler doesn't strand the daemon.
+const mcpHandlerTimeout = 2 * time.Minute
 
-// withResultCount attaches a result count to a CallToolResult for metrics extraction.
-func withResultCount(result *mcpsdk.CallToolResult, count int) *mcpsdk.CallToolResult {
-	if result != nil {
-		resultCountMap.Store(result, count)
+// maxResponseBytes caps the marshaled response size returned by any
+// MCP tool. The MCP framing layer doesn't enforce a frame-size cap
+// directly, and oversized JSON has surfaced to clients as opaque
+// "transport closed" errors. Capping at the handler boundary lets us
+// fail loudly with a structured tool error instead.
+const maxResponseBytes = 8 * 1024 * 1024 // 8 MiB
+
+type resultCountKey struct{}
+
+// withResultCount records the result count for the current handler
+// invocation in the context-scoped slot installed by withMetrics. It
+// returns result unchanged so handler call sites stay terse:
+//
+//	return withResultCount(ctx, mcpsdk.NewToolResultText(...), len(rows)), nil
+//
+// If ctx has no slot (e.g. handler called outside withMetrics in a
+// test), the call is a no-op.
+func withResultCount(ctx context.Context, result *mcpsdk.CallToolResult, count int) *mcpsdk.CallToolResult {
+	if slot, ok := ctx.Value(resultCountKey{}).(*int); ok {
+		*slot = count
 	}
 	return result
-}
-
-// extractResultCount retrieves and removes the result count attached to a CallToolResult.
-func extractResultCount(result *mcpsdk.CallToolResult) int {
-	if result == nil {
-		return 0
-	}
-	if v, ok := resultCountMap.LoadAndDelete(result); ok {
-		return v.(int)
-	}
-	return 0
 }
 
 // ToolCallRecord is an alias for types.ToolCallRecord.
@@ -148,7 +155,12 @@ func responseBytes(result *mcpsdk.CallToolResult) int {
 	return total
 }
 
-// withMetrics wraps an MCP tool handler with metrics recording and structured logging.
+// withMetrics wraps an MCP tool handler with metrics recording,
+// structured logging, a per-call timeout, a response-size cap, and a
+// context-scoped result-count slot. The slot replaces the previous
+// pointer-keyed sync.Map carrier, which leaked entries on handler-
+// returns-nil-result paths and was theoretically vulnerable to
+// pointer reuse.
 func withMetrics(name string, recorder *MetricsRecorder, h handlerFunc) handlerFunc {
 	logger := slog.Default().With("component", "mcp")
 	return func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
@@ -157,13 +169,33 @@ func withMetrics(name string, recorder *MetricsRecorder, h handlerFunc) handlerF
 		argsJSON, _ := json.Marshal(req.GetArguments())
 		argsBytes := len(argsJSON)
 
-		result, err := h(ctx, req)
+		// Per-call timeout. We don't propagate the deadline to the parent
+		// because the MCP server may dispatch the next request on the
+		// same parent ctx.
+		callCtx, cancel := context.WithTimeout(ctx, mcpHandlerTimeout)
+		defer cancel()
+
+		var resultCount int
+		callCtx = context.WithValue(callCtx, resultCountKey{}, &resultCount)
+
+		result, err := h(callCtx, req)
+
+		// Response-size guard. An oversized JSON payload reaches the MCP
+		// framing layer as a single write and has historically surfaced
+		// to clients as opaque transport closures. Replace it with a
+		// structured tool error so the operator sees the cause.
+		respBytes := responseBytes(result)
+		if respBytes > maxResponseBytes {
+			err = nil
+			result = mcpsdk.NewToolResultError(fmt.Sprintf(
+				"response size %d bytes exceeds cap %d; refine the query (smaller scope, narrower path, fewer max results)",
+				respBytes, maxResponseBytes))
+			respBytes = responseBytes(result)
+		}
 
 		duration := time.Since(start)
 		isErr := err != nil || (result != nil && result.IsError)
-		respBytes := responseBytes(result)
 		tokensEst := respBytes / 4
-		resultCount := extractResultCount(result)
 
 		// Detailed metrics at debug level
 		logger.Debug("tool_call_metrics",

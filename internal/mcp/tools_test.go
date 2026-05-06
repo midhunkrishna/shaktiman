@@ -1127,54 +1127,52 @@ func TestDependenciesHandler_CallerDirection(t *testing.T) {
 
 // ── Additional diffHandler coverage ──
 
-func TestDiffHandler_LimitClamping(t *testing.T) {
+// TestDiffHandler_RejectsInvalidLimit covers the new explicit-error
+// behavior. The previous handler silently clamped both directions,
+// hiding caller mistakes (e.g. a UI passing 0 expecting "no limit").
+func TestDiffHandler_RejectsInvalidLimit(t *testing.T) {
 	t.Parallel()
 	handler := setupDiffHandler(t)
 	ctx := context.Background()
 
-	// limit=0 should be clamped to 50 (no error).
-	result, err := handler(ctx, makeToolRequest(map[string]any{
-		"limit": float64(0),
-	}))
-	if err != nil {
-		t.Fatalf("diffHandler: %v", err)
+	cases := []struct {
+		name string
+		val  float64
+	}{
+		{"zero", 0},
+		{"negative", -3},
+		{"too large", 999},
 	}
-	if result.IsError {
-		t.Fatalf("expected no error for clamped limit, got error")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			result, err := handler(ctx, makeToolRequest(map[string]any{"limit": c.val}))
+			if err != nil {
+				t.Fatalf("diffHandler returned err: %v", err)
+			}
+			if result == nil || !result.IsError {
+				t.Fatalf("expected IsError=true for limit=%v", c.val)
+			}
+		})
 	}
 }
 
-func TestDiffHandler_LargeDurationClamped(t *testing.T) {
+// TestDiffHandler_RejectsOutOfRangeSince covers durations beyond 720h
+// and non-positive durations. Both used to silently clamp.
+func TestDiffHandler_RejectsOutOfRangeSince(t *testing.T) {
 	t.Parallel()
 	handler := setupDiffHandler(t)
 	ctx := context.Background()
 
-	// since > 720h should be clamped (no error).
-	result, err := handler(ctx, makeToolRequest(map[string]any{
-		"since": "9000h",
-	}))
-	if err != nil {
-		t.Fatalf("diffHandler: %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("expected no error for clamped duration, got error")
-	}
-}
-
-func TestDiffHandler_LargeLimitClamped(t *testing.T) {
-	t.Parallel()
-	handler := setupDiffHandler(t)
-	ctx := context.Background()
-
-	// limit > 500 should be clamped to 50 (no error).
-	result, err := handler(ctx, makeToolRequest(map[string]any{
-		"limit": float64(999),
-	}))
-	if err != nil {
-		t.Fatalf("diffHandler: %v", err)
-	}
-	if result.IsError {
-		t.Fatalf("expected no error for clamped limit, got error")
+	for _, since := range []string{"9000h", "0s", "-1h"} {
+		t.Run(since, func(t *testing.T) {
+			result, err := handler(ctx, makeToolRequest(map[string]any{"since": since}))
+			if err != nil {
+				t.Fatalf("diffHandler returned err: %v", err)
+			}
+			if result == nil || !result.IsError {
+				t.Fatalf("expected IsError=true for since=%q", since)
+			}
+		})
 	}
 }
 

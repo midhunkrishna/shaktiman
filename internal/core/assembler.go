@@ -32,6 +32,8 @@ func Assemble(input AssemblerInput) *types.ContextPackage {
 
 	var selected []types.ScoredResult
 	remaining := input.BudgetTokens
+	truncated := false
+	overflowed := false
 
 	for _, c := range candidates {
 		if remaining <= 0 {
@@ -47,16 +49,18 @@ func Assemble(input AssemblerInput) *types.ContextPackage {
 			selected = append(selected, c)
 			remaining -= c.TokenCount
 		} else if len(selected) == 0 {
-			// First chunk exceeds budget — truncate to fit
-			truncated := truncateChunk(c, input.BudgetTokens)
-			selected = append(selected, truncated)
+			// First chunk exceeds budget — truncate to fit.
+			truncatedChunk := truncateChunk(c, input.BudgetTokens)
+			selected = append(selected, truncatedChunk)
 			remaining = 0
+			truncated = true
 		} else {
 			// Chunk exceeds remaining budget — include it anyway (best-effort
 			// spill-over) to avoid returning incomplete methods. We prefer
 			// correctness over strict budget adherence.
 			selected = append(selected, c)
 			remaining -= c.TokenCount // goes negative, stopping the loop
+			overflowed = true
 		}
 	}
 
@@ -79,11 +83,33 @@ func Assemble(input AssemblerInput) *types.ContextPackage {
 		strategy = "hybrid_l0"
 	}
 
-	return &types.ContextPackage{
+	pkg := &types.ContextPackage{
 		Chunks:      selected,
 		TotalTokens: totalTokens,
 		Strategy:    strategy,
 	}
+
+	// Surface lossy or over-budget assembly so callers can react instead
+	// of silently shipping a result that violates the contract. Two
+	// distinct cases:
+	//   - truncated: a single chunk was sliced down to fit and may end
+	//     mid-statement.
+	//   - budget_overflow: spill-over kept whole methods at the cost of
+	//     exceeding BudgetTokens; total_tokens > requested budget.
+	if truncated || overflowed {
+		if pkg.Meta == nil {
+			pkg.Meta = make(map[string]any, 3)
+		}
+		if truncated {
+			pkg.Meta["truncated"] = true
+		}
+		if overflowed {
+			pkg.Meta["budget_overflow"] = true
+			pkg.Meta["budget_overflow_tokens"] = totalTokens - input.BudgetTokens
+		}
+	}
+
+	return pkg
 }
 
 // structuralExpand finds BFS neighbor chunks of selected chunks

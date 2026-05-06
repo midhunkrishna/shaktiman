@@ -379,10 +379,16 @@ func diffCmd() *cobra.Command {
 
 			duration, err := time.ParseDuration(since)
 			if err != nil {
-				return fmt.Errorf("invalid duration: %s", since)
+				return fmt.Errorf("invalid --since: %s — use Go duration syntax like '24h', '30m'", since)
+			}
+			if duration <= 0 {
+				return fmt.Errorf("invalid --since: %s — must be positive", since)
 			}
 			if duration > 720*time.Hour {
-				duration = 720 * time.Hour
+				return fmt.Errorf("invalid --since: %s — must be <= 720h (30 days)", since)
+			}
+			if limit < 1 || limit > 500 {
+				return fmt.Errorf("invalid --limit: %d — must be 1..500", limit)
 			}
 
 			filter := core.ScopeToFilter(scope)

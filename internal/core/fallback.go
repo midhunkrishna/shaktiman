@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
@@ -77,6 +78,34 @@ func DetermineLevelFull(ctx context.Context, input DetermineLevelInput) Fallback
 	return LevelKeyword
 }
 
+// truncateBytesAtRune returns b truncated to at most maxLen bytes
+// without splitting a UTF-8 sequence. The cap is conservative: if the
+// last byte would land mid-rune we walk back to the start of that
+// rune. Slicing on raw byte boundaries (b[:n]) was producing invalid
+// UTF-8 in fallback output for projects with non-ASCII identifiers or
+// comments, which then poisoned downstream JSON encoding.
+func truncateBytesAtRune(b []byte, maxLen int) []byte {
+	if maxLen <= 0 || len(b) <= maxLen {
+		return b
+	}
+	cut := b[:maxLen]
+	r, size := utf8.DecodeLastRune(cut)
+	if r == utf8.RuneError && size <= 1 {
+		// Last rune is incomplete — drop trailing byte(s) until the
+		// preceding rune decodes cleanly. Bound the walk-back to 4
+		// bytes (max UTF-8 sequence length) so we never trim more
+		// than one logical rune.
+		for end := len(cut) - 1; end > 0 && len(cut)-end <= utf8.UTFMax; end-- {
+			r2, sz2 := utf8.DecodeLastRune(cut[:end])
+			if r2 != utf8.RuneError || sz2 > 1 {
+				return cut[:end]
+			}
+		}
+		return cut[:0]
+	}
+	return cut
+}
+
 // FilesystemFallback reads raw source files up to the token budget.
 // Used when the index is empty or keyword search returns no results.
 func FilesystemFallback(ctx context.Context, projectRoot string, _ string, budget int) (*types.ContextPackage, error) {
@@ -100,12 +129,12 @@ func FilesystemFallback(ctx context.Context, projectRoot string, _ string, budge
 		ext := strings.ToLower(filepath.Ext(d.Name()))
 		switch ext {
 		case ".ts", ".tsx", ".py", ".go", ".rs", ".java", ".sh", ".bash", ".js", ".jsx", ".mjs", ".cjs", ".rb", ".rake", ".gemspec", ".erb":
-			// Resolve symlinks and verify path stays within project root
+			// Resolve symlinks and verify path stays within project root.
 			absPath, err := filepath.EvalSymlinks(path)
 			if err != nil {
 				return nil
 			}
-			if !strings.HasPrefix(absPath, absRoot+string(filepath.Separator)) && absPath != absRoot {
+			if !pathContains(absRoot, absPath) {
 				return nil
 			}
 			srcFiles = append(srcFiles, path)
@@ -140,7 +169,7 @@ fileLoop:
 		tokenCount := len(content) / 4
 
 		if tokenCount > remaining {
-			content = content[:remaining*4]
+			content = truncateBytesAtRune(content, remaining*4)
 			tokenCount = remaining
 		}
 
