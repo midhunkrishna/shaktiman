@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestFilesystemFallback_CancelledContext(t *testing.T) {
@@ -72,6 +73,37 @@ func TestFilesystemFallback_BudgetBoundary(t *testing.T) {
 	}
 	if pkg.Strategy != "filesystem_l3" {
 		t.Errorf("expected strategy filesystem_l3, got %q", pkg.Strategy)
+	}
+}
+
+// TestTruncateBytesAtRune_DoesNotSplitMultiByteRune asserts the helper
+// never returns a slice that ends mid-UTF-8-sequence. The previous
+// byte-cap truncation in fallback emitted invalid UTF-8 when content
+// contained multi-byte runes (e.g. 中) at the cap boundary.
+func TestTruncateBytesAtRune_DoesNotSplitMultiByteRune(t *testing.T) {
+	t.Parallel()
+
+	in := []byte("hello 中文 world") // 中 and 文 are 3 bytes each
+	for cap := 1; cap <= len(in); cap++ {
+		got := truncateBytesAtRune(in, cap)
+		if !utf8.Valid(got) {
+			t.Errorf("cap=%d produced invalid UTF-8: %q", cap, got)
+		}
+		if len(got) > cap {
+			t.Errorf("cap=%d returned %d bytes (over cap)", cap, len(got))
+		}
+	}
+}
+
+// TestTruncateBytesAtRune_NoOpUnderCap returns input unchanged when
+// it already fits.
+func TestTruncateBytesAtRune_NoOpUnderCap(t *testing.T) {
+	t.Parallel()
+
+	in := []byte("hello")
+	out := truncateBytesAtRune(in, 100)
+	if string(out) != "hello" {
+		t.Errorf("under-cap input modified: %q", out)
 	}
 }
 

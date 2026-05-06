@@ -4,6 +4,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/shaktimanai/shaktiman/internal/types"
@@ -267,7 +268,16 @@ func mergeSiblings(results []types.ScoredResult, siblingMap map[string][]types.H
 		emitted[key] = true
 
 		// Build merged result from all siblings.
-		siblings := siblingMap[key]
+		// Sort by StartLine so the joined content reflects source
+		// order. siblingMap is built from the storage layer which
+		// doesn't guarantee any particular order, and unsorted joins
+		// produced merged chunks where method bodies were stitched
+		// out of sequence — visible to the LLM as scrambled code.
+		siblings := append([]types.HydratedChunk(nil), siblingMap[key]...)
+		sort.Slice(siblings, func(i, j int) bool {
+			return siblings[i].StartLine < siblings[j].StartLine
+		})
+
 		var contentParts []string
 		totalTokens := 0
 		bestScore := r.Score

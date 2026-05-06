@@ -532,3 +532,38 @@ func BenchmarkExpandSplitSiblings_NoSplits(b *testing.B) {
 		}
 	}
 }
+
+// TestMergeSiblings_OrdersByStartLine constructs a sibling group whose
+// fragments arrive in scrambled order (e.g. from a storage backend
+// that doesn't sort). The merged content must read top-to-bottom.
+// Without the explicit sort, the output stitched method bodies out of
+// sequence — visible to the LLM as scrambled code.
+func TestMergeSiblings_OrdersByStartLine(t *testing.T) {
+	t.Parallel()
+
+	siblings := []types.HydratedChunk{
+		{ChunkID: 30, StartLine: 101, EndLine: 130, Content: "part-3", TokenCount: 30},
+		{ChunkID: 10, StartLine: 10, EndLine: 50, Content: "part-1", TokenCount: 50},
+		{ChunkID: 20, StartLine: 51, EndLine: 100, Content: "part-2", TokenCount: 50},
+	}
+	siblingMap := map[string][]types.HydratedChunk{
+		"action.java::big": siblings,
+	}
+
+	results := []types.ScoredResult{
+		{ChunkID: 30, Score: 0.9, Path: "action.java", Kind: "method"},
+	}
+
+	merged := mergeSiblings(results, siblingMap)
+	if len(merged) != 1 {
+		t.Fatalf("expected 1 merged result, got %d", len(merged))
+	}
+	want := "part-1\npart-2\npart-3"
+	if merged[0].Content != want {
+		t.Errorf("merged content out of order:\n  got:  %q\n  want: %q",
+			merged[0].Content, want)
+	}
+	if merged[0].StartLine != 10 || merged[0].EndLine != 130 {
+		t.Errorf("merged span = %d-%d, want 10-130", merged[0].StartLine, merged[0].EndLine)
+	}
+}
