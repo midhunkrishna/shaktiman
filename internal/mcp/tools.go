@@ -32,7 +32,7 @@ For exact strings or regex, use Grep.`),
 		),
 		mcpsdk.WithString("mode",
 			mcpsdk.Description(fmt.Sprintf(`Result mode: "locate" (headers only) or "full" (with source code). Default: %q`, cfg.SearchDefaultMode)),
-			mcpsdk.Enum("locate", "full"),
+			mcpsdk.Enum(string(ModeLocate), string(ModeFull)),
 		),
 		mcpsdk.WithNumber("max_results",
 			mcpsdk.Description(fmt.Sprintf("Maximum results to return (1-200, default %d)", cfg.SearchMaxResults)),
@@ -48,7 +48,7 @@ For exact strings or regex, use Grep.`),
 		),
 		mcpsdk.WithString("scope",
 			mcpsdk.Description(`Result scope: "impl" (default, excludes test files), "test" (test files only), or "all"`),
-			mcpsdk.Enum("impl", "test", "all"),
+			mcpsdk.Enum(AllScopes()...),
 		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
 		mcpsdk.WithDestructiveHintAnnotation(false),
@@ -153,7 +153,7 @@ For reading a specific known file, use Read.`, cfg.ContextBudgetTokens)),
 		),
 		mcpsdk.WithString("scope",
 			mcpsdk.Description(`Result scope: "impl" (default, excludes test files), "test" (test files only), or "all"`),
-			mcpsdk.Enum("impl", "test", "all"),
+			mcpsdk.Enum(AllScopes()...),
 		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
 		mcpsdk.WithDestructiveHintAnnotation(false),
@@ -217,7 +217,7 @@ For finding every mention of a string (not just definitions), use Grep.`),
 		),
 		mcpsdk.WithString("scope",
 			mcpsdk.Description(`Result scope: "impl" (default, excludes test files), "test" (test files only), or "all"`),
-			mcpsdk.Enum("impl", "test", "all"),
+			mcpsdk.Enum(AllScopes()...),
 		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
 		mcpsdk.WithDestructiveHintAnnotation(false),
@@ -276,13 +276,14 @@ No equivalent in built-in tools.`),
 		),
 		mcpsdk.WithString("direction",
 			mcpsdk.Description("Direction: callers, callees, or both (default: both)"),
+			mcpsdk.Enum(AllDirections()...),
 		),
 		mcpsdk.WithNumber("depth",
 			mcpsdk.Description("BFS depth 1-5 (default 2)"),
 		),
 		mcpsdk.WithString("scope",
 			mcpsdk.Description(`Result scope: "impl" (default, excludes test files), "test" (test files only), or "all"`),
-			mcpsdk.Enum("impl", "test", "all"),
+			mcpsdk.Enum(AllScopes()...),
 		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
 		mcpsdk.WithDestructiveHintAnnotation(false),
@@ -297,15 +298,21 @@ func dependenciesHandler(store types.WriterStore) handlerFunc {
 			return mcpsdk.NewToolResultError("missing required parameter: symbol"), nil
 		}
 
-		direction := req.GetString("direction", "both")
-		switch direction {
-		case "callers":
-			direction = "incoming"
-		case "callees":
-			direction = "outgoing"
-		}
-		if direction != "incoming" && direction != "outgoing" && direction != "both" {
+		dir := Direction(req.GetString("direction", string(DirectionBoth)))
+		if !dir.Valid() {
 			return mcpsdk.NewToolResultError("direction must be callers, callees, or both"), nil
+		}
+		// LookupDependencies uses the storage-layer vocabulary
+		// (incoming/outgoing/both); translate from the public Direction
+		// enum to that internal name here.
+		var direction string
+		switch dir {
+		case DirectionCallers:
+			direction = "incoming"
+		case DirectionCallees:
+			direction = "outgoing"
+		default:
+			direction = "both"
 		}
 
 		depth := req.GetInt("depth", 2)
@@ -345,7 +352,7 @@ Use to see which definitions were affected by recent changes.`),
 		),
 		mcpsdk.WithString("scope",
 			mcpsdk.Description(`Result scope: "impl" (default, excludes test files), "test" (test files only), or "all"`),
-			mcpsdk.Enum("impl", "test", "all"),
+			mcpsdk.Enum(AllScopes()...),
 		),
 		mcpsdk.WithReadOnlyHintAnnotation(true),
 		mcpsdk.WithDestructiveHintAnnotation(false),
