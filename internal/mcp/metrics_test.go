@@ -213,44 +213,33 @@ func TestWithMetrics_NilRecorder(t *testing.T) {
 	}
 }
 
-func TestWithResultCount(t *testing.T) {
+func TestWithResultCount_WritesToContextSlot(t *testing.T) {
+	t.Parallel()
+
+	var slot int
+	ctx := context.WithValue(context.Background(), resultCountKey{}, &slot)
+
+	result := mcpsdk.NewToolResultText("test")
+	got := withResultCount(ctx, result, 42)
+
+	if got != result {
+		t.Error("withResultCount should return same pointer")
+	}
+	if slot != 42 {
+		t.Errorf("ctx slot = %d, want 42", slot)
+	}
+}
+
+// TestWithResultCount_NoSlotIsSilent verifies the no-op behavior when
+// a handler is invoked outside withMetrics (e.g. in a CLI or test
+// path).
+func TestWithResultCount_NoSlotIsSilent(t *testing.T) {
 	t.Parallel()
 
 	result := mcpsdk.NewToolResultText("test")
-	tagged := withResultCount(result, 42)
-
-	// Should return same pointer
-	if tagged != result {
-		t.Error("withResultCount should return same pointer")
-	}
-
-	// Should extract the count
-	got := extractResultCount(result)
-	if got != 42 {
-		t.Errorf("extractResultCount = %d, want 42", got)
-	}
-
-	// Second extraction should return 0 (LoadAndDelete)
-	got = extractResultCount(result)
-	if got != 0 {
-		t.Errorf("second extractResultCount = %d, want 0 (already deleted)", got)
-	}
-}
-
-func TestExtractResultCount_Nil(t *testing.T) {
-	t.Parallel()
-	got := extractResultCount(nil)
-	if got != 0 {
-		t.Errorf("extractResultCount(nil) = %d, want 0", got)
-	}
-}
-
-func TestExtractResultCount_Untagged(t *testing.T) {
-	t.Parallel()
-	result := mcpsdk.NewToolResultText("untagged")
-	got := extractResultCount(result)
-	if got != 0 {
-		t.Errorf("extractResultCount(untagged) = %d, want 0", got)
+	got := withResultCount(context.Background(), result, 99)
+	if got != result {
+		t.Error("expected pass-through return")
 	}
 }
 
@@ -259,9 +248,9 @@ func TestWithMetrics_ResultCount(t *testing.T) {
 	db := testDB(t)
 	r := testRecorder(t, db, "result-count-test")
 
-	handler := func(_ context.Context, _ mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	handler := func(ctx context.Context, _ mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		result := mcpsdk.NewToolResultText("some results")
-		return withResultCount(result, 7), nil
+		return withResultCount(ctx, result, 7), nil
 	}
 
 	wrapped := withMetrics("counted_tool", r, handler)
@@ -623,11 +612,69 @@ func TestInsertToolCall_IsErrorFlag(t *testing.T) {
 	}
 }
 
-func TestWithResultCount_Nil(t *testing.T) {
+func TestWithResultCount_NilResult(t *testing.T) {
 	t.Parallel()
-	// withResultCount(nil, ...) should not panic.
-	result := withResultCount(nil, 5)
+	// withResultCount(ctx, nil, n) should not panic.
+	result := withResultCount(context.Background(), nil, 5)
 	if result != nil {
 		t.Errorf("expected nil result, got %v", result)
+	}
+}
+
+// TestWithMetrics_ResponseCap verifies that an oversized handler
+// response is replaced with a structured tool error rather than
+// silently emitted into the MCP frame layer (which surfaced as opaque
+// "transport closed" client errors).
+func TestWithMetrics_ResponseCap(t *testing.T) {
+	t.Parallel()
+
+	huge := make([]byte, maxResponseBytes+1024)
+	for i := range huge {
+		huge[i] = 'x'
+	}
+
+	handler := func(_ context.Context, _ mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		return mcpsdk.NewToolResultText(string(huge)), nil
+	}
+
+	wrapped := withMetrics("oversized", nil, handler)
+	req := mcpsdk.CallToolRequest{}
+	res, err := wrapped(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("expected IsError=true, got %+v", res)
+	}
+	body := ""
+	for _, c := range res.Content {
+		if tc, ok := c.(mcpsdk.TextContent); ok {
+			body += tc.Text
+		}
+	}
+	if body == "" {
+		t.Fatal("expected non-empty error body")
+	}
+}
+
+// TestWithMetrics_PropagatesContextDeadline guards against future
+// regressions that drop the per-call timeout. It does not verify the
+// 2m bound (too slow); it just confirms that handlers see a deadline.
+func TestWithMetrics_PropagatesContextDeadline(t *testing.T) {
+	t.Parallel()
+
+	var saw bool
+	handler := func(ctx context.Context, _ mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		_, ok := ctx.Deadline()
+		saw = ok
+		return mcpsdk.NewToolResultText("ok"), nil
+	}
+
+	wrapped := withMetrics("timeout-probe", nil, handler)
+	if _, err := wrapped(context.Background(), mcpsdk.CallToolRequest{}); err != nil {
+		t.Fatalf("wrapped: %v", err)
+	}
+	if !saw {
+		t.Error("handler ctx had no deadline; per-call timeout regression")
 	}
 }

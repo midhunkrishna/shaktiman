@@ -131,7 +131,7 @@ func searchHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 			text = formatSearchResults(results, explain)
 		}
 
-		return withResultCount(mcpsdk.NewToolResultText(text), len(results)), nil
+		return withResultCount(ctx, mcpsdk.NewToolResultText(text), len(results)), nil
 	}
 }
 
@@ -195,7 +195,7 @@ func contextHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 			resultCount = len(pkg.Chunks)
 		}
 
-		return withResultCount(mcpsdk.NewToolResultText(formatContextPackage(pkg)), resultCount), nil
+		return withResultCount(ctx, mcpsdk.NewToolResultText(formatContextPackage(pkg)), resultCount), nil
 	}
 }
 
@@ -250,14 +250,14 @@ func symbolsHandler(store types.WriterStore) handlerFunc {
 			if err != nil {
 				return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
 			}
-			return withResultCount(mcpsdk.NewToolResultText(string(data)), len(result.ReferencedBy)), nil
+			return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), len(result.ReferencedBy)), nil
 		}
 
 		data, err := json.Marshal(result.Definitions)
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
 		}
-		return withResultCount(mcpsdk.NewToolResultText(string(data)), len(result.Definitions)), nil
+		return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), len(result.Definitions)), nil
 	}
 }
 
@@ -324,7 +324,7 @@ func dependenciesHandler(store types.WriterStore) handlerFunc {
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
 		}
-		return withResultCount(mcpsdk.NewToolResultText(string(data)), len(results)), nil
+		return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), len(results)), nil
 	}
 }
 
@@ -358,15 +358,23 @@ func diffHandler(store types.WriterStore) handlerFunc {
 		sinceStr := req.GetString("since", "24h")
 		duration, err := time.ParseDuration(sinceStr)
 		if err != nil {
-			return mcpsdk.NewToolResultError("invalid duration: " + sinceStr), nil
+			return mcpsdk.NewToolResultError(
+				"invalid since: " + sinceStr +
+					" — use Go duration syntax like '24h', '30m'"), nil
+		}
+		if duration <= 0 {
+			return mcpsdk.NewToolResultError(fmt.Sprintf(
+				"invalid since: %s — must be positive", sinceStr)), nil
 		}
 		if duration > 720*time.Hour {
-			duration = 720 * time.Hour
+			return mcpsdk.NewToolResultError(fmt.Sprintf(
+				"invalid since: %s — must be <= 720h (30 days)", sinceStr)), nil
 		}
 
 		limit := req.GetInt("limit", 50)
 		if limit < 1 || limit > 500 {
-			limit = 50
+			return mcpsdk.NewToolResultError(fmt.Sprintf(
+				"invalid limit: %d — must be 1..500", limit)), nil
 		}
 
 		filter := core.ScopeToFilter(req.GetString("scope", "impl"))
@@ -381,7 +389,7 @@ func diffHandler(store types.WriterStore) handlerFunc {
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
 		}
-		return withResultCount(mcpsdk.NewToolResultText(string(data)), len(results)), nil
+		return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), len(results)), nil
 	}
 }
 
@@ -433,7 +441,7 @@ func enrichmentStatusHandler(store types.WriterStore, vs types.VectorStore, ew *
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("marshal status: ", err)), nil
 		}
-		return withResultCount(mcpsdk.NewToolResultText(string(data)), 1), nil
+		return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), 1), nil
 	}
 }
 
@@ -461,7 +469,7 @@ func summaryHandler(store types.WriterStore, vs types.VectorStore) handlerFunc {
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("marshal summary: ", err)), nil
 		}
-		return withResultCount(mcpsdk.NewToolResultText(string(data)), 1), nil
+		return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), 1), nil
 	}
 }
 

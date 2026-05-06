@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shaktimanai/shaktiman/internal/storage"
@@ -311,15 +312,50 @@ func TestDiffCmd_InvalidDuration(t *testing.T) {
 	}
 }
 
-func TestDiffCmd_LongDurationCapped(t *testing.T) {
+// TestDiffCmd_RejectsOutOfRangeSince covers two boundaries that used
+// to silently clamp: durations beyond 720h and non-positive durations.
+// Silent clamps masked typos and hid the actual time window from the
+// caller; an explicit error surfaces the misuse instead.
+func TestDiffCmd_RejectsOutOfRangeSince(t *testing.T) {
 	dir := seedProject(t)
 
-	outputFormat = "json"
-	cmd := diffCmd()
-	// 10000h > 720h cap
-	cmd.SetArgs([]string{"--root", dir, "--since", "10000h"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("diffCmd long duration: %v", err)
+	cases := []struct{ name, since, fragment string }{
+		{"too long", "10000h", "<= 720h"},
+		{"zero", "0s", "must be positive"},
+		{"negative", "-1h", "must be positive"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			outputFormat = "json"
+			cmd := diffCmd()
+			cmd.SetArgs([]string{"--root", dir, "--since", c.since})
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatalf("expected error for since=%s", c.since)
+			}
+			if !strings.Contains(err.Error(), c.fragment) {
+				t.Errorf("error %q should mention %q", err, c.fragment)
+			}
+		})
+	}
+}
+
+func TestDiffCmd_RejectsOutOfRangeLimit(t *testing.T) {
+	dir := seedProject(t)
+
+	for _, lim := range []string{"0", "-5", "501", "10000"} {
+		t.Run(lim, func(t *testing.T) {
+			outputFormat = "json"
+			cmd := diffCmd()
+			cmd.SetArgs([]string{"--root", dir, "--limit", lim})
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatalf("expected error for limit=%s", lim)
+			}
+			if !strings.Contains(err.Error(), "must be 1..500") {
+				t.Errorf("error %q should mention valid range", err)
+			}
+		})
 	}
 }
 
