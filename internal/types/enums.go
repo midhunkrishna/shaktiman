@@ -7,6 +7,7 @@ package types
 // readability and refactor safety.
 type Kind string
 
+// Kind values produced by the chunker and stored on chunks/symbols.
 const (
 	KindFunction  Kind = "function"
 	KindMethod    Kind = "method"
@@ -34,6 +35,7 @@ func (k Kind) Valid() bool {
 // Visibility is the closed set of symbol visibility strings.
 type Visibility string
 
+// Visibility values stored on symbols.
 const (
 	VisibilityPublic   Visibility = "public"
 	VisibilityPrivate  Visibility = "private"
@@ -53,6 +55,7 @@ func (v Visibility) Valid() bool {
 // EdgeKind is the closed set of edge kinds in the call/import graph.
 type EdgeKind string
 
+// EdgeKind values stored on edges.
 const (
 	EdgeKindCalls      EdgeKind = "calls"
 	EdgeKindImports    EdgeKind = "imports"
@@ -73,6 +76,7 @@ func (k EdgeKind) Valid() bool {
 // EmbeddingStatus is the closed set of file-level embedding states.
 type EmbeddingStatus string
 
+// EmbeddingStatus values stored on files to track embed coverage.
 const (
 	EmbeddingStatusPending  EmbeddingStatus = "pending"
 	EmbeddingStatusPartial  EmbeddingStatus = "partial"
@@ -91,6 +95,7 @@ func (s EmbeddingStatus) Valid() bool {
 // ParseQuality is the closed set of file-level parse outcomes.
 type ParseQuality string
 
+// ParseQuality values stored on files to record parser health.
 const (
 	ParseQualityFull        ParseQuality = "full"
 	ParseQualityPartial     ParseQuality = "partial"

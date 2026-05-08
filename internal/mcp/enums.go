@@ -3,6 +3,7 @@ package mcp
 // Mode is the closed set of result modes the search tool accepts.
 type Mode string
 
+// Mode values understood by the search tool.
 const (
 	ModeLocate Mode = "locate"
 	ModeFull   Mode = "full"
@@ -21,6 +22,7 @@ func (m Mode) Valid() bool {
 // that accepts a `scope` argument.
 type Scope string
 
+// Scope values shared across every MCP tool that filters by test/impl.
 const (
 	ScopeImpl Scope = "impl"
 	ScopeTest Scope = "test"
@@ -46,6 +48,7 @@ func AllScopes() []string {
 // Direction is the closed set of dependency-traversal directions.
 type Direction string
 
+// Direction values understood by the dependencies tool.
 const (
 	DirectionCallers Direction = "callers"
 	DirectionCallees Direction = "callees"

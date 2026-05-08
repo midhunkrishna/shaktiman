@@ -84,13 +84,13 @@ func TestTruncateBytesAtRune_DoesNotSplitMultiByteRune(t *testing.T) {
 	t.Parallel()
 
 	in := []byte("hello 中文 world") // 中 and 文 are 3 bytes each
-	for cap := 1; cap <= len(in); cap++ {
-		got := truncateBytesAtRune(in, cap)
+	for n := 1; n <= len(in); n++ {
+		got := truncateBytesAtRune(in, n)
 		if !utf8.Valid(got) {
-			t.Errorf("cap=%d produced invalid UTF-8: %q", cap, got)
+			t.Errorf("cap=%d produced invalid UTF-8: %q", n, got)
 		}
-		if len(got) > cap {
-			t.Errorf("cap=%d returned %d bytes (over cap)", cap, len(got))
+		if len(got) > n {
+			t.Errorf("cap=%d returned %d bytes (over cap)", n, len(got))
 		}
 	}
 }
