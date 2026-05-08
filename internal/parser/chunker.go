@@ -333,8 +333,8 @@ func buildSignatureFromExtracted(node *tree_sitter.Node, source []byte, _ string
 	// use positional children (rare).
 	bodyNode := node.ChildByFieldName("body")
 	if bodyNode == nil {
-		if n := int(node.NamedChildCount()); n > 0 { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
-			bodyNode = node.NamedChild(uint(n - 1))
+		if n := node.NamedChildCount(); n > 0 {
+			bodyNode = node.NamedChild(n - 1)
 		}
 	}
 
@@ -571,13 +571,10 @@ func extractName(node *tree_sitter.Node, source []byte) string {
 	// extractName on it, which hits the `name` field above) returns the
 	// actual variable name. Bug #1 in
 	// docs/review-findings/parser-bugs-from-recursive-chunking.md.
-	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
-		child := node.NamedChild(uint(i))
-		if child.Kind() == "variable_declarator" {
-			if name := extractName(child, source); name != "" {
-				return name
-			}
-		}
+	if vd := findNamedChild(node, func(c *tree_sitter.Node) bool {
+		return c.Kind() == "variable_declarator" && extractName(c, source) != ""
+	}); vd != nil {
+		return extractName(vd, source)
 	}
 
 	// Walk named children for an identifier. type_identifier is excluded
@@ -603,11 +600,8 @@ func extractName(node *tree_sitter.Node, source []byte) string {
 	// Final fallback: accept a sibling type_identifier when no other name was
 	// found. This preserves existing behavior for corner cases we haven't
 	// catalogued.
-	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
-		child := node.NamedChild(uint(i))
-		if child.Kind() == "type_identifier" {
-			return child.Utf8Text(source)
-		}
+	if t := findNamedChild(node, func(c *tree_sitter.Node) bool { return c.Kind() == "type_identifier" }); t != nil {
+		return t.Utf8Text(source)
 	}
 	return ""
 }
@@ -630,24 +624,15 @@ func extractSignature(node *tree_sitter.Node, source []byte) string {
 
 // extractGoTypeName extracts the type name from a Go type_declaration via type_spec.
 func extractGoTypeName(node *tree_sitter.Node, source []byte) string {
-	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
-		child := node.NamedChild(uint(i))
-		if child.Kind() == "type_spec" {
-			return extractName(child, source)
-		}
+	if spec := findNamedChild(node, func(c *tree_sitter.Node) bool { return c.Kind() == "type_spec" }); spec != nil {
+		return extractName(spec, source)
 	}
 	return extractName(node, source)
 }
 
 // findChildByType finds the first named child with the given type.
 func findChildByType(node *tree_sitter.Node, nodeType string) *tree_sitter.Node {
-	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
-		child := node.NamedChild(uint(i))
-		if child.Kind() == nodeType {
-			return child
-		}
-	}
-	return nil
+	return findNamedChild(node, func(c *tree_sitter.Node) bool { return c.Kind() == nodeType })
 }
 
 // findDeclarationChild finds the declaration wrapped by an export_statement,
