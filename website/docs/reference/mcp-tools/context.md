@@ -35,6 +35,19 @@ budget. Each chunk carries file path, symbol, line range, and the source. The to
 used is `cl100k_base` (tiktoken) with a safety margin so the returned content fits
 inside the stated budget.
 
+### Lossy-assembly metadata
+
+The package includes a `meta` map that callers should inspect:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `truncated` | bool | The first chunk exceeded the budget on its own and was sliced down to fit. The chunk's content may end mid-statement; `total_tokens` will equal the requested budget. |
+| `budget_overflow` | bool | A chunk was kept whole even though it pushed the assembly past the requested budget. `total_tokens` will exceed `budget_tokens`. The assembler prefers correctness (whole methods) over strict budget adherence here. |
+| `budget_overflow_tokens` | int | The exact overflow when `budget_overflow` is set: `total_tokens - budget_tokens`. |
+
+Both flags are absent when the assembly fit cleanly within the requested budget,
+so a missing key is the success signal.
+
 ## How the budget is spent
 
 Under the hood `context` calls into `engine.Context` (`internal/core/assembler.go`):
