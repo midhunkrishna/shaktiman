@@ -219,3 +219,84 @@ func TestEvaluate_FoundAndMissing(t *testing.T) {
 		t.Error("expected items in Found list")
 	}
 }
+
+// TestEvaluate_NoiseQueries confirms that returning hits for a noise
+// query is recorded as a false positive in the summary so a future
+// ranking regression that starts matching nonsense is observable.
+func TestEvaluate_NoiseQueries(t *testing.T) {
+	t.Parallel()
+
+	engine := setupEvalEngine(t)
+	ctx := context.Background()
+
+	// "login" matches our seeded auth/login.go. The harness records
+	// any non-empty result set as a false-positive entry.
+	summary, err := Evaluate(ctx, EvaluateInput{
+		Engine:       engine,
+		Cases:        []TestCase{},
+		TopK:         5,
+		NoiseQueries: []string{"login"},
+	})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if summary.NoiseTotalReturns == 0 {
+		t.Error("expected noise query 'login' to surface false positives")
+	}
+	if len(summary.NoiseFalsePosits) != 1 {
+		t.Errorf("expected 1 noise hit, got %d", len(summary.NoiseFalsePosits))
+	}
+}
+
+// TestEvaluate_MinMRRThreshold guards the regression-floor wiring.
+// A high MinMRR against a setup with no relevant results must error
+// while still returning the populated summary.
+func TestEvaluate_MinMRRThreshold(t *testing.T) {
+	t.Parallel()
+
+	engine := setupEvalEngine(t)
+	ctx := context.Background()
+
+	summary, err := Evaluate(ctx, EvaluateInput{
+		Engine: engine,
+		Cases: []TestCase{
+			{Query: "totally-unrelated-query-xyz", ExpectedFiles: []string{"nope.go"}},
+		},
+		TopK:   10,
+		MinMRR: 0.9,
+	})
+	if err == nil {
+		t.Fatal("expected ErrMRRBelowThreshold")
+	}
+	if summary == nil {
+		t.Fatal("expected summary to be returned alongside threshold error")
+	}
+	if summary.AvgMRR >= 0.9 {
+		t.Errorf("avgMRR = %f, expected below threshold for the test to be meaningful", summary.AvgMRR)
+	}
+}
+
+// TestEvaluate_StrictSymbolMatch verifies the new contract: a result
+// whose Path matches an entry in expected_symbols (but whose
+// SymbolName does not) no longer counts as relevant. This catches the
+// historical bug where path-vs-symbol leakage hid symbol-ranking
+// regressions.
+func TestEvaluate_StrictSymbolMatch(t *testing.T) {
+	t.Parallel()
+
+	tc := TestCase{
+		Query:           "x",
+		ExpectedSymbols: []string{"WantedSymbol"},
+	}
+	results := []types.ScoredResult{
+		// Path matches symbol-name string but SymbolName doesn't.
+		{Path: "WantedSymbol", SymbolName: "Other", Score: 0.9},
+	}
+	r := evaluate(tc, results, 10)
+	if r.MRR != 0 {
+		t.Errorf("MRR = %f, want 0 (no genuine symbol match)", r.MRR)
+	}
+	if len(r.Missing) != 1 {
+		t.Errorf("expected 1 missing symbol, got %v", r.Missing)
+	}
+}
