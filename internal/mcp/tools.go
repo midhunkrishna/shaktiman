@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
@@ -117,18 +116,9 @@ func searchHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 		pathFilter := req.GetString("path", "")
 		filter := core.ScopeToFilter(req.GetString("scope", "impl"))
 
-		// Over-fetch when path or scope filter is set to compensate for post-filtering.
-		engineMax := maxResults
-		if pathFilter != "" {
-			engineMax = maxResults * 3
-			if engineMax > 200 {
-				engineMax = 200
-			}
-		}
-
 		results, err := engine.Search(ctx, core.SearchInput{
 			Query:        query,
-			MaxResults:   engineMax,
+			MaxResults:   core.SearchOverfetchLimit(maxResults, pathFilter != ""),
 			Explain:      explain,
 			MinScore:     minScore,
 			ExcludeTests: filter.ExcludeTests,
@@ -138,19 +128,7 @@ func searchHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 			return mcpsdk.NewToolResultError(sanitizeError("search failed: ", err)), nil
 		}
 
-		// Apply path prefix filter if specified.
-		if pathFilter != "" {
-			filtered := results[:0]
-			for _, r := range results {
-				if strings.HasPrefix(r.Path, pathFilter) {
-					filtered = append(filtered, r)
-				}
-			}
-			results = filtered
-			if len(results) > maxResults {
-				results = results[:maxResults]
-			}
-		}
+		results = core.FilterByPathPrefix(results, pathFilter, maxResults)
 
 		var text string
 		if mode == "locate" {
@@ -296,21 +274,10 @@ func dependenciesHandler(store types.WriterStore) handlerFunc {
 			return mcpsdk.NewToolResultError("missing required parameter: symbol"), nil
 		}
 
-		dir := Direction(req.GetString("direction", string(DirectionBoth)))
-		if !dir.Valid() {
+		dirRaw := req.GetString("direction", string(DirectionBoth))
+		direction, ok := core.NormalizeDirection(dirRaw)
+		if !ok {
 			return mcpsdk.NewToolResultError("direction must be callers, callees, or both"), nil
-		}
-		// LookupDependencies uses the storage-layer vocabulary
-		// (incoming/outgoing/both); translate from the public Direction
-		// enum to that internal name here.
-		var direction string
-		switch dir {
-		case DirectionCallers:
-			direction = "incoming"
-		case DirectionCallees:
-			direction = "outgoing"
-		default:
-			direction = "both"
 		}
 
 		depth := req.GetInt("depth", 2)
@@ -349,25 +316,14 @@ Use to see which definitions were affected by recent changes.`,
 func diffHandler(store types.WriterStore) handlerFunc {
 	return func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		sinceStr := req.GetString("since", "24h")
-		duration, err := time.ParseDuration(sinceStr)
+		duration, err := core.ValidateDiffWindow(sinceStr)
 		if err != nil {
-			return mcpsdk.NewToolResultError(
-				"invalid since: " + sinceStr +
-					" — use Go duration syntax like '24h', '30m'"), nil
-		}
-		if duration <= 0 {
-			return mcpsdk.NewToolResultError(fmt.Sprintf(
-				"invalid since: %s — must be positive", sinceStr)), nil
-		}
-		if duration > 720*time.Hour {
-			return mcpsdk.NewToolResultError(fmt.Sprintf(
-				"invalid since: %s — must be <= 720h (30 days)", sinceStr)), nil
+			return mcpsdk.NewToolResultError("invalid since: " + err.Error()), nil
 		}
 
 		limit := req.GetInt("limit", 50)
-		if limit < 1 || limit > 500 {
-			return mcpsdk.NewToolResultError(fmt.Sprintf(
-				"invalid limit: %d — must be 1..500", limit)), nil
+		if err := core.ValidateDiffLimit(limit); err != nil {
+			return mcpsdk.NewToolResultError("invalid limit: " + err.Error()), nil
 		}
 
 		filter := core.ScopeToFilter(req.GetString("scope", "impl"))
