@@ -16,16 +16,50 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/vector"
 )
 
+// readonlyToolOpts is the standard annotation block used by every
+// MCP tool shaktiman exposes. Tools are read-only, non-destructive,
+// and idempotent; centralising the options here means one new tool
+// can't accidentally drop one of these annotations.
+func readonlyToolOpts() []mcpsdk.ToolOption {
+	return []mcpsdk.ToolOption{
+		mcpsdk.WithReadOnlyHintAnnotation(true),
+		mcpsdk.WithDestructiveHintAnnotation(false),
+		mcpsdk.WithIdempotentHintAnnotation(true),
+	}
+}
+
+// scopeOption returns the standard `scope` parameter declaration used
+// by every tool that accepts a scope filter. Pulls the enum values
+// from AllScopes() so the description text and validator can never
+// drift apart.
+func scopeOption() mcpsdk.ToolOption {
+	return mcpsdk.WithString("scope",
+		mcpsdk.Description(`Result scope: "impl" (default, excludes test files), "test" (test files only), or "all"`),
+		mcpsdk.Enum(AllScopes()...),
+	)
+}
+
+// buildTool assembles a tool definition with name, description, and
+// the standard read-only/non-destructive/idempotent annotations.
+// Caller-supplied opts are appended after the description so per-tool
+// parameter declarations slot in naturally.
+func buildTool(name, description string, opts ...mcpsdk.ToolOption) mcpsdk.Tool {
+	out := make([]mcpsdk.ToolOption, 0, len(opts)+4)
+	out = append(out, mcpsdk.WithDescription(description))
+	out = append(out, opts...)
+	out = append(out, readonlyToolOpts()...)
+	return mcpsdk.NewTool(name, out...)
+}
+
 // searchToolDef defines the MCP search tool schema.
 func searchToolDef(cfg types.Config) mcpsdk.Tool {
-	return mcpsdk.NewTool("search",
-		mcpsdk.WithDescription(
-			`Ranked code discovery. Narrows a large codebase to the most relevant files for a query.
+	return buildTool("search",
+		`Ranked code discovery. Narrows a large codebase to the most relevant files for a query.
 Use to decide what to Read — avoids spending context on files that turn out irrelevant.
 Best for conceptual queries: "error handling", "auth flow", "database setup".
 Default "locate" mode returns compact pointers (~12 tokens/result). Use mode="full" for inline source.
 Excludes test files by default. Use scope="test" for test files only.
-For exact strings or regex, use Grep.`),
+For exact strings or regex, use Grep.`,
 		mcpsdk.WithString("query",
 			mcpsdk.Required(),
 			mcpsdk.Description("Search query text"),
@@ -46,13 +80,7 @@ For exact strings or regex, use Grep.`),
 		mcpsdk.WithString("path",
 			mcpsdk.Description("Filter results to this file or directory prefix (e.g. 'internal/mcp/' or 'main.go')"),
 		),
-		mcpsdk.WithString("scope",
-			mcpsdk.Description(`Result scope: "impl" (default, excludes test files), "test" (test files only), or "all"`),
-			mcpsdk.Enum(AllScopes()...),
-		),
-		mcpsdk.WithReadOnlyHintAnnotation(true),
-		mcpsdk.WithDestructiveHintAnnotation(false),
-		mcpsdk.WithIdempotentHintAnnotation(true),
+		scopeOption(),
 	)
 }
 
@@ -137,13 +165,12 @@ func searchHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 
 // contextToolDef defines the MCP context tool schema.
 func contextToolDef(cfg types.Config) mcpsdk.Tool {
-	return mcpsdk.NewTool("context",
-		mcpsdk.WithDescription(fmt.Sprintf(
-			`Cross-file understanding within a token budget.
+	return buildTool("context",
+		fmt.Sprintf(`Cross-file understanding within a token budget.
 Instead of reading many files to understand a topic, returns only the relevant chunks — ranked, deduplicated, fitted to your budget.
 Use smaller budgets (1024-2048) for focused queries. Default budget: %d tokens.
 Excludes test files by default. Use scope="test" for test files only.
-For reading a specific known file, use Read.`, cfg.ContextBudgetTokens)),
+For reading a specific known file, use Read.`, cfg.ContextBudgetTokens),
 		mcpsdk.WithString("query",
 			mcpsdk.Required(),
 			mcpsdk.Description("What you need context for"),
@@ -151,13 +178,7 @@ For reading a specific known file, use Read.`, cfg.ContextBudgetTokens)),
 		mcpsdk.WithNumber("budget_tokens",
 			mcpsdk.Description(fmt.Sprintf("Token budget (256-32768, default %d)", cfg.ContextBudgetTokens)),
 		),
-		mcpsdk.WithString("scope",
-			mcpsdk.Description(`Result scope: "impl" (default, excludes test files), "test" (test files only), or "all"`),
-			mcpsdk.Enum(AllScopes()...),
-		),
-		mcpsdk.WithReadOnlyHintAnnotation(true),
-		mcpsdk.WithDestructiveHintAnnotation(false),
-		mcpsdk.WithIdempotentHintAnnotation(true),
+		scopeOption(),
 	)
 }
 
@@ -202,12 +223,11 @@ func contextHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 // ── symbols tool ──
 
 func symbolsToolDef() mcpsdk.Tool {
-	return mcpsdk.NewTool("symbols",
-		mcpsdk.WithDescription(
-			`Find where a function, type, or class is defined by exact name.
+	return buildTool("symbols",
+		`Find where a function, type, or class is defined by exact name.
 Returns file path, line number, signature, and visibility — without reading the whole file.
 Excludes test files by default. Use scope="test" for test files only.
-For finding every mention of a string (not just definitions), use Grep.`),
+For finding every mention of a string (not just definitions), use Grep.`,
 		mcpsdk.WithString("name",
 			mcpsdk.Required(),
 			mcpsdk.Description("Symbol name to search for"),
@@ -215,13 +235,7 @@ For finding every mention of a string (not just definitions), use Grep.`),
 		mcpsdk.WithString("kind",
 			mcpsdk.Description("Optional kind filter: function, class, method, type, interface, variable"),
 		),
-		mcpsdk.WithString("scope",
-			mcpsdk.Description(`Result scope: "impl" (default, excludes test files), "test" (test files only), or "all"`),
-			mcpsdk.Enum(AllScopes()...),
-		),
-		mcpsdk.WithReadOnlyHintAnnotation(true),
-		mcpsdk.WithDestructiveHintAnnotation(false),
-		mcpsdk.WithIdempotentHintAnnotation(true),
+		scopeOption(),
 	)
 }
 
@@ -264,12 +278,11 @@ func symbolsHandler(store types.WriterStore) handlerFunc {
 // ── dependencies tool ──
 
 func dependenciesToolDef() mcpsdk.Tool {
-	return mcpsdk.NewTool("dependencies",
-		mcpsdk.WithDescription(
-			`Trace callers or callees of a symbol across the codebase in one call.
+	return buildTool("dependencies",
+		`Trace callers or callees of a symbol across the codebase in one call.
 Replaces multiple rounds of searching and reading to follow call chains.
 Excludes test files by default. Use scope="test" for test files only.
-No equivalent in built-in tools.`),
+No equivalent in built-in tools.`,
 		mcpsdk.WithString("symbol",
 			mcpsdk.Required(),
 			mcpsdk.Description("Symbol name to find dependencies for"),
@@ -281,13 +294,7 @@ No equivalent in built-in tools.`),
 		mcpsdk.WithNumber("depth",
 			mcpsdk.Description("BFS depth 1-5 (default 2)"),
 		),
-		mcpsdk.WithString("scope",
-			mcpsdk.Description(`Result scope: "impl" (default, excludes test files), "test" (test files only), or "all"`),
-			mcpsdk.Enum(AllScopes()...),
-		),
-		mcpsdk.WithReadOnlyHintAnnotation(true),
-		mcpsdk.WithDestructiveHintAnnotation(false),
-		mcpsdk.WithIdempotentHintAnnotation(true),
+		scopeOption(),
 	)
 }
 
@@ -338,25 +345,18 @@ func dependenciesHandler(store types.WriterStore) handlerFunc {
 // ── diff tool ──
 
 func diffToolDef() mcpsdk.Tool {
-	return mcpsdk.NewTool("diff",
-		mcpsdk.WithDescription(
-			`Show recent file changes and which symbols were added, modified, or removed.
+	return buildTool("diff",
+		`Show recent file changes and which symbols were added, modified, or removed.
 Complements git log with structured, symbol-level change tracking.
 Excludes test files by default. Use scope="test" for test files only.
-Use to see which definitions were affected by recent changes.`),
+Use to see which definitions were affected by recent changes.`,
 		mcpsdk.WithString("since",
 			mcpsdk.Description("Time window, e.g. '24h', '1h', '30m' (default: 24h)"),
 		),
 		mcpsdk.WithNumber("limit",
 			mcpsdk.Description("Maximum diffs to return (default: 50)"),
 		),
-		mcpsdk.WithString("scope",
-			mcpsdk.Description(`Result scope: "impl" (default, excludes test files), "test" (test files only), or "all"`),
-			mcpsdk.Enum(AllScopes()...),
-		),
-		mcpsdk.WithReadOnlyHintAnnotation(true),
-		mcpsdk.WithDestructiveHintAnnotation(false),
-		mcpsdk.WithIdempotentHintAnnotation(true),
+		scopeOption(),
 	)
 }
 
@@ -403,15 +403,10 @@ func diffHandler(store types.WriterStore) handlerFunc {
 // ── enrichment_status tool ──
 
 func enrichmentStatusToolDef() mcpsdk.Tool {
-	return mcpsdk.NewTool("enrichment_status",
-		mcpsdk.WithDescription(
-			`Show embedding and indexing progress.
+	return buildTool("enrichment_status",
+		`Show embedding and indexing progress.
 Use to check if semantic search is available and how complete the index is.
-Returns chunk counts, embedding percentage, and circuit breaker state.`),
-		mcpsdk.WithReadOnlyHintAnnotation(true),
-		mcpsdk.WithDestructiveHintAnnotation(false),
-		mcpsdk.WithIdempotentHintAnnotation(true),
-	)
+Returns chunk counts, embedding percentage, and circuit breaker state.`)
 }
 
 func enrichmentStatusHandler(store types.WriterStore, vs types.VectorStore, ew *vector.EmbedWorker) handlerFunc {
@@ -455,14 +450,9 @@ func enrichmentStatusHandler(store types.WriterStore, vs types.VectorStore, ew *
 // ── summary tool ──
 
 func summaryToolDef() mcpsdk.Tool {
-	return mcpsdk.NewTool("summary",
-		mcpsdk.WithDescription(
-			`Quick codebase snapshot: file count, languages, symbol count, and index health.
-Start here to orient in an unfamiliar codebase — gives structure at a glance without reading files.`),
-		mcpsdk.WithReadOnlyHintAnnotation(true),
-		mcpsdk.WithDestructiveHintAnnotation(false),
-		mcpsdk.WithIdempotentHintAnnotation(true),
-	)
+	return buildTool("summary",
+		`Quick codebase snapshot: file count, languages, symbol count, and index health.
+Start here to orient in an unfamiliar codebase — gives structure at a glance without reading files.`)
 }
 
 func summaryHandler(store types.WriterStore, vs types.VectorStore) handlerFunc {

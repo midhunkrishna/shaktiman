@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"sort"
 
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 	tree_sitter_bash "github.com/tree-sitter/tree-sitter-bash/bindings/go"
@@ -49,40 +50,51 @@ type LanguageConfig struct {
 	AmbientType    string              // ambient declaration wrapper type (empty if N/A)
 }
 
+// languageRegistry maps a language name to its config builder. New
+// languages register here; GetLanguageConfig and SupportedLanguage
+// dispatch through the same map so they can never disagree.
+//
+// Builders are stored as functions (not pre-built configs) because each
+// returns a freshly-constructed *LanguageConfig — a few callers mutate
+// the returned config (e.g. tests installing a stricter import-type
+// set), and sharing one instance across goroutines would cause races.
+var languageRegistry = map[string]func() *LanguageConfig{
+	"typescript": typescriptConfig,
+	"python":     pythonConfig,
+	"go":         goConfig,
+	"rust":       rustConfig,
+	"java":       javaConfig,
+	"bash":       bashConfig,
+	"javascript": javascriptConfig,
+	"ruby":       rubyConfig,
+	"erb":        erbConfig,
+}
+
 // GetLanguageConfig returns the config for the given language name.
 func GetLanguageConfig(lang string) (*LanguageConfig, error) {
-	switch lang {
-	case "typescript":
-		return typescriptConfig(), nil
-	case "python":
-		return pythonConfig(), nil
-	case "go":
-		return goConfig(), nil
-	case "rust":
-		return rustConfig(), nil
-	case "java":
-		return javaConfig(), nil
-	case "bash":
-		return bashConfig(), nil
-	case "javascript":
-		return javascriptConfig(), nil
-	case "ruby":
-		return rubyConfig(), nil
-	case "erb":
-		return erbConfig(), nil
-	default:
+	build, ok := languageRegistry[lang]
+	if !ok {
 		return nil, fmt.Errorf("unsupported language: %s", lang)
 	}
+	return build(), nil
 }
 
 // SupportedLanguage returns true if the language is supported.
 func SupportedLanguage(lang string) bool {
-	switch lang {
-	case "typescript", "python", "go", "rust", "java", "bash", "javascript", "ruby", "erb":
-		return true
-	default:
-		return false
+	_, ok := languageRegistry[lang]
+	return ok
+}
+
+// SupportedLanguages returns the sorted list of language names the
+// parser can handle. Tests and CLI surfaces use this to enumerate
+// without hard-coding.
+func SupportedLanguages() []string {
+	out := make([]string, 0, len(languageRegistry))
+	for k := range languageRegistry {
+		out = append(out, k)
 	}
+	sort.Strings(out)
+	return out
 }
 
 func typescriptConfig() *LanguageConfig {
