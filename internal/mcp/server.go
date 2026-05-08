@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/shaktimanai/shaktiman/internal/core"
@@ -33,6 +34,48 @@ type NewServerInput struct {
 	Config      types.Config     // MCP tool configuration
 }
 
+// toolEntry binds a tool's name to its definition and handler factories.
+// Each tool name lives in exactly one place; adding a new tool means
+// appending one entry. Optional gate disables registration based on config
+// (context tool is gated on cfg.ContextEnabled).
+type toolEntry struct {
+	name  string
+	gate  func(types.Config) bool // nil → always enabled
+	build func(NewServerInput) (mcpsdk.Tool, handlerFunc)
+}
+
+// toolRegistry returns the canonical list of MCP tools shaktiman exposes.
+// Order is preserved in registration so clients see tools in a stable order.
+func toolRegistry() []toolEntry {
+	return []toolEntry{
+		{name: "search", build: func(in NewServerInput) (mcpsdk.Tool, handlerFunc) {
+			return searchToolDef(in.Config), searchHandler(in.Engine, in.Config)
+		}},
+		{
+			name: "context",
+			gate: func(c types.Config) bool { return c.ContextEnabled },
+			build: func(in NewServerInput) (mcpsdk.Tool, handlerFunc) {
+				return contextToolDef(in.Config), contextHandler(in.Engine, in.Config)
+			},
+		},
+		{name: "symbols", build: func(in NewServerInput) (mcpsdk.Tool, handlerFunc) {
+			return symbolsToolDef(), symbolsHandler(in.Store)
+		}},
+		{name: "dependencies", build: func(in NewServerInput) (mcpsdk.Tool, handlerFunc) {
+			return dependenciesToolDef(), dependenciesHandler(in.Store)
+		}},
+		{name: "diff", build: func(in NewServerInput) (mcpsdk.Tool, handlerFunc) {
+			return diffToolDef(), diffHandler(in.Store)
+		}},
+		{name: "enrichment_status", build: func(in NewServerInput) (mcpsdk.Tool, handlerFunc) {
+			return enrichmentStatusToolDef(), enrichmentStatusHandler(in.Store, in.VectorStore, in.EmbedWorker)
+		}},
+		{name: "summary", build: func(in NewServerInput) (mcpsdk.Tool, handlerFunc) {
+			return summaryToolDef(), summaryHandler(in.Store, in.VectorStore)
+		}},
+	}
+}
+
 // NewServer creates a configured MCP server with tools and resources registered.
 func NewServer(input NewServerInput) *server.MCPServer {
 	s := server.NewMCPServer(
@@ -43,22 +86,13 @@ func NewServer(input NewServerInput) *server.MCPServer {
 		server.WithInstructions(serverInstructions),
 	)
 
-	cfg := input.Config
-
-	wrap := func(name string, h handlerFunc) handlerFunc {
-		return withMetrics(name, input.Recorder, h)
+	for _, e := range toolRegistry() {
+		if e.gate != nil && !e.gate(input.Config) {
+			continue
+		}
+		def, h := e.build(input)
+		s.AddTool(def, withMetrics(e.name, input.Recorder, h))
 	}
-
-	// Register tools
-	s.AddTool(searchToolDef(cfg), wrap("search", searchHandler(input.Engine, cfg)))
-	if cfg.ContextEnabled {
-		s.AddTool(contextToolDef(cfg), wrap("context", contextHandler(input.Engine, cfg)))
-	}
-	s.AddTool(symbolsToolDef(), wrap("symbols", symbolsHandler(input.Store)))
-	s.AddTool(dependenciesToolDef(), wrap("dependencies", dependenciesHandler(input.Store)))
-	s.AddTool(diffToolDef(), wrap("diff", diffHandler(input.Store)))
-	s.AddTool(enrichmentStatusToolDef(), wrap("enrichment_status", enrichmentStatusHandler(input.Store, input.VectorStore, input.EmbedWorker)))
-	s.AddTool(summaryToolDef(), wrap("summary", summaryHandler(input.Store, input.VectorStore)))
 
 	// Register resources
 	s.AddResource(workspaceSummaryDef(), workspaceSummaryHandler(input.Store))

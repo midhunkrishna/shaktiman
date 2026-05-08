@@ -260,18 +260,9 @@ func symbolsHandler(store types.WriterStore) handlerFunc {
 				ReferencedBy: result.ReferencedBy,
 				Note:         result.Note,
 			}
-			data, err := json.Marshal(enriched)
-			if err != nil {
-				return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
-			}
-			return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), len(result.ReferencedBy)), nil
+			return jsonResult(ctx, enriched, len(result.ReferencedBy), "marshal results: "), nil
 		}
-
-		data, err := json.Marshal(result.Definitions)
-		if err != nil {
-			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
-		}
-		return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), len(result.Definitions)), nil
+		return jsonResult(ctx, result.Definitions, len(result.Definitions), "marshal results: "), nil
 	}
 }
 
@@ -333,12 +324,7 @@ func dependenciesHandler(store types.WriterStore) handlerFunc {
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("dependency lookup failed: ", err)), nil
 		}
-
-		data, err := json.Marshal(results)
-		if err != nil {
-			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
-		}
-		return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), len(results)), nil
+		return jsonResult(ctx, results, len(results), "marshal results: "), nil
 	}
 }
 
@@ -391,12 +377,7 @@ func diffHandler(store types.WriterStore) handlerFunc {
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("diff query failed: ", err)), nil
 		}
-
-		data, err := json.Marshal(results)
-		if err != nil {
-			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
-		}
-		return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), len(results)), nil
+		return jsonResult(ctx, results, len(results), "marshal results: "), nil
 	}
 }
 
@@ -438,12 +419,7 @@ func enrichmentStatusHandler(store types.WriterStore, vs types.VectorStore, ew *
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("stats query failed: ", err)), nil
 		}
-
-		data, err := json.Marshal(result)
-		if err != nil {
-			return mcpsdk.NewToolResultError(sanitizeError("marshal status: ", err)), nil
-		}
-		return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), 1), nil
+		return jsonResult(ctx, result, 1, "marshal status: "), nil
 	}
 }
 
@@ -461,12 +437,7 @@ func summaryHandler(store types.WriterStore, vs types.VectorStore) handlerFunc {
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("summary failed: ", err)), nil
 		}
-
-		data, err := json.Marshal(result)
-		if err != nil {
-			return mcpsdk.NewToolResultError(sanitizeError("marshal summary: ", err)), nil
-		}
-		return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), 1), nil
+		return jsonResult(ctx, result, 1, "marshal summary: "), nil
 	}
 }
 
@@ -480,4 +451,17 @@ func sanitizeError(prefix string, err error) string {
 		msg = msg[:200] + "..."
 	}
 	return prefix + msg
+}
+
+// jsonResult marshals payload and wraps it as a successful MCP tool result
+// tagged with resultCount for metrics. On marshal failure it returns a
+// sanitized error result with marshalLabel as the prefix. Most JSON-returning
+// handlers end with this exact pattern, so funnelling it here keeps the
+// per-handler tail to a single line.
+func jsonResult(ctx context.Context, payload any, resultCount int, marshalLabel string) *mcpsdk.CallToolResult {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return mcpsdk.NewToolResultError(sanitizeError(marshalLabel, err))
+	}
+	return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), resultCount)
 }
