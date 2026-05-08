@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -258,13 +257,11 @@ func indexCmd() *cobra.Command {
 			}
 
 			// Refuse to index if a daemon is already running (would race on writes).
-			lock, lockErr := lockfile.Acquire(args[0])
+			lock, lockErr := lockfile.AcquireExclusive(args[0],
+				"a shaktimand daemon is running for this project; "+
+					"it handles indexing automatically")
 			if lockErr != nil {
-				if errors.Is(lockErr, lockfile.ErrAlreadyLocked) {
-					return fmt.Errorf("a shaktimand daemon is running for this project; " +
-						"it handles indexing automatically")
-				}
-				return fmt.Errorf("check daemon lock: %w", lockErr)
+				return lockErr
 			}
 			defer func() { _ = lock.Release() }()
 
@@ -319,13 +316,11 @@ func reindexCmd() *cobra.Command {
 			}
 
 			// Refuse to reindex if a daemon is already running (would race on writes).
-			lock, lockErr := lockfile.Acquire(args[0])
+			lock, lockErr := lockfile.AcquireExclusive(args[0],
+				"a shaktimand daemon is running for this project; "+
+					"stop it before running reindex")
 			if lockErr != nil {
-				if errors.Is(lockErr, lockfile.ErrAlreadyLocked) {
-					return fmt.Errorf("a shaktimand daemon is running for this project; " +
-						"stop it before running reindex")
-				}
-				return fmt.Errorf("check daemon lock: %w", lockErr)
+				return lockErr
 			}
 			defer func() { _ = lock.Release() }()
 

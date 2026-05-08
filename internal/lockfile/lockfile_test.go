@@ -133,6 +133,81 @@ func TestAcquire_PIDContent(t *testing.T) {
 	}
 }
 
+func TestAcquireExclusive_Leader(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	lock, err := AcquireExclusive(dir, "should not see this")
+	if err != nil {
+		t.Fatalf("AcquireExclusive: %v", err)
+	}
+	defer lock.Release()
+
+	if lock == nil {
+		t.Fatal("expected non-nil lock")
+	}
+}
+
+func TestAcquireExclusive_ContendedReturnsCustomMessage(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	first, err := Acquire(dir)
+	if err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+	defer first.Release()
+
+	const msg = "daemon is running; stop it before running reindex"
+	lock, err := AcquireExclusive(dir, msg)
+	if lock != nil {
+		t.Fatal("expected nil lock on contention")
+	}
+	if err == nil || err.Error() != msg {
+		t.Fatalf("expected error %q, got %v", msg, err)
+	}
+	// Contention error must NOT wrap ErrAlreadyLocked — callers see only the
+	// caller-provided message, not the lockfile-internal sentinel.
+	if errorsIs(err, ErrAlreadyLocked) {
+		t.Fatal("contention error should not expose ErrAlreadyLocked sentinel to caller")
+	}
+}
+
+func TestAcquireExclusive_OtherErrorWrapped(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// .shaktiman as a regular file forces MkdirAll to fail (non-contention error path).
+	if err := os.WriteFile(filepath.Join(dir, ".shaktiman"), []byte("block"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	lock, err := AcquireExclusive(dir, "contended")
+	if lock != nil {
+		t.Fatal("expected nil lock on non-contention error")
+	}
+	if err == nil {
+		t.Fatal("expected error for invalid dir")
+	}
+	if err.Error() == "contended" {
+		t.Fatal("non-contention error should not use the contended message")
+	}
+}
+
+// errorsIs is a tiny shim so this test file does not import "errors" when
+// other tests do not need it.
+func errorsIs(err, target error) bool {
+	for err != nil {
+		if err == target {
+			return true
+		}
+		u, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			return false
+		}
+		err = u.Unwrap()
+	}
+	return false
+}
+
 func TestSocketPathFor_Deterministic(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -55,6 +55,21 @@ func Acquire(projectRoot string) (*Lock, error) {
 	return &Lock{fl: fl, canonicalRoot: canonical}, nil
 }
 
+// AcquireExclusive acquires the daemon lock or returns a contention error
+// formatted with contendedMsg when another process holds it. Other failures
+// are wrapped under "check daemon lock". Used by CLI commands that must
+// refuse to run while a daemon owns the project.
+func AcquireExclusive(projectRoot, contendedMsg string) (*Lock, error) {
+	lock, err := Acquire(projectRoot)
+	if err == nil {
+		return lock, nil
+	}
+	if errors.Is(err, ErrAlreadyLocked) {
+		return nil, errors.New(contendedMsg)
+	}
+	return nil, fmt.Errorf("check daemon lock: %w", err)
+}
+
 // Release releases the flock. Safe to call multiple times.
 func (l *Lock) Release() error {
 	if l == nil || l.fl == nil {
