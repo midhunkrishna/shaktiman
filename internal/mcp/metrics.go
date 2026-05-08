@@ -9,6 +9,7 @@ import (
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/shaktimanai/shaktiman/internal/observability"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
@@ -196,6 +197,16 @@ func withMetrics(name string, recorder *MetricsRecorder, h handlerFunc) handlerF
 		duration := time.Since(start)
 		isErr := err != nil || (result != nil && result.IsError)
 		tokensEst := respBytes / 4
+
+		// In-memory metrics for `shaktiman stats`. Names are scoped by
+		// tool so a hot tool's latency doesn't drown out the rest.
+		obs := observability.Default()
+		obs.Inc("mcp.tool_call." + name + ".count")
+		obs.Observe("mcp.tool_call."+name+".latency_ms", float64(duration.Milliseconds()))
+		obs.Observe("mcp.tool_call."+name+".response_bytes", float64(respBytes))
+		if isErr {
+			obs.Inc("mcp.tool_call." + name + ".error_count")
+		}
 
 		// Detailed metrics at debug level
 		logger.Debug("tool_call_metrics",
