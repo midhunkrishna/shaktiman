@@ -54,6 +54,7 @@ func main() {
 	rootCmd.AddCommand(diffCmd())
 	rootCmd.AddCommand(enrichmentStatusCmd())
 	rootCmd.AddCommand(summaryCmd())
+	rootCmd.AddCommand(statsCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)

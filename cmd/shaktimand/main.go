@@ -21,6 +21,7 @@ import (
 
 	"github.com/shaktimanai/shaktiman/internal/daemon"
 	"github.com/shaktimanai/shaktiman/internal/lockfile"
+	"github.com/shaktimanai/shaktiman/internal/observability"
 	"github.com/shaktimanai/shaktiman/internal/proxy"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
@@ -156,6 +157,7 @@ func main() {
 	lock, lockErr := lockfile.Acquire(projectRoot)
 	if lockErr != nil {
 		if errors.Is(lockErr, lockfile.ErrAlreadyLocked) {
+			observability.Default().Inc("daemon.lock.contended")
 			// Proxy: append to shared log — never rotate or truncate, as
 			// the leader's file descriptor would become detached.
 			setupLogging(logPath, false, logLevel)
@@ -169,6 +171,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = lock.Release() }()
+	observability.Default().Inc("daemon.lock.acquired")
 
 	// Leader: rotate previous log, then create a fresh one.
 	setupLogging(logPath, true, logLevel)
@@ -357,6 +360,7 @@ func runAsProxy(projectRoot string) {
 		// concurrent proxies; without it, all proxies that observe
 		// ErrLeaderGone re-exec in lockstep and the losers race
 		// WaitForSocket against a cold-starting leader.
+		observability.Default().Inc("daemon.promotion.attempt")
 		sleep := promotionBackoff()
 		slog.Info("leader exited, promoting via re-exec after backoff",
 			"backoff_ms", sleep.Milliseconds())
@@ -379,6 +383,7 @@ func runAsProxy(projectRoot string) {
 		execErr := syscall.Exec(exe, os.Args, os.Environ()) //nolint:gosec // re-exec of own binary for leader promotion; exe resolved via os.Executable()
 
 		// Exec replaces the process; if we get here, it failed.
+		observability.Default().Inc("daemon.promotion.failure")
 		fmt.Fprintf(os.Stderr, "error: re-exec failed: %v\n", execErr)
 		os.Exit(1)
 	}

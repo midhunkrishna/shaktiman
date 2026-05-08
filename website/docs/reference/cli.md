@@ -146,6 +146,39 @@ See [`summary` MCP tool](/reference/mcp-tools/summary).
 |---|---|---|
 | `--root <path>` | `.` | Project root. |
 
+### `shaktiman stats`
+
+Query the running daemon's in-memory observability counters over its
+Unix socket and print a sorted human summary. Requires the daemon to be
+running for that project; reports a clear hint when the socket is
+unavailable.
+
+```
+shaktiman stats --root /path/to/project
+```
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--root <path>` | `.` | Project root. |
+| `--json` | `false` | Force JSON output regardless of `--format`. |
+| `--dial-timeout <duration>` | `2s` | Socket dial timeout. |
+
+**Counters surfaced today:**
+
+- `daemon.lock.acquired` / `daemon.lock.contended` — once per leader/proxy startup.
+- `daemon.promotion.attempt` / `daemon.promotion.failure` — incremented by a proxy when its leader exits and it re-execs.
+- `mcp.tool_call.<tool>.count` / `.error_count` — per-tool call totals.
+- `vector.embed.rejected.{zero,nan,inf,empty,dim_mismatch}` — silent embed-quality regression signals from `sanitizeEmbeddings`.
+
+**Histograms** (count, mean, p50, p95, p99, min, max):
+
+- `mcp.tool_call.<tool>.latency_ms`
+- `mcp.tool_call.<tool>.response_bytes`
+
+The registry is in-memory and resets on daemon restart. There is no
+disk rotation or Prometheus exporter today; both are tracked as future
+phases in `docs/planning/11-critique-remediation-plan.md`.
+
 ## `shaktimand` (MCP daemon)
 
 ```
@@ -193,9 +226,22 @@ to the MCP client, the proxy socket); a benign reader disconnect would otherwise
 terminate the process and abort indexing. `SIGINT` and `SIGTERM` trigger graceful
 shutdown.
 
+### Endpoints on the Unix socket
+
+Two HTTP endpoints share `/tmp/shaktiman-<hash>.sock`:
+
+| Path | Purpose |
+|---|---|
+| `/mcp` | Streamable MCP HTTP server, used by proxy clients to forward JSON-RPC. |
+| `/metrics` | JSON snapshot of the in-memory observability registry. Consumed by `shaktiman stats`. |
+
+The socket is local-only by virtue of being a Unix domain socket; no
+auth is enforced. Do not expose either endpoint over TCP.
+
 ## Source of truth
 
 - `cmd/shaktiman/main.go` — `init`, `index`, `reindex`, `status`.
 - `cmd/shaktiman/query.go` — `search`, `context`, `symbols`, `deps`, `diff`,
   `enrichment-status`, `summary`.
+- `cmd/shaktiman/stats.go` — `stats`.
 - `cmd/shaktimand/main.go` — daemon lifecycle and leader/proxy dispatch.

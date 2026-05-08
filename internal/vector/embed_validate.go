@@ -3,6 +3,8 @@ package vector
 import (
 	"log/slog"
 	"math"
+
+	"github.com/shaktimanai/shaktiman/internal/observability"
 )
 
 // sanitizeEmbeddings filters out vectors that would corrupt downstream
@@ -62,6 +64,25 @@ func sanitizeEmbeddings(chunkIDs []int64, vectors [][]float32, expectDim int, lo
 			if log != nil {
 				log.Warn("embedding rejected: Inf component", "chunk_id", id)
 			}
+		}
+	}
+
+	if r.total() > 0 {
+		obs := observability.Default()
+		if r.zero > 0 {
+			obs.Add("vector.embed.rejected.zero", uint64(r.zero))
+		}
+		if r.naN > 0 {
+			obs.Add("vector.embed.rejected.nan", uint64(r.naN))
+		}
+		if r.inf > 0 {
+			obs.Add("vector.embed.rejected.inf", uint64(r.inf))
+		}
+		if r.empty > 0 {
+			obs.Add("vector.embed.rejected.empty", uint64(r.empty))
+		}
+		if r.dimMismatch > 0 {
+			obs.Add("vector.embed.rejected.dim_mismatch", uint64(r.dimMismatch))
 		}
 	}
 

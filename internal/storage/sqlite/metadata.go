@@ -593,46 +593,16 @@ func (s *Store) ResetEmbeddedFlags(ctx context.Context, chunkIDs []int64) error 
 	}
 
 	return s.db.WithWriteTx(func(tx *sql.Tx) error {
-		const batchLimit = 500
-		for start := 0; start < len(chunkIDs); start += batchLimit {
-			end := start + batchLimit
-			if end > len(chunkIDs) {
-				end = len(chunkIDs)
-			}
-			batch := chunkIDs[start:end]
-
-			placeholders := make([]string, len(batch))
-			args := make([]any, len(batch))
-			for i, id := range batch {
-				placeholders[i] = "?"
-				args[i] = id
-			}
-			ph := strings.Join(placeholders, ",")
-
+		return forEachChunkBatch(chunkIDs, func(ph string, args []any, _ []int64) error {
 			if _, err := tx.ExecContext(ctx,
 				fmt.Sprintf("UPDATE chunks SET embedded = 0 WHERE id IN (%s)", ph),
 				args...); err != nil {
 				return fmt.Errorf("reset embedded flags: %w", err)
 			}
 
-			rows, err := tx.QueryContext(ctx,
-				fmt.Sprintf("SELECT DISTINCT file_id FROM chunks WHERE id IN (%s)", ph),
-				args...)
+			fileIDs, err := affectedFileIDs(ctx, tx, ph, args)
 			if err != nil {
-				return fmt.Errorf("get affected file IDs: %w", err)
-			}
-			var fileIDs []int64
-			for rows.Next() {
-				var fid int64
-				if err := rows.Scan(&fid); err != nil {
-					_ = rows.Close()
-					return fmt.Errorf("scan file ID: %w", err)
-				}
-				fileIDs = append(fileIDs, fid)
-			}
-			_ = rows.Close()
-			if err := rows.Err(); err != nil {
-				return fmt.Errorf("iterate file IDs: %w", err)
+				return err
 			}
 
 			for _, fid := range fileIDs {
@@ -652,8 +622,8 @@ func (s *Store) ResetEmbeddedFlags(ctx context.Context, chunkIDs []int64) error 
 					return fmt.Errorf("update file %d embedding status: %w", fid, err)
 				}
 			}
-		}
-		return nil
+			return nil
+		})
 	})
 }
 
@@ -666,52 +636,18 @@ func (s *Store) MarkChunksEmbedded(ctx context.Context, chunkIDs []int64) error 
 	}
 
 	return s.db.WithWriteTx(func(tx *sql.Tx) error {
-		// Process in batches of 500 to stay under SQLite's variable limit.
-		const batchLimit = 500
-		for start := 0; start < len(chunkIDs); start += batchLimit {
-			end := start + batchLimit
-			if end > len(chunkIDs) {
-				end = len(chunkIDs)
-			}
-			batch := chunkIDs[start:end]
-
-			placeholders := make([]string, len(batch))
-			args := make([]any, len(batch))
-			for i, id := range batch {
-				placeholders[i] = "?"
-				args[i] = id
-			}
-			ph := strings.Join(placeholders, ",")
-
-			// Step 1: Mark individual chunks as embedded.
+		return forEachChunkBatch(chunkIDs, func(ph string, args []any, _ []int64) error {
 			if _, err := tx.ExecContext(ctx,
 				fmt.Sprintf("UPDATE chunks SET embedded = 1 WHERE id IN (%s)", ph),
 				args...); err != nil {
 				return fmt.Errorf("mark chunks embedded: %w", err)
 			}
 
-			// Step 2: Get affected file IDs.
-			rows, err := tx.QueryContext(ctx,
-				fmt.Sprintf("SELECT DISTINCT file_id FROM chunks WHERE id IN (%s)", ph),
-				args...)
+			fileIDs, err := affectedFileIDs(ctx, tx, ph, args)
 			if err != nil {
-				return fmt.Errorf("get affected file IDs: %w", err)
-			}
-			var fileIDs []int64
-			for rows.Next() {
-				var fid int64
-				if err := rows.Scan(&fid); err != nil {
-					_ = rows.Close()
-					return fmt.Errorf("scan file ID: %w", err)
-				}
-				fileIDs = append(fileIDs, fid)
-			}
-			_ = rows.Close()
-			if err := rows.Err(); err != nil {
-				return fmt.Errorf("iterate file IDs: %w", err)
+				return err
 			}
 
-			// Step 3: Update file embedding status based on cumulative progress.
 			for _, fid := range fileIDs {
 				var remaining int
 				if err := tx.QueryRowContext(ctx,
@@ -732,8 +668,8 @@ func (s *Store) MarkChunksEmbedded(ctx context.Context, chunkIDs []int64) error 
 					}
 				}
 			}
-		}
-		return nil
+			return nil
+		})
 	})
 }
 

@@ -20,6 +20,8 @@ import (
 	"github.com/shaktimanai/shaktiman/internal/types"
 	"github.com/shaktimanai/shaktiman/internal/vector"
 
+	"encoding/json"
+
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
@@ -245,6 +247,13 @@ func (d *Daemon) Start(ctx context.Context) error {
 		httpHandler := mcpserver.NewStreamableHTTPServer(s)
 		mux := http.NewServeMux()
 		mux.Handle("/mcp", httpHandler)
+		// /metrics serves a JSON snapshot of the in-memory observability
+		// registry. `shaktiman stats` GETs this over the same Unix
+		// socket. Local-only by virtue of UDS — no auth needed.
+		mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(observability.Default().Snapshot())
+		})
 		d.socketServer = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 
 		readyPath := ReadyMarkerPath(d.cfg.ProjectRoot)

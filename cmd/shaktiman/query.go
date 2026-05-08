@@ -27,6 +27,29 @@ func openStore(cfg types.Config) (types.WriterStore, func() error, error) {
 	return b.Store, b.Close, nil
 }
 
+// withProjectStore loads the project config from `root`, opens a
+// WriterStore, and invokes fn. The store is closed when fn returns.
+//
+// Every CLI subcommand that reads the index — search, context,
+// symbols, deps, diff, enrichment-status, summary — used to inline
+// the same eight-line config-and-store boilerplate; centralising it
+// here means new subcommands get the same close semantics for free
+// and a single bug fix (e.g. surfacing config errors more clearly)
+// touches one site instead of seven.
+func withProjectStore(root string, fn func(cfg types.Config, store types.WriterStore) error) error {
+	cfg := types.DefaultConfig(root)
+	cfg, err := types.LoadConfigFromFile(cfg)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	store, closer, err := openStore(cfg)
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer func() { _ = closer() }()
+	return fn(cfg, store)
+}
+
 // openEngine creates a QueryEngine with vector store + embedder when available.
 // Read-only: loads existing embeddings from disk, does not start embed worker.
 // Falls back to keyword-only if embeddings are unavailable.
@@ -83,52 +106,42 @@ func searchCmd() *cobra.Command {
 		Short: "Search indexed code by keyword or semantic query",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			cfg := types.DefaultConfig(root)
-			cfg, err := types.LoadConfigFromFile(cfg)
-			if err != nil {
-				return fmt.Errorf("load config: %w", err)
-			}
+			return withProjectStore(root, func(cfg types.Config, store types.WriterStore) error {
+				engine, _ := openEngine(cfg, store, root)
 
-			store, closer, err := openStore(cfg)
-			if err != nil {
-				return fmt.Errorf("open store: %w", err)
-			}
-			defer func() { _ = closer() }()
-			engine, _ := openEngine(cfg, store, root)
-
-			if maxResults == 0 {
-				maxResults = cfg.SearchMaxResults
-			}
-			if minScore == 0 {
-				minScore = cfg.SearchMinScore
-			}
-			if mode == "" {
-				mode = cfg.SearchDefaultMode
-			}
-
-			filter := core.ScopeToFilter(scope)
-
-			// Over-fetch when path filter is set to compensate for post-filtering.
-			engineMax := maxResults
-			if path != "" {
-				engineMax = maxResults * 3
-				if engineMax > 200 {
-					engineMax = 200
+				if maxResults == 0 {
+					maxResults = cfg.SearchMaxResults
 				}
-			}
+				if minScore == 0 {
+					minScore = cfg.SearchMinScore
+				}
+				if mode == "" {
+					mode = cfg.SearchDefaultMode
+				}
 
-			results, err := engine.Search(context.Background(), core.SearchInput{
-				Query:        args[0],
-				MaxResults:   engineMax,
-				Explain:      explain,
-				Mode:         mode,
-				MinScore:     minScore,
-				ExcludeTests: filter.ExcludeTests,
-				TestOnly:     filter.TestOnly,
-			})
-			if err != nil {
-				return fmt.Errorf("search: %w", err)
-			}
+				filter := core.ScopeToFilter(scope)
+
+				// Over-fetch when path filter is set to compensate for post-filtering.
+				engineMax := maxResults
+				if path != "" {
+					engineMax = maxResults * 3
+					if engineMax > 200 {
+						engineMax = 200
+					}
+				}
+
+				results, err := engine.Search(context.Background(), core.SearchInput{
+					Query:        args[0],
+					MaxResults:   engineMax,
+					Explain:      explain,
+					Mode:         mode,
+					MinScore:     minScore,
+					ExcludeTests: filter.ExcludeTests,
+					TestOnly:     filter.TestOnly,
+				})
+				if err != nil {
+					return fmt.Errorf("search: %w", err)
+				}
 
 			// Apply path prefix filter if specified.
 			if path != "" {
@@ -153,12 +166,13 @@ func searchCmd() *cobra.Command {
 				return nil
 			}
 
-			data, err := json.MarshalIndent(results, "", "  ")
-			if err != nil {
-				return fmt.Errorf("marshal: %w", err)
-			}
-			fmt.Println(string(data))
-			return nil
+				data, err := json.MarshalIndent(results, "", "  ")
+				if err != nil {
+					return fmt.Errorf("marshal: %w", err)
+				}
+				fmt.Println(string(data))
+				return nil
+			})
 		},
 	}
 	cmd.Flags().StringVar(&root, "root", ".", "Project root directory")
@@ -182,46 +196,37 @@ func contextCmd() *cobra.Command {
 		Short: "Assemble cross-file context for a query",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			cfg := types.DefaultConfig(root)
-			cfg, err := types.LoadConfigFromFile(cfg)
-			if err != nil {
-				return fmt.Errorf("load config: %w", err)
-			}
+			return withProjectStore(root, func(cfg types.Config, store types.WriterStore) error {
+				engine, _ := openEngine(cfg, store, root)
 
-			store, closer, err := openStore(cfg)
-			if err != nil {
-				return fmt.Errorf("open store: %w", err)
-			}
-			defer func() { _ = closer() }()
-			engine, _ := openEngine(cfg, store, root)
+				if budget == 0 {
+					budget = cfg.ContextBudgetTokens
+				}
 
-			if budget == 0 {
-				budget = cfg.ContextBudgetTokens
-			}
+				filter := core.ScopeToFilter(scope)
 
-			filter := core.ScopeToFilter(scope)
+				pkg, err := engine.Context(context.Background(), core.ContextInput{
+					Query:        args[0],
+					BudgetTokens: budget,
+					ExcludeTests: filter.ExcludeTests,
+					TestOnly:     filter.TestOnly,
+				})
+				if err != nil {
+					return fmt.Errorf("context: %w", err)
+				}
 
-			pkg, err := engine.Context(context.Background(), core.ContextInput{
-				Query:        args[0],
-				BudgetTokens: budget,
-				ExcludeTests: filter.ExcludeTests,
-				TestOnly:     filter.TestOnly,
-			})
-			if err != nil {
-				return fmt.Errorf("context: %w", err)
-			}
+				if outputFormat == "text" {
+					fmt.Print(format.ContextPackage(pkg))
+					return nil
+				}
 
-			if outputFormat == "text" {
-				fmt.Print(format.ContextPackage(pkg))
+				data, err := json.MarshalIndent(pkg, "", "  ")
+				if err != nil {
+					return fmt.Errorf("marshal: %w", err)
+				}
+				fmt.Println(string(data))
 				return nil
-			}
-
-			data, err := json.MarshalIndent(pkg, "", "  ")
-			if err != nil {
-				return fmt.Errorf("marshal: %w", err)
-			}
-			fmt.Println(string(data))
-			return nil
+			})
 		},
 	}
 	cmd.Flags().StringVar(&root, "root", ".", "Project root directory")
@@ -241,49 +246,39 @@ func symbolsCmd() *cobra.Command {
 		Short: "Look up symbols by name",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			cfg := types.DefaultConfig(root)
-			cfg, err := types.LoadConfigFromFile(cfg)
-			if err != nil {
-				return fmt.Errorf("load config: %w", err)
-			}
+			return withProjectStore(root, func(_ types.Config, store types.WriterStore) error {
+				filter := core.ScopeToFilter(scope)
+				result, err := core.LookupSymbols(context.Background(), store, args[0], kind, filter)
+				if err != nil {
+					return fmt.Errorf("symbol lookup: %w", err)
+				}
 
-			store, closer, err := openStore(cfg)
-			if err != nil {
-				return fmt.Errorf("open store: %w", err)
-			}
-			defer func() { _ = closer() }()
+				if outputFormat == "text" {
+					fmt.Print(format.Symbols(result.Definitions))
+					return nil
+				}
 
-			filter := core.ScopeToFilter(scope)
-			result, err := core.LookupSymbols(context.Background(), store, args[0], kind, filter)
-			if err != nil {
-				return fmt.Errorf("symbol lookup: %w", err)
-			}
+				// Return enriched response when pending_edges fallback triggered
+				if len(result.ReferencedBy) > 0 {
+					data, err := json.MarshalIndent(format.SymbolsWithRefs{
+						Definitions:  result.Definitions,
+						ReferencedBy: result.ReferencedBy,
+						Note:         result.Note,
+					}, "", "  ")
+					if err != nil {
+						return fmt.Errorf("marshal: %w", err)
+					}
+					fmt.Println(string(data))
+					return nil
+				}
 
-			if outputFormat == "text" {
-				fmt.Print(format.Symbols(result.Definitions))
-				return nil
-			}
-
-			// Return enriched response when pending_edges fallback triggered
-			if len(result.ReferencedBy) > 0 {
-				data, err := json.MarshalIndent(format.SymbolsWithRefs{
-					Definitions:  result.Definitions,
-					ReferencedBy: result.ReferencedBy,
-					Note:         result.Note,
-				}, "", "  ")
+				data, err := json.MarshalIndent(result.Definitions, "", "  ")
 				if err != nil {
 					return fmt.Errorf("marshal: %w", err)
 				}
 				fmt.Println(string(data))
 				return nil
-			}
-
-			data, err := json.MarshalIndent(result.Definitions, "", "  ")
-			if err != nil {
-				return fmt.Errorf("marshal: %w", err)
-			}
-			fmt.Println(string(data))
-			return nil
+			})
 		},
 	}
 	cmd.Flags().StringVar(&root, "root", ".", "Project root directory")
@@ -304,47 +299,37 @@ func depsCmd() *cobra.Command {
 		Short: "Show callers/callees of a symbol",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			cfg := types.DefaultConfig(root)
-			cfg, err := types.LoadConfigFromFile(cfg)
-			if err != nil {
-				return fmt.Errorf("load config: %w", err)
-			}
+			return withProjectStore(root, func(_ types.Config, store types.WriterStore) error {
+				dir := direction
+				switch dir {
+				case "callers":
+					dir = "incoming"
+				case "callees":
+					dir = "outgoing"
+				case "both":
+					// keep as-is
+				default:
+					return fmt.Errorf("direction must be callers, callees, or both")
+				}
 
-			store, closer, err := openStore(cfg)
-			if err != nil {
-				return fmt.Errorf("open store: %w", err)
-			}
-			defer func() { _ = closer() }()
+				filter := core.ScopeToFilter(scope)
+				results, err := core.LookupDependencies(context.Background(), store, args[0], dir, depth, filter)
+				if err != nil {
+					return fmt.Errorf("dependency lookup: %w", err)
+				}
 
-			dir := direction
-			switch dir {
-			case "callers":
-				dir = "incoming"
-			case "callees":
-				dir = "outgoing"
-			case "both":
-				// keep as-is
-			default:
-				return fmt.Errorf("direction must be callers, callees, or both")
-			}
+				if outputFormat == "text" {
+					fmt.Print(format.Dependencies(results))
+					return nil
+				}
 
-			filter := core.ScopeToFilter(scope)
-			results, err := core.LookupDependencies(context.Background(), store, args[0], dir, depth, filter)
-			if err != nil {
-				return fmt.Errorf("dependency lookup: %w", err)
-			}
-
-			if outputFormat == "text" {
-				fmt.Print(format.Dependencies(results))
+				data, err := json.MarshalIndent(results, "", "  ")
+				if err != nil {
+					return fmt.Errorf("marshal: %w", err)
+				}
+				fmt.Println(string(data))
 				return nil
-			}
-
-			data, err := json.MarshalIndent(results, "", "  ")
-			if err != nil {
-				return fmt.Errorf("marshal: %w", err)
-			}
-			fmt.Println(string(data))
-			return nil
+			})
 		},
 	}
 	cmd.Flags().StringVar(&root, "root", ".", "Project root directory")
@@ -365,51 +350,41 @@ func diffCmd() *cobra.Command {
 		Use:   "diff",
 		Short: "Show recent file changes and affected symbols",
 		RunE: func(_ *cobra.Command, _ []string) error {
-			cfg := types.DefaultConfig(root)
-			cfg, err := types.LoadConfigFromFile(cfg)
-			if err != nil {
-				return fmt.Errorf("load config: %w", err)
-			}
+			return withProjectStore(root, func(_ types.Config, store types.WriterStore) error {
+				duration, err := time.ParseDuration(since)
+				if err != nil {
+					return fmt.Errorf("invalid --since: %s — use Go duration syntax like '24h', '30m'", since)
+				}
+				if duration <= 0 {
+					return fmt.Errorf("invalid --since: %s — must be positive", since)
+				}
+				if duration > 720*time.Hour {
+					return fmt.Errorf("invalid --since: %s — must be <= 720h (30 days)", since)
+				}
+				if limit < 1 || limit > 500 {
+					return fmt.Errorf("invalid --limit: %d — must be 1..500", limit)
+				}
 
-			store, closer, err := openStore(cfg)
-			if err != nil {
-				return fmt.Errorf("open store: %w", err)
-			}
-			defer func() { _ = closer() }()
+				filter := core.ScopeToFilter(scope)
+				sinceTime := time.Now().Add(-duration)
 
-			duration, err := time.ParseDuration(since)
-			if err != nil {
-				return fmt.Errorf("invalid --since: %s — use Go duration syntax like '24h', '30m'", since)
-			}
-			if duration <= 0 {
-				return fmt.Errorf("invalid --since: %s — must be positive", since)
-			}
-			if duration > 720*time.Hour {
-				return fmt.Errorf("invalid --since: %s — must be <= 720h (30 days)", since)
-			}
-			if limit < 1 || limit > 500 {
-				return fmt.Errorf("invalid --limit: %d — must be 1..500", limit)
-			}
+				results, err := core.LookupDiffs(context.Background(), store, sinceTime, limit, filter)
+				if err != nil {
+					return fmt.Errorf("diff query: %w", err)
+				}
 
-			filter := core.ScopeToFilter(scope)
-			sinceTime := time.Now().Add(-duration)
+				if outputFormat == "text" {
+					fmt.Print(format.Diffs(results))
+					return nil
+				}
 
-			results, err := core.LookupDiffs(context.Background(), store, sinceTime, limit, filter)
-			if err != nil {
-				return fmt.Errorf("diff query: %w", err)
-			}
-
-			if outputFormat == "text" {
-				fmt.Print(format.Diffs(results))
+				data, err := json.MarshalIndent(results, "", "  ")
+				if err != nil {
+					return fmt.Errorf("marshal: %w", err)
+				}
+				fmt.Println(string(data))
 				return nil
-			}
-
-			data, err := json.MarshalIndent(results, "", "  ")
-			if err != nil {
-				return fmt.Errorf("marshal: %w", err)
-			}
-			fmt.Println(string(data))
-			return nil
+			})
 		},
 	}
 	cmd.Flags().StringVar(&root, "root", ".", "Project root directory")
@@ -425,40 +400,30 @@ func enrichmentStatusCmd() *cobra.Command {
 		Use:   "enrichment-status",
 		Short: "Show indexing stats and enrichment progress",
 		RunE: func(_ *cobra.Command, _ []string) error {
-			cfg := types.DefaultConfig(root)
-			cfg, err := types.LoadConfigFromFile(cfg)
-			if err != nil {
-				return fmt.Errorf("load config: %w", err)
-			}
+			return withProjectStore(root, func(cfg types.Config, store types.WriterStore) error {
+				_, vs := openEngine(cfg, store, root)
 
-			store, closer, err := openStore(cfg)
-			if err != nil {
-				return fmt.Errorf("open store: %w", err)
-			}
-			defer func() { _ = closer() }()
+				result, err := core.GetEnrichmentStatus(context.Background(), core.EnrichmentStatusInput{
+					Store:       store,
+					VectorStore: vs,
+				})
+				if err != nil {
+					return fmt.Errorf("stats: %w", err)
+				}
 
-			_, vs := openEngine(cfg, store, root)
+				if outputFormat == "text" {
+					stats, _ := store.GetIndexStats(context.Background())
+					fmt.Print(format.IndexStats(stats))
+					return nil
+				}
 
-			result, err := core.GetEnrichmentStatus(context.Background(), core.EnrichmentStatusInput{
-				Store:       store,
-				VectorStore: vs,
-			})
-			if err != nil {
-				return fmt.Errorf("stats: %w", err)
-			}
-
-			if outputFormat == "text" {
-				stats, _ := store.GetIndexStats(context.Background())
-				fmt.Print(format.IndexStats(stats))
+				data, err := json.MarshalIndent(result, "", "  ")
+				if err != nil {
+					return fmt.Errorf("marshal: %w", err)
+				}
+				fmt.Println(string(data))
 				return nil
-			}
-
-			data, err := json.MarshalIndent(result, "", "  ")
-			if err != nil {
-				return fmt.Errorf("marshal: %w", err)
-			}
-			fmt.Println(string(data))
-			return nil
+			})
 		},
 	}
 	cmd.Flags().StringVar(&root, "root", ".", "Project root directory")
@@ -471,37 +436,27 @@ func summaryCmd() *cobra.Command {
 		Use:   "summary",
 		Short: "Show codebase summary: files, languages, symbols, embedding %",
 		RunE: func(_ *cobra.Command, _ []string) error {
-			cfg := types.DefaultConfig(root)
-			cfg, err := types.LoadConfigFromFile(cfg)
-			if err != nil {
-				return fmt.Errorf("load config: %w", err)
-			}
+			return withProjectStore(root, func(cfg types.Config, store types.WriterStore) error {
+				_, vs := openEngine(cfg, store, root)
 
-			store, closer, err := openStore(cfg)
-			if err != nil {
-				return fmt.Errorf("open store: %w", err)
-			}
-			defer func() { _ = closer() }()
+				result, err := core.GetSummary(context.Background(), store, vs)
+				if err != nil {
+					return fmt.Errorf("summary: %w", err)
+				}
 
-			_, vs := openEngine(cfg, store, root)
+				if outputFormat == "text" {
+					stats, _ := store.GetIndexStats(context.Background())
+					fmt.Print(format.IndexStats(stats))
+					return nil
+				}
 
-			result, err := core.GetSummary(context.Background(), store, vs)
-			if err != nil {
-				return fmt.Errorf("summary: %w", err)
-			}
-
-			if outputFormat == "text" {
-				stats, _ := store.GetIndexStats(context.Background())
-				fmt.Print(format.IndexStats(stats))
+				data, err := json.MarshalIndent(result, "", "  ")
+				if err != nil {
+					return fmt.Errorf("marshal: %w", err)
+				}
+				fmt.Println(string(data))
 				return nil
-			}
-
-			data, err := json.MarshalIndent(result, "", "  ")
-			if err != nil {
-				return fmt.Errorf("marshal: %w", err)
-			}
-			fmt.Println(string(data))
-			return nil
+			})
 		},
 	}
 	cmd.Flags().StringVar(&root, "root", ".", "Project root directory")
