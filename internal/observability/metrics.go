@@ -240,3 +240,52 @@ func SetDefault(r Registry) Registry {
 	defaultRegistry = r
 	return prev
 }
+
+// Scope is a thin Registry adapter that prepends prefix + "." to every
+// metric name. Call sites that record several related metrics (a tool's
+// count/latency/error_count, an embed-rejection breakdown) become terse:
+//
+//	m := observability.ScopeOnDefault("mcp.tool_call." + name)
+//	m.Inc("count")
+//	m.Observe("latency_ms", ...)
+//
+// instead of repeating "mcp.tool_call." + name + "." everywhere. Scope
+// values are tiny and safe to construct per-call; no per-name caching is
+// needed because the underlying Registry's counter()/gauge()/hist()
+// already amortise the lookup.
+type Scope struct {
+	prefix string
+	r      Registry
+}
+
+// NewScope returns a Scope rooted at r with the given prefix. The prefix
+// must not include a trailing separator — Scope inserts a single "." when
+// composing the full metric name.
+func NewScope(r Registry, prefix string) Scope { return Scope{prefix: prefix, r: r} }
+
+// ScopeOnDefault returns a Scope rooted at the process-global registry.
+// Most call sites want this; tests that need isolation should use NewScope
+// against a fresh NewRegistry().
+func ScopeOnDefault(prefix string) Scope { return NewScope(Default(), prefix) }
+
+// Inc increments the counter prefix.suffix by 1.
+func (s Scope) Inc(suffix string) { s.r.Inc(s.name(suffix)) }
+
+// Add increments the counter prefix.suffix by delta.
+func (s Scope) Add(suffix string, delta uint64) { s.r.Add(s.name(suffix), delta) }
+
+// Set updates the gauge prefix.suffix to value.
+func (s Scope) Set(suffix string, value float64) { s.r.Set(s.name(suffix), value) }
+
+// Observe records value into the histogram prefix.suffix.
+func (s Scope) Observe(suffix string, value float64) { s.r.Observe(s.name(suffix), value) }
+
+func (s Scope) name(suffix string) string {
+	if s.prefix == "" {
+		return suffix
+	}
+	if suffix == "" {
+		return s.prefix
+	}
+	return s.prefix + "." + suffix
+}

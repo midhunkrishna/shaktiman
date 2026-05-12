@@ -68,21 +68,21 @@ func sanitizeEmbeddings(chunkIDs []int64, vectors [][]float32, expectDim int, lo
 	}
 
 	if r.total() > 0 {
-		obs := observability.Default()
+		m := observability.ScopeOnDefault("vector.embed.rejected")
 		if r.zero > 0 {
-			obs.Add("vector.embed.rejected.zero", uint64(r.zero))
+			m.Add("zero", uint64(r.zero))
 		}
 		if r.naN > 0 {
-			obs.Add("vector.embed.rejected.nan", uint64(r.naN))
+			m.Add("nan", uint64(r.naN))
 		}
 		if r.inf > 0 {
-			obs.Add("vector.embed.rejected.inf", uint64(r.inf))
+			m.Add("inf", uint64(r.inf))
 		}
 		if r.empty > 0 {
-			obs.Add("vector.embed.rejected.empty", uint64(r.empty))
+			m.Add("empty", uint64(r.empty))
 		}
 		if r.dimMismatch > 0 {
-			obs.Add("vector.embed.rejected.dim_mismatch", uint64(r.dimMismatch))
+			m.Add("dim_mismatch", uint64(r.dimMismatch))
 		}
 	}
 
