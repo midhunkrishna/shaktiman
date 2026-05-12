@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/shaktimanai/shaktiman/internal/storage/embedstatus"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
@@ -470,54 +471,8 @@ func (s *PgStore) GetEmbedPage(ctx context.Context, afterID int64, limit int) ([
 }
 
 func (s *PgStore) MarkChunksEmbedded(ctx context.Context, chunkIDs []int64) error {
-	if len(chunkIDs) == 0 {
-		return nil
-	}
 	return s.WithWriteTx(ctx, func(txh types.TxHandle) error {
-		tx := txh.(PgTxHandle).Tx
-
-		// Mark chunks
-		_, err := tx.Exec(ctx,
-			"UPDATE chunks SET embedded = 1 WHERE id = ANY($1)", chunkIDs)
-		if err != nil {
-			return fmt.Errorf("mark chunks embedded: %w", err)
-		}
-
-		// Update file embedding_status
-		rows, err := tx.Query(ctx,
-			"SELECT DISTINCT file_id FROM chunks WHERE id = ANY($1)", chunkIDs)
-		if err != nil {
-			return err
-		}
-		var fileIDs []int64
-		for rows.Next() {
-			var fid int64
-			if err := rows.Scan(&fid); err != nil {
-				rows.Close()
-				return fmt.Errorf("scan file id: %w", err)
-			}
-			fileIDs = append(fileIDs, fid)
-		}
-		rows.Close()
-
-		for _, fid := range fileIDs {
-			var remaining int
-			if err := tx.QueryRow(ctx,
-				"SELECT COUNT(*) FROM chunks WHERE file_id = $1 AND embedded = 0", fid,
-			).Scan(&remaining); err != nil {
-				return fmt.Errorf("count remaining embeddings for file %d: %w", fid, err)
-			}
-			if remaining == 0 {
-				if _, err := tx.Exec(ctx, "UPDATE files SET embedding_status = 'complete' WHERE id = $1", fid); err != nil {
-					return fmt.Errorf("mark file %d embedding complete: %w", fid, err)
-				}
-			} else {
-				if _, err := tx.Exec(ctx, "UPDATE files SET embedding_status = 'partial' WHERE id = $1 AND embedding_status != 'complete'", fid); err != nil {
-					return fmt.Errorf("mark file %d embedding partial: %w", fid, err)
-				}
-			}
-		}
-		return nil
+		return embedstatus.MarkEmbedded(ctx, newPgChunkOps(txh.(PgTxHandle).Tx), chunkIDs)
 	})
 }
 
@@ -580,44 +535,8 @@ func (s *PgStore) GetEmbeddedChunkIDs(ctx context.Context, afterID int64, limit 
 }
 
 func (s *PgStore) ResetEmbeddedFlags(ctx context.Context, chunkIDs []int64) error {
-	if len(chunkIDs) == 0 {
-		return nil
-	}
 	return s.WithWriteTx(ctx, func(txh types.TxHandle) error {
-		tx := txh.(PgTxHandle).Tx
-		if _, err := tx.Exec(ctx, "UPDATE chunks SET embedded = 0 WHERE id = ANY($1)", chunkIDs); err != nil {
-			return fmt.Errorf("reset embedded flags: %w", err)
-		}
-
-		rows, err := tx.Query(ctx, "SELECT DISTINCT file_id FROM chunks WHERE id = ANY($1)", chunkIDs)
-		if err != nil {
-			return err
-		}
-		var fileIDs []int64
-		for rows.Next() {
-			var fid int64
-			if err := rows.Scan(&fid); err != nil {
-				rows.Close()
-				return fmt.Errorf("scan file id: %w", err)
-			}
-			fileIDs = append(fileIDs, fid)
-		}
-		rows.Close()
-
-		for _, fid := range fileIDs {
-			var embCount int
-			if err := tx.QueryRow(ctx, "SELECT COUNT(*) FROM chunks WHERE file_id = $1 AND embedded = 1", fid).Scan(&embCount); err != nil {
-				return fmt.Errorf("count embedded chunks for file %d: %w", fid, err)
-			}
-			status := "pending"
-			if embCount > 0 {
-				status = "partial"
-			}
-			if _, err := tx.Exec(ctx, "UPDATE files SET embedding_status = $1 WHERE id = $2", status, fid); err != nil {
-				return fmt.Errorf("set embedding_status for file %d: %w", fid, err)
-			}
-		}
-		return nil
+		return embedstatus.Reset(ctx, newPgChunkOps(txh.(PgTxHandle).Tx), chunkIDs)
 	})
 }
 
