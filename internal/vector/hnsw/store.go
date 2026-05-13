@@ -12,6 +12,7 @@ import (
 
 	"github.com/midhunkrishna/hnswgo"
 	"github.com/shaktimanai/shaktiman/internal/types"
+	"github.com/shaktimanai/shaktiman/internal/vector"
 )
 
 const (
@@ -127,17 +128,11 @@ func (s *Store) Upsert(_ context.Context, chunkID int64, vector []float32) error
 
 // UpsertBatch inserts multiple vectors in a single call.
 func (s *Store) UpsertBatch(_ context.Context, chunkIDs []int64, vectors [][]float32) error {
-	if len(chunkIDs) != len(vectors) {
-		return fmt.Errorf("chunkIDs len %d != vectors len %d", len(chunkIDs), len(vectors))
+	if err := vector.CheckBatchDims(len(chunkIDs), vectors, s.dim); err != nil {
+		return err
 	}
 	if len(chunkIDs) == 0 {
 		return nil
-	}
-
-	for i, v := range vectors {
-		if len(v) != s.dim {
-			return fmt.Errorf("vector[%d] dim %d != store dim %d", i, len(v), s.dim)
-		}
 	}
 
 	if err := s.ensureCapacity(uint64(len(chunkIDs))); err != nil {

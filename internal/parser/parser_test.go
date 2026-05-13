@@ -2883,7 +2883,7 @@ func TestSymbols_ContainerRecursionDrivenByIsContainerFlag(t *testing.T) {
 	// IsContainer=true. After the NodeMeta refactor, recursion must be
 	// driven by the IsContainer flag — NOT by the kind string — so method
 	// symbols inside the class body must still be extracted.
-	cfg.ChunkableTypes["class_declaration"] = NodeMeta{Kind: "custom_container", IsContainer: true}
+	cfg.Nodes["class_declaration"] = NodeMeta{IsChunkable: true, Kind: "custom_container", IsContainer: true, SymbolKind: "class"}
 
 	src := []byte(`public class Outer {
     public void first() {}
@@ -2985,9 +2985,9 @@ def foo(x):
 	// hardcoded declTypes map would return the function_definition here
 	// even after we remove it from ChunkableTypes, and this assertion
 	// would fail.
-	delete(cfg.ChunkableTypes, "function_definition")
+	delete(cfg.Nodes, "function_definition")
 	if inner := findDeclarationChild(wrapper, cfg); inner != nil {
-		t.Errorf("expected nil unwrap after removing function_definition from cfg.ChunkableTypes, "+
+		t.Errorf("expected nil unwrap after removing function_definition from cfg.Nodes, "+
 			"got %q — bug #5 regressed: findDeclarationChild is hardcoding the declaration list "+
 			"instead of reading from cfg", inner.Kind())
 	}

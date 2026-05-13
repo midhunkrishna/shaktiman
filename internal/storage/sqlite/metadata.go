@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shaktimanai/shaktiman/internal/storage/embedstatus"
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
 
@@ -588,42 +589,8 @@ func (s *Store) GetEmbeddedChunkIDs(ctx context.Context, afterID int64, limit in
 // file embedding_status for affected files. Used for targeted reconciliation
 // when only some vectors are missing from the store.
 func (s *Store) ResetEmbeddedFlags(ctx context.Context, chunkIDs []int64) error {
-	if len(chunkIDs) == 0 {
-		return nil
-	}
-
 	return s.db.WithWriteTx(func(tx *sql.Tx) error {
-		return forEachChunkBatch(chunkIDs, func(ph string, args []any, _ []int64) error {
-			if _, err := tx.ExecContext(ctx,
-				fmt.Sprintf("UPDATE chunks SET embedded = 0 WHERE id IN (%s)", ph),
-				args...); err != nil {
-				return fmt.Errorf("reset embedded flags: %w", err)
-			}
-
-			fileIDs, err := affectedFileIDs(ctx, tx, ph, args)
-			if err != nil {
-				return err
-			}
-
-			for _, fid := range fileIDs {
-				var embeddedCount int
-				if err := tx.QueryRowContext(ctx,
-					"SELECT COUNT(*) FROM chunks WHERE file_id = ? AND embedded = 1", fid,
-				).Scan(&embeddedCount); err != nil {
-					return fmt.Errorf("count embedded for file %d: %w", fid, err)
-				}
-				status := "pending"
-				if embeddedCount > 0 {
-					status = "partial"
-				}
-				if _, err := tx.ExecContext(ctx,
-					"UPDATE files SET embedding_status = ? WHERE id = ?",
-					status, fid); err != nil {
-					return fmt.Errorf("update file %d embedding status: %w", fid, err)
-				}
-			}
-			return nil
-		})
+		return embedstatus.Reset(ctx, newSQLiteChunkOps(tx), chunkIDs)
 	})
 }
 
@@ -631,45 +598,8 @@ func (s *Store) ResetEmbeddedFlags(ctx context.Context, chunkIDs []int64) error 
 // file's embedding_status based on cumulative progress. Files where all chunks
 // are now embedded get status 'complete'; files with some embedded get 'partial'.
 func (s *Store) MarkChunksEmbedded(ctx context.Context, chunkIDs []int64) error {
-	if len(chunkIDs) == 0 {
-		return nil
-	}
-
 	return s.db.WithWriteTx(func(tx *sql.Tx) error {
-		return forEachChunkBatch(chunkIDs, func(ph string, args []any, _ []int64) error {
-			if _, err := tx.ExecContext(ctx,
-				fmt.Sprintf("UPDATE chunks SET embedded = 1 WHERE id IN (%s)", ph),
-				args...); err != nil {
-				return fmt.Errorf("mark chunks embedded: %w", err)
-			}
-
-			fileIDs, err := affectedFileIDs(ctx, tx, ph, args)
-			if err != nil {
-				return err
-			}
-
-			for _, fid := range fileIDs {
-				var remaining int
-				if err := tx.QueryRowContext(ctx,
-					"SELECT COUNT(*) FROM chunks WHERE file_id = ? AND embedded = 0",
-					fid).Scan(&remaining); err != nil {
-					return fmt.Errorf("count remaining for file %d: %w", fid, err)
-				}
-				if remaining == 0 {
-					if _, err := tx.ExecContext(ctx,
-						"UPDATE files SET embedding_status = 'complete' WHERE id = ?", fid); err != nil {
-						return fmt.Errorf("mark file complete: %w", err)
-					}
-				} else {
-					if _, err := tx.ExecContext(ctx,
-						"UPDATE files SET embedding_status = 'partial' WHERE id = ? AND embedding_status != 'complete'",
-						fid); err != nil {
-						return fmt.Errorf("mark file partial: %w", err)
-					}
-				}
-			}
-			return nil
-		})
+		return embedstatus.MarkEmbedded(ctx, newSQLiteChunkOps(tx), chunkIDs)
 	})
 }
 

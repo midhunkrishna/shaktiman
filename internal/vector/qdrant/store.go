@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/shaktimanai/shaktiman/internal/types"
+	vec "github.com/shaktimanai/shaktiman/internal/vector"
 )
 
 // maxBatchSize is the maximum number of points per upsert/delete request.
@@ -111,49 +112,34 @@ func (s *Store) Upsert(ctx context.Context, chunkID int64, vector []float32) err
 
 // UpsertBatch inserts multiple vectors, chunked to maxBatchSize per request.
 func (s *Store) UpsertBatch(ctx context.Context, chunkIDs []int64, vectors [][]float32) error {
-	if len(chunkIDs) != len(vectors) {
-		return fmt.Errorf("chunkIDs len %d != vectors len %d", len(chunkIDs), len(vectors))
+	if err := vec.CheckBatchLengths(len(chunkIDs), len(vectors)); err != nil {
+		return err
 	}
 
-	for i := 0; i < len(chunkIDs); i += maxBatchSize {
-		end := i + maxBatchSize
-		if end > len(chunkIDs) {
-			end = len(chunkIDs)
-		}
-
-		points := make([]Point, end-i)
-		for j := i; j < end; j++ {
+	return vec.ForEachBatch(len(chunkIDs), maxBatchSize, func(start, end int) error {
+		points := make([]Point, end-start)
+		for j := start; j < end; j++ {
 			p := Point{ID: chunkIDs[j], Vector: vectors[j]}
 			if s.projectID != 0 {
 				p.Payload = map[string]any{"project_id": s.projectID}
 			}
-			points[j-i] = p
+			points[j-start] = p
 		}
-
 		if err := s.client.UpsertPoints(ctx, s.collection, points); err != nil {
-			return fmt.Errorf("upsert batch [%d:%d]: %w", i, end, err)
+			return fmt.Errorf("upsert batch [%d:%d]: %w", start, end, err)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // Delete removes vectors by chunk IDs, chunked to maxBatchSize per request.
 func (s *Store) Delete(ctx context.Context, chunkIDs []int64) error {
-	if len(chunkIDs) == 0 {
+	return vec.ForEachBatch(len(chunkIDs), maxBatchSize, func(start, end int) error {
+		if err := s.client.DeletePoints(ctx, s.collection, chunkIDs[start:end]); err != nil {
+			return fmt.Errorf("delete batch [%d:%d]: %w", start, end, err)
+		}
 		return nil
-	}
-
-	for i := 0; i < len(chunkIDs); i += maxBatchSize {
-		end := i + maxBatchSize
-		if end > len(chunkIDs) {
-			end = len(chunkIDs)
-		}
-
-		if err := s.client.DeletePoints(ctx, s.collection, chunkIDs[i:end]); err != nil {
-			return fmt.Errorf("delete batch [%d:%d]: %w", i, end, err)
-		}
-	}
-	return nil
+	})
 }
 
 // PurgeAll deletes all vectors for this project. When projectID is set,

@@ -71,35 +71,41 @@ func SearchResults(results []types.ScoredResult, explain bool) string {
 	return b.String()
 }
 
+// listSection assembles a list-style section: a single "N <label>:\n"
+// header followed by rows produced by `row` for each item, or emptyMsg
+// (with a trailing newline) when items is empty. Four list-style
+// formatters used to repeat this exact shape — empty guard, count
+// header, write loop — with only the label and row body differing.
+func listSection[T any](items []T, emptyMsg, label string, row func(b *strings.Builder, item T)) string {
+	if len(items) == 0 {
+		return emptyMsg + "\n"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d %s:\n", len(items), label)
+	for _, item := range items {
+		row(&b, item)
+	}
+	return b.String()
+}
+
 // LocateResults renders search results as compact one-line-per-result headers
 // without source code content.
 func LocateResults(results []types.ScoredResult) string {
-	if len(results) == 0 {
-		return "No results found.\n"
-	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "%d results:\n", len(results))
-
-	for _, r := range results {
+	return listSection(results, "No results found.", "results", func(b *strings.Builder, r types.ScoredResult) {
 		b.WriteString(r.Path)
-		fmt.Fprintf(&b, ":%d-%d", r.StartLine, r.EndLine)
-
+		fmt.Fprintf(b, ":%d-%d", r.StartLine, r.EndLine)
 		if r.SymbolName != "" {
-			fmt.Fprintf(&b, "  %s", r.SymbolName)
+			fmt.Fprintf(b, "  %s", r.SymbolName)
 		}
 		if r.Kind != "" {
-			fmt.Fprintf(&b, " (%s)", r.Kind)
+			fmt.Fprintf(b, " (%s)", r.Kind)
 		}
-		fmt.Fprintf(&b, "  score:%.2f", r.Score)
-
+		fmt.Fprintf(b, "  score:%.2f", r.Score)
 		if r.TokenCount > 0 {
-			fmt.Fprintf(&b, "  ~%d tokens", r.TokenCount)
+			fmt.Fprintf(b, "  ~%d tokens", r.TokenCount)
 		}
 		b.WriteByte('\n')
-	}
-
-	return b.String()
+	})
 }
 
 // ContextPackage renders a context package as plain text with a summary header
@@ -118,61 +124,34 @@ func ContextPackage(pkg *types.ContextPackage) string {
 
 // Symbols renders symbol lookup results as plain text, one line per symbol.
 func Symbols(results []SymbolResult) string {
-	if len(results) == 0 {
-		return "No symbols found.\n"
-	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "%d symbols:\n", len(results))
-
-	for _, s := range results {
-		fmt.Fprintf(&b, "  %s  %s  %s:%d", s.Name, s.Kind, s.FilePath, s.Line)
+	return listSection(results, "No symbols found.", "symbols", func(b *strings.Builder, s SymbolResult) {
+		fmt.Fprintf(b, "  %s  %s  %s:%d", s.Name, s.Kind, s.FilePath, s.Line)
 		if s.Signature != "" {
-			fmt.Fprintf(&b, "  %s", s.Signature)
+			fmt.Fprintf(b, "  %s", s.Signature)
 		}
 		if s.Visibility != "" {
-			fmt.Fprintf(&b, "  [%s]", s.Visibility)
+			fmt.Fprintf(b, "  [%s]", s.Visibility)
 		}
 		b.WriteByte('\n')
-	}
-
-	return b.String()
+	})
 }
 
 // Dependencies renders dependency results as plain text, one line per dep.
 func Dependencies(results []DepResult) string {
-	if len(results) == 0 {
-		return "No dependencies found.\n"
-	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "%d dependencies:\n", len(results))
-
-	for _, d := range results {
-		fmt.Fprintf(&b, "  %s  %s  %s:%d\n", d.Name, d.Kind, d.FilePath, d.Line)
-	}
-
-	return b.String()
+	return listSection(results, "No dependencies found.", "dependencies", func(b *strings.Builder, d DepResult) {
+		fmt.Fprintf(b, "  %s  %s  %s:%d\n", d.Name, d.Kind, d.FilePath, d.Line)
+	})
 }
 
 // Diffs renders diff results as plain text with affected symbols indented below.
 func Diffs(results []DiffResult) string {
-	if len(results) == 0 {
-		return "No diffs found.\n"
-	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "%d diffs:\n", len(results))
-
-	for _, d := range results {
-		fmt.Fprintf(&b, "  %s  %s  +%d -%d  %s\n",
+	return listSection(results, "No diffs found.", "diffs", func(b *strings.Builder, d DiffResult) {
+		fmt.Fprintf(b, "  %s  %s  +%d -%d  %s\n",
 			d.FilePath, d.ChangeType, d.LinesAdded, d.LinesRemoved, d.Timestamp)
 		for _, sym := range d.Symbols {
-			fmt.Fprintf(&b, "    %s\n", sym)
+			fmt.Fprintf(b, "    %s\n", sym)
 		}
-	}
-
-	return b.String()
+	})
 }
 
 // IndexStats renders index statistics as plain text.

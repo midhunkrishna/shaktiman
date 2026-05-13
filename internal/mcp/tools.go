@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
@@ -117,18 +116,9 @@ func searchHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 		pathFilter := req.GetString("path", "")
 		filter := core.ScopeToFilter(req.GetString("scope", "impl"))
 
-		// Over-fetch when path or scope filter is set to compensate for post-filtering.
-		engineMax := maxResults
-		if pathFilter != "" {
-			engineMax = maxResults * 3
-			if engineMax > 200 {
-				engineMax = 200
-			}
-		}
-
 		results, err := engine.Search(ctx, core.SearchInput{
 			Query:        query,
-			MaxResults:   engineMax,
+			MaxResults:   core.SearchOverfetchLimit(maxResults, pathFilter != ""),
 			Explain:      explain,
 			MinScore:     minScore,
 			ExcludeTests: filter.ExcludeTests,
@@ -138,19 +128,7 @@ func searchHandler(engine *core.QueryEngine, cfg types.Config) handlerFunc {
 			return mcpsdk.NewToolResultError(sanitizeError("search failed: ", err)), nil
 		}
 
-		// Apply path prefix filter if specified.
-		if pathFilter != "" {
-			filtered := results[:0]
-			for _, r := range results {
-				if strings.HasPrefix(r.Path, pathFilter) {
-					filtered = append(filtered, r)
-				}
-			}
-			results = filtered
-			if len(results) > maxResults {
-				results = results[:maxResults]
-			}
-		}
+		results = core.FilterByPathPrefix(results, pathFilter, maxResults)
 
 		var text string
 		if mode == "locate" {
@@ -260,18 +238,9 @@ func symbolsHandler(store types.WriterStore) handlerFunc {
 				ReferencedBy: result.ReferencedBy,
 				Note:         result.Note,
 			}
-			data, err := json.Marshal(enriched)
-			if err != nil {
-				return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
-			}
-			return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), len(result.ReferencedBy)), nil
+			return jsonResult(ctx, enriched, len(result.ReferencedBy), "marshal results: "), nil
 		}
-
-		data, err := json.Marshal(result.Definitions)
-		if err != nil {
-			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
-		}
-		return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), len(result.Definitions)), nil
+		return jsonResult(ctx, result.Definitions, len(result.Definitions), "marshal results: "), nil
 	}
 }
 
@@ -305,21 +274,10 @@ func dependenciesHandler(store types.WriterStore) handlerFunc {
 			return mcpsdk.NewToolResultError("missing required parameter: symbol"), nil
 		}
 
-		dir := Direction(req.GetString("direction", string(DirectionBoth)))
-		if !dir.Valid() {
+		dirRaw := req.GetString("direction", string(DirectionBoth))
+		direction, ok := core.NormalizeDirection(dirRaw)
+		if !ok {
 			return mcpsdk.NewToolResultError("direction must be callers, callees, or both"), nil
-		}
-		// LookupDependencies uses the storage-layer vocabulary
-		// (incoming/outgoing/both); translate from the public Direction
-		// enum to that internal name here.
-		var direction string
-		switch dir {
-		case DirectionCallers:
-			direction = "incoming"
-		case DirectionCallees:
-			direction = "outgoing"
-		default:
-			direction = "both"
 		}
 
 		depth := req.GetInt("depth", 2)
@@ -333,12 +291,7 @@ func dependenciesHandler(store types.WriterStore) handlerFunc {
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("dependency lookup failed: ", err)), nil
 		}
-
-		data, err := json.Marshal(results)
-		if err != nil {
-			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
-		}
-		return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), len(results)), nil
+		return jsonResult(ctx, results, len(results), "marshal results: "), nil
 	}
 }
 
@@ -363,25 +316,14 @@ Use to see which definitions were affected by recent changes.`,
 func diffHandler(store types.WriterStore) handlerFunc {
 	return func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		sinceStr := req.GetString("since", "24h")
-		duration, err := time.ParseDuration(sinceStr)
+		duration, err := core.ValidateDiffWindow(sinceStr)
 		if err != nil {
-			return mcpsdk.NewToolResultError(
-				"invalid since: " + sinceStr +
-					" — use Go duration syntax like '24h', '30m'"), nil
-		}
-		if duration <= 0 {
-			return mcpsdk.NewToolResultError(fmt.Sprintf(
-				"invalid since: %s — must be positive", sinceStr)), nil
-		}
-		if duration > 720*time.Hour {
-			return mcpsdk.NewToolResultError(fmt.Sprintf(
-				"invalid since: %s — must be <= 720h (30 days)", sinceStr)), nil
+			return mcpsdk.NewToolResultError("invalid since: " + err.Error()), nil
 		}
 
 		limit := req.GetInt("limit", 50)
-		if limit < 1 || limit > 500 {
-			return mcpsdk.NewToolResultError(fmt.Sprintf(
-				"invalid limit: %d — must be 1..500", limit)), nil
+		if err := core.ValidateDiffLimit(limit); err != nil {
+			return mcpsdk.NewToolResultError("invalid limit: " + err.Error()), nil
 		}
 
 		filter := core.ScopeToFilter(req.GetString("scope", "impl"))
@@ -391,12 +333,7 @@ func diffHandler(store types.WriterStore) handlerFunc {
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("diff query failed: ", err)), nil
 		}
-
-		data, err := json.Marshal(results)
-		if err != nil {
-			return mcpsdk.NewToolResultError(sanitizeError("marshal results: ", err)), nil
-		}
-		return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), len(results)), nil
+		return jsonResult(ctx, results, len(results), "marshal results: "), nil
 	}
 }
 
@@ -438,12 +375,7 @@ func enrichmentStatusHandler(store types.WriterStore, vs types.VectorStore, ew *
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("stats query failed: ", err)), nil
 		}
-
-		data, err := json.Marshal(result)
-		if err != nil {
-			return mcpsdk.NewToolResultError(sanitizeError("marshal status: ", err)), nil
-		}
-		return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), 1), nil
+		return jsonResult(ctx, result, 1, "marshal status: "), nil
 	}
 }
 
@@ -461,12 +393,7 @@ func summaryHandler(store types.WriterStore, vs types.VectorStore) handlerFunc {
 		if err != nil {
 			return mcpsdk.NewToolResultError(sanitizeError("summary failed: ", err)), nil
 		}
-
-		data, err := json.Marshal(result)
-		if err != nil {
-			return mcpsdk.NewToolResultError(sanitizeError("marshal summary: ", err)), nil
-		}
-		return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), 1), nil
+		return jsonResult(ctx, result, 1, "marshal summary: "), nil
 	}
 }
 
@@ -480,4 +407,17 @@ func sanitizeError(prefix string, err error) string {
 		msg = msg[:200] + "..."
 	}
 	return prefix + msg
+}
+
+// jsonResult marshals payload and wraps it as a successful MCP tool result
+// tagged with resultCount for metrics. On marshal failure it returns a
+// sanitized error result with marshalLabel as the prefix. Most JSON-returning
+// handlers end with this exact pattern, so funnelling it here keeps the
+// per-handler tail to a single line.
+func jsonResult(ctx context.Context, payload any, resultCount int, marshalLabel string) *mcpsdk.CallToolResult {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return mcpsdk.NewToolResultError(sanitizeError(marshalLabel, err))
+	}
+	return withResultCount(ctx, mcpsdk.NewToolResultText(string(data)), resultCount)
 }

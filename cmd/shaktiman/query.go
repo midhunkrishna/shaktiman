@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -121,18 +120,9 @@ func searchCmd() *cobra.Command {
 
 				filter := core.ScopeToFilter(scope)
 
-				// Over-fetch when path filter is set to compensate for post-filtering.
-				engineMax := maxResults
-				if path != "" {
-					engineMax = maxResults * 3
-					if engineMax > 200 {
-						engineMax = 200
-					}
-				}
-
 				results, err := engine.Search(context.Background(), core.SearchInput{
 					Query:        args[0],
-					MaxResults:   engineMax,
+					MaxResults:   core.SearchOverfetchLimit(maxResults, path != ""),
 					Explain:      explain,
 					Mode:         mode,
 					MinScore:     minScore,
@@ -143,21 +133,9 @@ func searchCmd() *cobra.Command {
 					return fmt.Errorf("search: %w", err)
 				}
 
-			// Apply path prefix filter if specified.
-			if path != "" {
-				filtered := results[:0]
-				for _, r := range results {
-					if strings.HasPrefix(r.Path, path) {
-						filtered = append(filtered, r)
-					}
-				}
-				results = filtered
-				if len(results) > maxResults {
-					results = results[:maxResults]
-				}
-			}
+				results = core.FilterByPathPrefix(results, path, maxResults)
 
-			if outputFormat == "text" {
+				if outputFormat == "text" {
 				if mode == "locate" {
 					fmt.Print(format.LocateResults(results))
 				} else {
@@ -300,15 +278,8 @@ func depsCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			return withProjectStore(root, func(_ types.Config, store types.WriterStore) error {
-				dir := direction
-				switch dir {
-				case "callers":
-					dir = "incoming"
-				case "callees":
-					dir = "outgoing"
-				case "both":
-					// keep as-is
-				default:
+				dir, ok := core.NormalizeDirection(direction)
+				if !ok {
 					return fmt.Errorf("direction must be callers, callees, or both")
 				}
 
@@ -351,18 +322,12 @@ func diffCmd() *cobra.Command {
 		Short: "Show recent file changes and affected symbols",
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return withProjectStore(root, func(_ types.Config, store types.WriterStore) error {
-				duration, err := time.ParseDuration(since)
+				duration, err := core.ValidateDiffWindow(since)
 				if err != nil {
-					return fmt.Errorf("invalid --since: %s — use Go duration syntax like '24h', '30m'", since)
+					return fmt.Errorf("invalid --since: %w", err)
 				}
-				if duration <= 0 {
-					return fmt.Errorf("invalid --since: %s — must be positive", since)
-				}
-				if duration > 720*time.Hour {
-					return fmt.Errorf("invalid --since: %s — must be <= 720h (30 days)", since)
-				}
-				if limit < 1 || limit > 500 {
-					return fmt.Errorf("invalid --limit: %d — must be 1..500", limit)
+				if err := core.ValidateDiffLimit(limit); err != nil {
+					return fmt.Errorf("invalid --limit: %w", err)
 				}
 
 				filter := core.ScopeToFilter(scope)

@@ -200,12 +200,12 @@ func withMetrics(name string, recorder *MetricsRecorder, h handlerFunc) handlerF
 
 		// In-memory metrics for `shaktiman stats`. Names are scoped by
 		// tool so a hot tool's latency doesn't drown out the rest.
-		obs := observability.Default()
-		obs.Inc("mcp.tool_call." + name + ".count")
-		obs.Observe("mcp.tool_call."+name+".latency_ms", float64(duration.Milliseconds()))
-		obs.Observe("mcp.tool_call."+name+".response_bytes", float64(respBytes))
+		m := observability.ScopeOnDefault("mcp.tool_call." + name)
+		m.Inc("count")
+		m.Observe("latency_ms", float64(duration.Milliseconds()))
+		m.Observe("response_bytes", float64(respBytes))
 		if isErr {
-			obs.Inc("mcp.tool_call." + name + ".error_count")
+			m.Inc("error_count")
 		}
 
 		// Detailed metrics at debug level
