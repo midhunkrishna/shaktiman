@@ -15,6 +15,7 @@ import (
 	pgvec "github.com/pgvector/pgvector-go"
 
 	"github.com/shaktimanai/shaktiman/internal/types"
+	"github.com/shaktimanai/shaktiman/internal/vector"
 )
 
 // maxBatchSize is the maximum number of points per upsert/delete request.
@@ -141,18 +142,13 @@ func (s *Store) Upsert(ctx context.Context, chunkID int64, vector []float32) err
 
 // UpsertBatch inserts multiple vectors, chunked to maxBatchSize per batch.
 func (s *Store) UpsertBatch(ctx context.Context, chunkIDs []int64, vectors [][]float32) error {
-	if len(chunkIDs) != len(vectors) {
-		return fmt.Errorf("pgvector: chunkIDs len %d != vectors len %d", len(chunkIDs), len(vectors))
+	if err := vector.CheckBatchLengths(len(chunkIDs), len(vectors)); err != nil {
+		return fmt.Errorf("pgvector: %w", err)
 	}
 
-	for i := 0; i < len(chunkIDs); i += maxBatchSize {
-		end := i + maxBatchSize
-		if end > len(chunkIDs) {
-			end = len(chunkIDs)
-		}
-
+	return vector.ForEachBatch(len(chunkIDs), maxBatchSize, func(start, end int) error {
 		batch := &pgx.Batch{}
-		for j := i; j < end; j++ {
+		for j := start; j < end; j++ {
 			if isZeroVector(vectors[j]) {
 				continue
 			}
@@ -163,43 +159,33 @@ func (s *Store) UpsertBatch(ctx context.Context, chunkIDs []int64, vectors [][]f
 				chunkIDs[j], pgvec.NewVector(vectors[j]), s.projectID)
 		}
 		if batch.Len() == 0 {
-			continue
+			return nil
 		}
 
 		br := s.pool.SendBatch(ctx, batch)
 		for k := 0; k < batch.Len(); k++ {
 			if _, err := br.Exec(); err != nil {
 				_ = br.Close()
-				return fmt.Errorf("pgvector upsert batch [%d:%d] item %d: %w", i, end, k, err)
+				return fmt.Errorf("pgvector upsert batch [%d:%d] item %d: %w", start, end, k, err)
 			}
 		}
 		if err := br.Close(); err != nil {
-			return fmt.Errorf("pgvector close batch [%d:%d]: %w", i, end, err)
+			return fmt.Errorf("pgvector close batch [%d:%d]: %w", start, end, err)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // Delete removes vectors by chunk IDs, chunked to maxBatchSize.
 func (s *Store) Delete(ctx context.Context, chunkIDs []int64) error {
-	if len(chunkIDs) == 0 {
-		return nil
-	}
-
-	for i := 0; i < len(chunkIDs); i += maxBatchSize {
-		end := i + maxBatchSize
-		if end > len(chunkIDs) {
-			end = len(chunkIDs)
-		}
-
-		_, err := s.pool.Exec(ctx,
+	return vector.ForEachBatch(len(chunkIDs), maxBatchSize, func(start, end int) error {
+		if _, err := s.pool.Exec(ctx,
 			"DELETE FROM embeddings WHERE chunk_id = ANY($1)",
-			chunkIDs[i:end])
-		if err != nil {
-			return fmt.Errorf("pgvector delete [%d:%d]: %w", i, end, err)
+			chunkIDs[start:end]); err != nil {
+			return fmt.Errorf("pgvector delete [%d:%d]: %w", start, end, err)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // PurgeAll deletes all embeddings for the current project.
