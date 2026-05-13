@@ -1,11 +1,33 @@
 package format
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/shaktimanai/shaktiman/internal/types"
 )
+
+// ── listSection helper tests ──
+
+func TestListSection_Empty(t *testing.T) {
+	got := listSection(([]int)(nil), "No widgets found.", "widgets", func(_ *strings.Builder, _ int) {
+		t.Fatal("row fn must not be called when items is empty")
+	})
+	if got != "No widgets found.\n" {
+		t.Errorf("listSection(empty) = %q, want %q", got, "No widgets found.\n")
+	}
+}
+
+func TestListSection_HeaderAndRows(t *testing.T) {
+	got := listSection([]int{1, 2, 3}, "(unused)", "items", func(b *strings.Builder, n int) {
+		fmt.Fprintf(b, "  %d\n", n)
+	})
+	want := "3 items:\n  1\n  2\n  3\n"
+	if got != want {
+		t.Errorf("listSection = %q, want %q", got, want)
+	}
+}
 
 // ── SearchResults tests ──
 
