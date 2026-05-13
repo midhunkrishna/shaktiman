@@ -30,17 +30,8 @@ func LookupSymbols(ctx context.Context, store types.WriterStore, name, kind stri
 		if kind != "" && s.Kind != kind {
 			continue
 		}
-		if filter.ExcludeTests || filter.TestOnly {
-			isTest, err := store.GetFileIsTestByID(ctx, s.FileID)
-			if err != nil {
-				continue
-			}
-			if filter.ExcludeTests && isTest {
-				continue
-			}
-			if filter.TestOnly && !isTest {
-				continue
-			}
+		if ok, err := filter.AcceptByFileID(ctx, store, s.FileID); err != nil || !ok {
+			continue
 		}
 		path, _ := store.GetFilePathByID(ctx, s.FileID)
 		results = append(results, format.SymbolResult{
@@ -68,17 +59,8 @@ func LookupSymbols(ctx context.Context, store types.WriterStore, name, kind stri
 				if err != nil || sym == nil {
 					continue
 				}
-				if filter.ExcludeTests || filter.TestOnly {
-					isTest, err := store.GetFileIsTestByID(ctx, sym.FileID)
-					if err != nil {
-						continue
-					}
-					if filter.ExcludeTests && isTest {
-						continue
-					}
-					if filter.TestOnly && !isTest {
-						continue
-					}
+				if ok, err := filter.AcceptByFileID(ctx, store, sym.FileID); err != nil || !ok {
+					continue
 				}
 				path, _ := store.GetFilePathByID(ctx, sym.FileID)
 				refs = append(refs, format.SymbolRef{
@@ -132,17 +114,8 @@ func LookupDependencies(ctx context.Context, store types.WriterStore, symbol, di
 		if err != nil || sym == nil {
 			continue
 		}
-		if filter.ExcludeTests || filter.TestOnly {
-			isTest, err := store.GetFileIsTestByID(ctx, sym.FileID)
-			if err != nil {
-				continue
-			}
-			if filter.ExcludeTests && isTest {
-				continue
-			}
-			if filter.TestOnly && !isTest {
-				continue
-			}
+		if ok, err := filter.AcceptByFileID(ctx, store, sym.FileID); err != nil || !ok {
+			continue
 		}
 		path, _ := store.GetFilePathByID(ctx, sym.FileID)
 		results = append(results, format.DepResult{
@@ -167,17 +140,8 @@ func LookupDiffs(ctx context.Context, store types.WriterStore, since time.Time, 
 
 	var results []format.DiffResult
 	for _, d := range diffs {
-		if filter.ExcludeTests || filter.TestOnly {
-			isTest, err := store.GetFileIsTestByID(ctx, d.FileID)
-			if err != nil {
-				continue
-			}
-			if filter.ExcludeTests && isTest {
-				continue
-			}
-			if filter.TestOnly && !isTest {
-				continue
-			}
+		if ok, err := filter.AcceptByFileID(ctx, store, d.FileID); err != nil || !ok {
+			continue
 		}
 		path, _ := store.GetFilePathByID(ctx, d.FileID)
 		dr := format.DiffResult{

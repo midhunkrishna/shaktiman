@@ -365,24 +365,10 @@ func mergeResults(ctx context.Context, store types.MetadataStore, kwResults []ty
 		hydrated, err := bs.BatchHydrateChunks(ctx, needHydrate)
 		if err == nil {
 			for _, h := range hydrated {
-				if filter.ExcludeTests && h.IsTest {
+				if !filter.AcceptIsTest(h.IsTest) {
 					continue
 				}
-				if filter.TestOnly && !h.IsTest {
-					continue
-				}
-				merged = append(merged, types.ScoredResult{
-					ChunkID:    h.ChunkID,
-					FileID:     h.FileID,
-					Score:      0, // will be set by ranker
-					Path:       h.Path,
-					SymbolName: h.SymbolName,
-					Kind:       h.Kind,
-					StartLine:  h.StartLine,
-					EndLine:    h.EndLine,
-					Content:    h.Content,
-					TokenCount: h.TokenCount,
-				})
+				merged = append(merged, scoredFromHydrated(h, 0)) // score set by ranker
 			}
 			return merged
 		}
@@ -396,33 +382,11 @@ func mergeResults(ctx context.Context, store types.MetadataStore, kwResults []ty
 			continue
 		}
 
-		if filter.ExcludeTests || filter.TestOnly {
-			isTest, err := store.GetFileIsTestByID(ctx, chunk.FileID)
-			if err != nil {
-				continue
-			}
-			if filter.ExcludeTests && isTest {
-				continue
-			}
-			if filter.TestOnly && !isTest {
-				continue
-			}
+		if ok, err := filter.AcceptByFileID(ctx, store, chunk.FileID); err != nil || !ok {
+			continue
 		}
-
 		path, _ := store.GetFilePathByID(ctx, chunk.FileID)
-
-		merged = append(merged, types.ScoredResult{
-			ChunkID:    chunk.ID,
-			FileID:     chunk.FileID,
-			Score:      0,
-			Path:       path,
-			SymbolName: chunk.SymbolName,
-			Kind:       chunk.Kind,
-			StartLine:  chunk.StartLine,
-			EndLine:    chunk.EndLine,
-			Content:    chunk.Content,
-			TokenCount: chunk.TokenCount,
-		})
+		merged = append(merged, scoredFromChunk(chunk, path, 0)) // score set by ranker
 	}
 
 	return merged

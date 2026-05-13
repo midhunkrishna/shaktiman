@@ -28,6 +28,82 @@ func ScopeToFilter(scope string) TestFilter {
 	}
 }
 
+// Active reports whether the filter will actually drop anything. Callers
+// short-circuit the per-file lookup when both flags are off.
+func (f TestFilter) Active() bool { return f.ExcludeTests || f.TestOnly }
+
+// AcceptIsTest returns whether a row whose underlying file has the given
+// is_test flag passes the filter.
+func (f TestFilter) AcceptIsTest(isTest bool) bool {
+	if f.ExcludeTests && isTest {
+		return false
+	}
+	if f.TestOnly && !isTest {
+		return false
+	}
+	return true
+}
+
+// fileIsTestLookup is the subset of MetadataStore that AcceptByFileID
+// needs. Declaring it locally lets every caller (WriterStore,
+// MetadataStore, BatchMetadataStore — they all expose GetFileIsTestByID)
+// pass through without the helper bolting onto any one of them.
+type fileIsTestLookup interface {
+	GetFileIsTestByID(ctx context.Context, fileID int64) (bool, error)
+}
+
+// AcceptByFileID checks whether a row whose backing file has the given
+// fileID passes the filter, performing the lookup only when the filter is
+// active. Errors from the lookup propagate to the caller — different
+// retrieval paths handle them differently (some drop the row, some
+// propagate the failure), so this helper does not impose a policy.
+func (f TestFilter) AcceptByFileID(ctx context.Context, store fileIsTestLookup, fileID int64) (bool, error) {
+	if !f.Active() {
+		return true, nil
+	}
+	isTest, err := store.GetFileIsTestByID(ctx, fileID)
+	if err != nil {
+		return false, err
+	}
+	return f.AcceptIsTest(isTest), nil
+}
+
+// scoredFromHydrated builds a ScoredResult from a HydratedChunk with the
+// given score. Five retrieval paths used to set this field-for-field by
+// hand; funnelling through one constructor prevents drift when ScoredResult
+// gains a new field.
+func scoredFromHydrated(h types.HydratedChunk, score float64) types.ScoredResult {
+	return types.ScoredResult{
+		ChunkID:    h.ChunkID,
+		FileID:     h.FileID,
+		Score:      score,
+		Path:       h.Path,
+		SymbolName: h.SymbolName,
+		Kind:       h.Kind,
+		StartLine:  h.StartLine,
+		EndLine:    h.EndLine,
+		Content:    h.Content,
+		TokenCount: h.TokenCount,
+	}
+}
+
+// scoredFromChunk builds a ScoredResult from a ChunkRecord. Path is
+// passed separately because the chunk record does not carry it.
+func scoredFromChunk(c *types.ChunkRecord, path string, score float64) types.ScoredResult {
+	return types.ScoredResult{
+		ChunkID:    c.ID,
+		FileID:     c.FileID,
+		Score:      score,
+		Path:       path,
+		SymbolName: c.SymbolName,
+		Kind:       c.Kind,
+		StartLine:  c.StartLine,
+		EndLine:    c.EndLine,
+		Content:    c.Content,
+		TokenCount: c.TokenCount,
+	}
+}
+
 // KeywordSearch performs FTS5 search and returns hydrated scored results.
 // When filter excludes or selects test files, FTS limit is doubled to
 // compensate for filtered-out results.
@@ -85,25 +161,10 @@ func hydrateFTSResultsBatch(ctx context.Context, store types.BatchMetadataStore,
 			continue // chunk deleted between FTS search and hydration
 		}
 
-		if filter.ExcludeTests && h.IsTest {
+		if !filter.AcceptIsTest(h.IsTest) {
 			continue
 		}
-		if filter.TestOnly && !h.IsTest {
-			continue
-		}
-
-		results = append(results, types.ScoredResult{
-			ChunkID:    h.ChunkID,
-			FileID:     h.FileID,
-			Score:      normalizeBM25(fts.Rank),
-			Path:       h.Path,
-			SymbolName: h.SymbolName,
-			Kind:       h.Kind,
-			StartLine:  h.StartLine,
-			EndLine:    h.EndLine,
-			Content:    h.Content,
-			TokenCount: h.TokenCount,
-		})
+		results = append(results, scoredFromHydrated(h, normalizeBM25(fts.Rank)))
 	}
 	return results, nil
 }
@@ -120,17 +181,12 @@ func hydrateFTSResultsLegacy(ctx context.Context, store types.MetadataStore, fts
 			continue
 		}
 
-		if filter.ExcludeTests || filter.TestOnly {
-			isTest, err := store.GetFileIsTestByID(ctx, chunk.FileID)
-			if err != nil {
-				return nil, fmt.Errorf("check is_test for chunk %d: %w", fts.ChunkID, err)
-			}
-			if filter.ExcludeTests && isTest {
-				continue
-			}
-			if filter.TestOnly && !isTest {
-				continue
-			}
+		ok, err := filter.AcceptByFileID(ctx, store, chunk.FileID)
+		if err != nil {
+			return nil, fmt.Errorf("check is_test for chunk %d: %w", fts.ChunkID, err)
+		}
+		if !ok {
+			continue
 		}
 
 		path, err := store.GetFilePathByID(ctx, chunk.FileID)
@@ -138,18 +194,7 @@ func hydrateFTSResultsLegacy(ctx context.Context, store types.MetadataStore, fts
 			return nil, fmt.Errorf("get file path for chunk %d: %w", fts.ChunkID, err)
 		}
 
-		results = append(results, types.ScoredResult{
-			ChunkID:    chunk.ID,
-			FileID:     chunk.FileID,
-			Score:      normalizeBM25(fts.Rank),
-			Path:       path,
-			SymbolName: chunk.SymbolName,
-			Kind:       chunk.Kind,
-			StartLine:  chunk.StartLine,
-			EndLine:    chunk.EndLine,
-			Content:    chunk.Content,
-			TokenCount: chunk.TokenCount,
-		})
+		results = append(results, scoredFromChunk(chunk, path, normalizeBM25(fts.Rank)))
 	}
 
 	return results, nil
