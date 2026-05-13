@@ -63,7 +63,7 @@ func (p *Parser) chunkFile(root *tree_sitter.Node, source []byte, cfg *LanguageC
 		}
 
 		// Collect imports for header
-		if cfg.ImportTypes[nodeType] {
+		if cfg.Nodes[nodeType].IsImport {
 			headerParts = append(headerParts, headerFragment{
 				content:   child.Utf8Text(source),
 				startLine: int(child.StartPosition().Row) + 1, //nolint:gosec // tree-sitter Row is 0-based line number; fits int on 64-bit
@@ -82,8 +82,7 @@ func (p *Parser) chunkFile(root *tree_sitter.Node, source []byte, cfg *LanguageC
 			continue
 		}
 
-		_, ok := cfg.ChunkableTypes[nodeType]
-		if !ok {
+		if !cfg.Nodes[nodeType].IsChunkable {
 			// Non-chunkable top-level node → include in header
 			headerParts = append(headerParts, headerFragment{
 				content:   child.Utf8Text(source),
@@ -142,14 +141,14 @@ func (p *Parser) chunkNode(node *tree_sitter.Node, source []byte, cfg *LanguageC
 	tokens := p.tokens.Count(content)
 	nodeType := node.Kind()
 
-	kind := cfg.ChunkableTypes[nodeType].Kind
+	kind := cfg.Nodes[nodeType].Kind
 
 	// Resolve kind for wrapper types (decorated_definition, export_statement, etc.)
 	// by looking at the inner definition child.
 	nameNode := node
 	if kind == "" {
 		if inner := findDeclarationChild(node, cfg); inner != nil {
-			if innerKind := cfg.ChunkableTypes[inner.Kind()].Kind; innerKind != "" {
+			if innerKind := cfg.Nodes[inner.Kind()].Kind; innerKind != "" {
 				kind = innerKind
 			}
 			nameNode = inner
@@ -281,7 +280,7 @@ func (p *Parser) findChunkableChildren(node *tree_sitter.Node, source []byte, cf
 			}
 		}
 
-		if _, chunkable := cfg.ChunkableTypes[childType]; chunkable {
+		if cfg.Nodes[childType].IsChunkable {
 			*extracted = append(*extracted, p.chunkNode(child, source, cfg, chunkDepth+1)...)
 		} else {
 			// Recurse through structural nodes (body_statement, block,
@@ -653,25 +652,20 @@ func findDeclarationChild(node *tree_sitter.Node, cfg *LanguageConfig) *tree_sit
 		return decl
 	}
 
-	for i := 0; i < int(node.NamedChildCount()); i++ { //nolint:gosec // tree-sitter NamedChildCount is uint32, fits int on 64-bit
-		child := node.NamedChild(uint(i))
+	return findNamedChild(node, func(child *tree_sitter.Node) bool {
 		childKind := child.Kind()
-		meta, ok := cfg.ChunkableTypes[childKind]
-		if !ok {
-			continue
+		meta := cfg.Nodes[childKind]
+		if !meta.IsChunkable {
+			return false
 		}
 		// Skip wrapper kinds so export_statement > ambient_declaration >
 		// class_declaration unwraps to the class, not the ambient wrapper.
 		if childKind == cfg.ExportType || childKind == cfg.AmbientType {
-			continue
+			return false
 		}
 		// Skip empty-kind wrappers (like Python decorated_definition) to
 		// avoid returning another wrapper. The caller will recurse into the
 		// inner declaration if needed.
-		if meta.Kind == "" {
-			continue
-		}
-		return child
-	}
-	return nil
+		return meta.Kind != ""
+	})
 }

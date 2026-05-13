@@ -93,14 +93,15 @@ func (p *Parser) walkForEdges(node *tree_sitter.Node, owner string, ctx *edgeCon
 	}
 
 	// Import edges — don't recurse further into import nodes
-	if ctx.cfg.ImportTypes[nodeType] {
+	meta := ctx.cfg.Nodes[nodeType]
+	if meta.IsImport {
 		p.extractImportEdgesFrom(node, owner, ctx)
 		return
 	}
 
 	// Update owner for symbol-defining nodes
 	newOwner := owner
-	if _, isSymbol := ctx.cfg.SymbolKindMap[nodeType]; isSymbol {
+	if meta.SymbolKind != "" {
 		name := extractName(node, ctx.source)
 		if name != "" {
 			newOwner = name

@@ -38,7 +38,9 @@ func (p *Parser) walkForSymbols(node *tree_sitter.Node, source []byte, exported 
 		return
 	}
 
-	kind, isSymbol := cfg.SymbolKindMap[nodeType]
+	meta := cfg.Nodes[nodeType]
+	kind := meta.SymbolKind
+	isSymbol := kind != ""
 	if isSymbol {
 		// Multi-declarator types: dispatch to specialized extractors that
 		// handle each spec/declarator child individually. extractName would
@@ -81,7 +83,7 @@ func (p *Parser) walkForSymbols(node *tree_sitter.Node, source []byte, exported 
 	// always recurse so symbol nodes nested inside them are reachable.
 	shouldRecurse := !isSymbol
 	if isSymbol {
-		shouldRecurse = cfg.ChunkableTypes[nodeType].IsContainer
+		shouldRecurse = meta.IsContainer
 	}
 	if shouldRecurse {
 		iterNamedChildren(node, func(child *tree_sitter.Node) {
