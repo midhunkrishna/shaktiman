@@ -4,6 +4,9 @@
  * work well for content-centric websites.
  */
 
+/* Landing-page display font (headings only, applied via index.module.css). */
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@500;600&display=swap');
+
 /* You can override the default Infima variables here. */
 :root {
   --ifm-color-primary: #2e8555;
@@ -29,19 +32,47 @@
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
 }
 
-/* Center the footer link columns as a group instead of stretching them
-   across the full container width, and keep them side by side at every
-   viewport width (Infima stacks .col to 100% width below 997px). */
+/* Footer: brand block on the left, link columns on the right, constrained
+   to the content width instead of a cramped clump in a full-width band.
+   Columns stay side by side at every viewport (Infima stacks .col to 100%
+   width below 997px). */
+.footer {
+  padding: 3rem 1.5rem 2rem;
+}
+
+[data-theme='light'] .footer--light {
+  --ifm-footer-background-color: #f7f4ec;
+}
+
 .footer .row.footer__links {
   display: flex;
   flex-flow: row wrap;
-  justify-content: center;
-  gap: 0 6rem;
+  justify-content: space-between;
+  gap: 2.5rem 4rem;
+  max-width: 64rem;
+  margin: 0 auto 1.5rem;
 }
 
 .footer .row.footer__links .col.footer__col {
   flex: 0 0 auto !important;
   width: auto;
   max-width: none;
-  margin-bottom: 1rem;
+  margin-bottom: 0;
+}
+
+.footer-brand strong {
+  font-size: 1.15rem;
+}
+
+.footer-brand p {
+  max-width: 16rem;
+  margin: 0.5rem 0 0;
+  font-size: 0.9rem;
+  color: var(--ifm-color-emphasis-600);
+}
+
+@media screen and (max-width: 700px) {
+  .footer .row.footer__links {
+    justify-content: flex-start;
+  }
 }

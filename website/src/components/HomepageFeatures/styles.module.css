@@ -1,31 +1,45 @@
 .features {
-  display: flex;
-  align-items: stretch;
-  padding: 3rem 0;
-  width: 100%;
+  padding: 3rem 0 2rem;
 }
 
 .featureCard {
   height: 100%;
-  padding: 1.5rem 1.25rem;
-  border: 1px solid var(--ifm-color-emphasis-200);
-  border-radius: 12px;
+  padding: 1.75rem 1.5rem;
+  border: 1px solid var(--land-hairline, rgba(47, 44, 37, 0.12));
+  border-radius: 16px;
   background: var(--ifm-background-surface-color);
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.featureCard:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 32px rgba(47, 44, 37, 0.1);
 }
 
 .featureCard h3 {
-  font-size: 1.1rem;
-  margin: 0.75rem 0 0.5rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 1rem 0 0.5rem;
 }
 
 .featureCard p {
   margin-bottom: 0;
   font-size: 0.95rem;
-  color: var(--ifm-color-emphasis-700);
+  line-height: 1.6;
+  color: var(--land-muted, var(--ifm-color-emphasis-700));
 }
 
 .featureIcon {
-  font-size: 1.75rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--land-chip, #f6f1e3);
+  font-size: 1.4rem;
   line-height: 1;
 }
 

@@ -1,84 +1,275 @@
+/*
+ * Landing-page styles. Warm, airy look: big medium-weight Montserrat
+ * headings, warm near-black ink, mustard pill CTAs, generously rounded
+ * media cards. Tokens are defined on .page (with a dark-theme override)
+ * so the docs keep their own styling.
+ */
+
+.page {
+  --land-ink: #2f2c25;
+  --land-muted: #6b6456;
+  --land-accent: #d9c85c;
+  --land-accent-hover: #cdbb47;
+  --land-accent-ink: #2a2717;
+  --land-chip: #f6f1e3;
+  --land-hairline: rgba(47, 44, 37, 0.14);
+  --land-shadow: 0 24px 60px rgba(47, 44, 37, 0.18);
+}
+
+:global([data-theme='dark']) .page {
+  --land-ink: #f0ede4;
+  --land-muted: #a8a294;
+  --land-chip: #2b2a26;
+  --land-hairline: rgba(240, 237, 228, 0.18);
+  --land-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+
+.page h1,
+.page h2,
+.page h3 {
+  font-family: 'Montserrat', var(--ifm-font-family-base);
+  color: var(--land-ink);
+}
+
+/* ---------- Hero ---------- */
+
 .hero {
-  padding: 4rem 0 3rem;
-  text-align: center;
+  padding: 5rem 0 3.5rem;
+}
+
+.heroRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4rem;
+}
+
+.heroInner {
+  max-width: 44rem;
+}
+
+.heroStats {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  flex: 0 0 20rem;
+}
+
+.heroStat {
+  padding: 1.4rem 1.6rem;
+  border-radius: 16px;
+  background: var(--land-chip);
+}
+
+.heroStatValue {
+  display: block;
+  font-family: 'Montserrat', var(--ifm-font-family-base);
+  font-size: 2rem;
+  font-weight: 600;
+  line-height: 1.1;
+  color: var(--land-ink);
+}
+
+.heroStatLabel {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--land-muted);
+}
+
+@media screen and (max-width: 996px) {
+  .heroRow {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2.5rem;
+  }
+
+  .heroStats {
+    flex: none;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 1rem;
+  }
+
+  .heroStat {
+    flex: 1 1 12rem;
+  }
 }
 
 .heroTitle {
-  font-size: 3rem;
-  margin-bottom: 0.5rem;
+  font-size: clamp(2.4rem, 5vw, 3.6rem);
+  font-weight: 500;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  margin-bottom: 1.25rem;
 }
 
-.heroTagline {
-  font-size: 1.4rem;
+.heroBenefits {
+  font-size: 1.15rem;
   font-weight: 600;
-  color: var(--ifm-color-primary);
-  margin-bottom: 1rem;
+  color: var(--land-muted);
+  margin-bottom: 1.5rem;
 }
 
 .heroSubtitle {
-  max-width: 42rem;
-  margin: 0 auto 2rem;
+  max-width: 44rem;
   font-size: 1.05rem;
-  color: var(--ifm-color-emphasis-700);
+  line-height: 1.7;
+  color: var(--land-muted);
+  margin-bottom: 2.25rem;
 }
 
 .heroButtons {
   display: flex;
   gap: 1rem;
-  justify-content: center;
   flex-wrap: wrap;
 }
 
+/* ---------- Pill CTAs ---------- */
+
+.ctaPrimary,
+.ctaGhost {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.85rem 2.1rem;
+  font-size: 1rem;
+  font-weight: 600;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.ctaPrimary {
+  background: var(--land-accent);
+  color: var(--land-accent-ink);
+}
+
+.ctaPrimary:hover {
+  background: var(--land-accent-hover);
+  color: var(--land-accent-ink);
+  text-decoration: none;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(47, 44, 37, 0.18);
+}
+
+.ctaGhost {
+  border: 1.5px solid var(--land-hairline);
+  color: var(--land-ink);
+}
+
+.ctaGhost:hover {
+  background: var(--land-chip);
+  color: var(--land-ink);
+  text-decoration: none;
+  transform: translateY(-1px);
+}
+
+/* ---------- Demo ---------- */
+
 .demo {
-  padding: 1rem 0 2rem;
+  padding: 1rem 0 3rem;
 }
 
 .demoGif {
   display: block;
-  max-width: 48rem;
+  max-width: 56rem;
   width: 100%;
   margin: 0 auto;
-  border-radius: 12px;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+  border-radius: 20px;
+  box-shadow: var(--land-shadow);
 }
 
+/* ---------- Works-with strip ---------- */
+
 .worksWith {
-  padding: 0 0 1rem;
+  padding: 1.5rem 0 2rem;
   text-align: center;
 }
 
-.worksWith p {
-  margin: 0;
+.worksWithLabel {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--land-muted);
+  margin-bottom: 1rem;
+}
+
+.worksWithRow {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 1rem 2.75rem;
+}
+
+.worksWithRow a {
+  font-weight: 600;
   font-size: 1.05rem;
-  color: var(--ifm-color-emphasis-700);
+  color: var(--land-muted);
+}
+
+.worksWithRow a:hover {
+  color: var(--land-ink);
+  text-decoration: none;
+}
+
+/* ---------- Sections ---------- */
+
+.sectionTitle {
+  font-size: clamp(1.75rem, 3vw, 2.4rem);
+  font-weight: 500;
+  text-align: center;
+  margin-bottom: 2rem;
 }
 
 .quickstart {
-  padding: 2rem 0 4rem;
+  padding: 3.5rem 0 2rem;
   text-align: center;
-}
-
-.sectionTitle {
-  margin-bottom: 1.5rem;
 }
 
 .quickstartBlock {
   max-width: 48rem;
   margin: 0 auto;
   text-align: left;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 12px 36px rgba(47, 44, 37, 0.12);
+}
+
+.quickstartBlock :global(.theme-code-block) {
+  margin-bottom: 0;
+  border-radius: 16px;
 }
 
 .quickstartNote {
-  margin: 1rem auto 0;
-  color: var(--ifm-color-emphasis-700);
+  margin: 1.25rem auto 0;
+  color: var(--land-muted);
+}
+
+/* ---------- Closing CTA ---------- */
+
+.closing {
+  padding: 4rem 0 5rem;
+  text-align: center;
+}
+
+.closing .sectionTitle {
+  margin-bottom: 1.75rem;
+}
+
+.closingButton {
+  margin-bottom: 1.25rem;
+}
+
+.closingNote {
+  color: var(--land-muted);
+  margin: 0;
 }
 
 @media screen and (max-width: 600px) {
-  .heroTitle {
-    font-size: 2.25rem;
-  }
-
-  .heroTagline {
-    font-size: 1.15rem;
+  .hero {
+    padding: 3rem 0 2.5rem;
   }
 }

@@ -14,33 +14,52 @@ go build -tags "sqlite_fts5 sqlite bruteforce hnsw" -o shaktiman ./cmd/shaktiman
 go build -tags "sqlite_fts5 sqlite bruteforce hnsw" -o shaktimand ./cmd/shaktimand
 shaktiman init . && shaktiman index .`;
 
+const HERO_STATS = [
+  {value: '1.6s', label: 'to index a 233-file repo'},
+  {value: '9', label: 'languages out of the box'},
+  {value: '100%', label: 'local — your code never leaves your machine'},
+];
+
 function Hero() {
-  const {siteConfig} = useDocusaurusContext();
   return (
     <header className={styles.hero}>
       <div className="container">
-        <Heading as="h1" className={styles.heroTitle}>
-          {siteConfig.title}
-        </Heading>
-        <p className={styles.heroTagline}>{siteConfig.tagline}</p>
-        <p className={styles.heroSubtitle}>
-          Coding agents burn their context window rediscovering your codebase —
-          grep after grep, whole files read for one relevant function. Shaktiman
-          indexes it once with tree-sitter and serves search, symbols,
-          dependencies, and budget-fitted context over MCP, entirely on your
-          machine.
-        </p>
-        <div className={styles.heroButtons}>
-          <Link
-            className="button button--primary button--lg"
-            to="/getting-started/quickstart">
-            Get Started
-          </Link>
-          <Link
-            className="button button--secondary button--lg"
-            href="https://github.com/midhunkrishna/shaktiman">
-            GitHub
-          </Link>
+        <div className={styles.heroRow}>
+          <div className={styles.heroInner}>
+            <Heading as="h1" className={styles.heroTitle}>
+              Exactly the right code context for your coding agent
+            </Heading>
+            <p className={styles.heroBenefits}>
+              Fewer tokens. Better recall. Zero cloud.
+            </p>
+            <p className={styles.heroSubtitle}>
+              Coding agents burn their context window rediscovering your
+              codebase — grep after grep, whole files read for one relevant
+              function. Shaktiman indexes it once with tree-sitter and serves
+              search, symbols, dependencies, and budget-fitted context over
+              MCP, entirely on your machine.
+            </p>
+            <div className={styles.heroButtons}>
+              <Link
+                className={styles.ctaPrimary}
+                to="/getting-started/quickstart">
+                Get Started
+              </Link>
+              <Link
+                className={styles.ctaGhost}
+                href="https://github.com/midhunkrishna/shaktiman">
+                View on GitHub
+              </Link>
+            </div>
+          </div>
+          <aside className={styles.heroStats}>
+            {HERO_STATS.map((stat) => (
+              <div key={stat.value} className={styles.heroStat}>
+                <span className={styles.heroStatValue}>{stat.value}</span>
+                <span className={styles.heroStatLabel}>{stat.label}</span>
+              </div>
+            ))}
+          </aside>
         </div>
       </div>
     </header>
@@ -66,12 +85,13 @@ function WorksWith() {
   return (
     <section className={styles.worksWith}>
       <div className="container">
-        <p>
-          Works with <Link to="/integrations/claude-code">Claude Code</Link>,{' '}
-          <Link to="/integrations/cursor">Cursor</Link>,{' '}
-          <Link to="/integrations/zed">Zed</Link>, and{' '}
-          <Link to="/integrations/generic-mcp-client">any MCP client</Link>.
-        </p>
+        <p className={styles.worksWithLabel}>Works with</p>
+        <div className={styles.worksWithRow}>
+          <Link to="/integrations/claude-code">Claude Code</Link>
+          <Link to="/integrations/cursor">Cursor</Link>
+          <Link to="/integrations/zed">Zed</Link>
+          <Link to="/integrations/generic-mcp-client">Any MCP client</Link>
+        </div>
       </div>
     </section>
   );
@@ -97,17 +117,40 @@ function Quickstart() {
   );
 }
 
+function ClosingCta() {
+  return (
+    <section className={styles.closing}>
+      <div className="container">
+        <Heading as="h2" className={styles.sectionTitle}>
+          Give your agent a better map
+        </Heading>
+        <div className={styles.closingButton}>
+          <Link className={styles.ctaPrimary} to="/getting-started/quickstart">
+            Get Started
+          </Link>
+        </div>
+        <p className={styles.closingNote}>
+          MIT-licensed, open source, and local-first.
+        </p>
+      </div>
+    </section>
+  );
+}
+
 export default function Home(): ReactNode {
   const {siteConfig} = useDocusaurusContext();
   return (
     <Layout description={siteConfig.tagline}>
-      <Hero />
-      <main>
-        <Demo />
-        <WorksWith />
-        <HomepageFeatures />
-        <Quickstart />
-      </main>
+      <div className={styles.page}>
+        <Hero />
+        <main>
+          <Demo />
+          <WorksWith />
+          <HomepageFeatures />
+          <Quickstart />
+          <ClosingCta />
+        </main>
+      </div>
     </Layout>
   );
 }

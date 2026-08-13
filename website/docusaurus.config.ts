@@ -97,6 +97,18 @@ const config: Config = {
       style: 'light',
       links: [
         {
+          items: [
+            {
+              html: `
+                <div class="footer-brand">
+                  <strong>Shaktiman</strong>
+                  <p>Local-first code context engine for coding agents.</p>
+                </div>
+              `,
+            },
+          ],
+        },
+        {
           title: 'Docs',
           items: [
             {label: 'Getting Started', to: '/getting-started/installation'},
