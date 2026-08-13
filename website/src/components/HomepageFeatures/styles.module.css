@@ -1,11 +1,36 @@
 .features {
   display: flex;
-  align-items: center;
-  padding: 2rem 0;
+  align-items: stretch;
+  padding: 3rem 0;
   width: 100%;
 }
 
-.featureSvg {
-  height: 200px;
-  width: 200px;
+.featureCard {
+  height: 100%;
+  padding: 1.5rem 1.25rem;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 12px;
+  background: var(--ifm-background-surface-color);
+}
+
+.featureCard h3 {
+  font-size: 1.1rem;
+  margin: 0.75rem 0 0.5rem;
+}
+
+.featureCard p {
+  margin-bottom: 0;
+  font-size: 0.95rem;
+  color: var(--ifm-color-emphasis-700);
+}
+
+.featureIcon {
+  font-size: 1.75rem;
+  line-height: 1;
+}
+
+@media screen and (max-width: 996px) {
+  .featureCard {
+    margin-bottom: 1rem;
+  }
 }

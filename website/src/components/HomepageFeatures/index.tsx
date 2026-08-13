@@ -5,50 +5,60 @@ import styles from './styles.module.css';
 
 type FeatureItem = {
   title: string;
-  Svg: React.ComponentType<React.ComponentProps<'svg'>>;
+  icon: string;
   description: ReactNode;
 };
 
 const FeatureList: FeatureItem[] = [
   {
-    title: 'Easy to Use',
-    Svg: require('@site/static/img/undraw_docusaurus_mountain.svg').default,
+    title: 'Tree-sitter indexing',
+    icon: '🌳',
     description: (
       <>
-        Docusaurus was designed from the ground up to be easily installed and
-        used to get your website up and running quickly.
+        Functions, classes, symbols, imports, and call graphs — parsed, not
+        regexed. Nine languages supported out of the box.
       </>
     ),
   },
   {
-    title: 'Focus on What Matters',
-    Svg: require('@site/static/img/undraw_docusaurus_tree.svg').default,
+    title: 'Hybrid search',
+    icon: '🔍',
     description: (
       <>
-        Docusaurus lets you focus on your docs, and we&apos;ll do the chores. Go
-        ahead and move your docs into the <code>docs</code> directory.
+        Keyword (FTS5), semantic (vector), structural, and change signals
+        combined into a single ranked result.
       </>
     ),
   },
   {
-    title: 'Powered by React',
-    Svg: require('@site/static/img/undraw_docusaurus_react.svg').default,
+    title: 'Budget-fitted context',
+    icon: '🎯',
     description: (
       <>
-        Extend or customize your website layout by reusing React. Docusaurus can
-        be extended while reusing the same header and footer.
+        Ask for 4K tokens, get exactly 4K tokens of the most relevant code —
+        no overflow, no padding.
+      </>
+    ),
+  },
+  {
+    title: 'Local-first, always fresh',
+    icon: '💻',
+    description: (
+      <>
+        Runs entirely on your machine; your code never leaves it. A file
+        watcher re-indexes on every save.
       </>
     ),
   },
 ];
 
-function Feature({title, Svg, description}: FeatureItem) {
+function Feature({title, icon, description}: FeatureItem) {
   return (
-    <div className={clsx('col col--4')}>
-      <div className="text--center">
-        <Svg className={styles.featureSvg} role="img" />
-      </div>
-      <div className="text--center padding-horiz--md">
+    <div className={clsx('col col--3')}>
+      <div className={styles.featureCard}>
+        <span className={styles.featureIcon} aria-hidden="true">
+          {icon}
+        </span>
         <Heading as="h3">{title}</Heading>
         <p>{description}</p>
       </div>

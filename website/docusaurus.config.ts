@@ -14,7 +14,6 @@ const config: Config = {
     v4: true,
   },
 
-  // Placeholder — swap for the real custom domain once DNS is set up.
   url: 'https://shaktiman.dev',
   baseUrl: '/',
 
