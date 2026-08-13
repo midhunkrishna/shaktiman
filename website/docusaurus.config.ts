@@ -15,7 +15,7 @@ const config: Config = {
   },
 
   // Placeholder — swap for the real custom domain once DNS is set up.
-  url: 'https://shaktiman.pages.dev',
+  url: 'https://shaktiman.dev',
   baseUrl: '/',
 
   organizationName: 'midhunkrishna',
