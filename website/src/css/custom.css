@@ -28,3 +28,20 @@
   --ifm-color-primary-lightest: #4fddbf;
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
 }
+
+/* Center the footer link columns as a group instead of stretching them
+   across the full container width, and keep them side by side at every
+   viewport width (Infima stacks .col to 100% width below 997px). */
+.footer .row.footer__links {
+  display: flex;
+  flex-flow: row wrap;
+  justify-content: center;
+  gap: 0 6rem;
+}
+
+.footer .row.footer__links .col.footer__col {
+  flex: 0 0 auto !important;
+  width: auto;
+  max-width: none;
+  margin-bottom: 1rem;
+}
