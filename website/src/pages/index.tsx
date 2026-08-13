@@ -47,38 +47,16 @@ function Hero() {
   );
 }
 
-/*
- * TODO(demo-gif): replace this static mockup with the recorded terminal demo
- * once it exists — drop the file at static/img/demo.gif (record with vhs so
- * it stays reproducible) and swap the <div className={styles.terminal}> block
- * for: <img src="/img/demo.gif" alt="Shaktiman demo" className={styles.demoGif} />
- */
+/* Recorded with vhs — see demo/demo.tape in the repo to re-record. */
 function Demo() {
   return (
     <section className={styles.demo}>
       <div className="container">
-        <div className={styles.terminal}>
-          <div className={styles.terminalBar} aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </div>
-          <pre className={styles.terminalBody}>
-            <code>
-              <span className={styles.prompt}>$</span> shaktiman search
-              {' "where do we retry failed payment jobs"'}
-              {'\n'}
-              {'  1  internal/worker/payments.go:142   retryWithBackoff     0.92\n'}
-              {'  2  internal/queue/redrive.go:57      RedriveFailedJobs    0.87\n'}
-              {'  3  internal/worker/scheduler.go:203  requeueOnFailure     0.81\n'}
-              {'\n'}
-              <span className={styles.prompt}>$</span> shaktiman context
-              {' "payment retry flow" --budget 4000'}
-              {'\n'}
-              {'  Assembled 3,987 tokens from 6 files (ranked, deduplicated)\n'}
-            </code>
-          </pre>
-        </div>
+        <img
+          src="/img/demo.gif"
+          alt="Terminal demo: indexing a repository, hybrid search, symbol dependencies, and budget-fitted context assembly"
+          className={styles.demoGif}
+        />
       </div>
     </section>
   );

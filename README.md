@@ -14,6 +14,10 @@ Local-first code context engine for coding agents.
 
 Coding agents burn most of their context window rediscovering your codebase — grep after grep, whole files read for one relevant function. Shaktiman indexes your codebase once and exposes MCP tools (search, symbols, dependencies, context) that let Claude Code and other agents assemble exactly the right code context — fitted to a token budget. Everything runs on your machine; no code leaves it.
 
+<p align="center">
+  <img src="website/static/img/demo.gif" alt="Terminal demo: indexing a repository, hybrid search, symbol dependencies, and budget-fitted context assembly" width="800">
+</p>
+
 - **Tree-sitter parsing** — functions, classes, symbols, imports, call graphs
 - **Hybrid search** — keyword (FTS5) + semantic (vector) + structural + change signals
 - **Budget-fitted context** — ask for 4K tokens, get 4K tokens of the most relevant code
